@@ -1,0 +1,29 @@
+{
+  "name": "signal-stack-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signal Stack — multi-tenant Next.js 16 App Router front-end. Auth via Clerk; per-user broker connections in Supabase Postgres. Talks to the Express scanner in ../server as a separate service.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^7.4.2",
+    "@supabase/supabase-js": "^2.106.2",
+    "next": "^16.2.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.2.6",
+    "typescript": "^5.6.0"
+  }
+}

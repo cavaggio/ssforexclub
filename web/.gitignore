@@ -1,0 +1,23 @@
+# Next.js
+/.next/
+/out/
+
+# Production
+/build
+
+# Dependencies
+/node_modules
+
+# Local env (never commit secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Vercel
+.vercel/
+
+# Editor / OS
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

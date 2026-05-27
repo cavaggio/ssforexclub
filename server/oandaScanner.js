@@ -1,0 +1,911 @@
+/**
+ * server/oandaScanner.js
+ *
+ * Institutional multi-timeframe market scanner.
+ *
+ *   Layer 1 — Macro     (Daily + H4)  → direction & regime
+ *   Layer 2 — Structure (H1 + M30)    → continuation vs reversal
+ *   Layer 3 — Momentum  (M15 + M5)    → execution trigger
+ *   Alignment engine    → folds layers + emits qualified / rejected with reasons
+ *   Dynamic sizing       → balance × confidence-scaled risk %, fixed 20p/60p/1:3
+ *
+ * Indicators (RSI/MACD/EMA/ATR) live inside the momentum layer ONLY. No
+ * indicator alone can qualify a trade.
+ */
+
+import { getCandles, getPricing, getForexSession } from './oandaMarketData.js';
+import { atr } from './oandaIndicators.js';
+import { checkMarketConditions, getTypicalSpread } from './oandaRiskMonitor.js';
+import { updateSignalStore, setScanInProgress } from './oandaSignalStore.js';
+import { getAccountSummary } from './oandaMarketData.js';
+import {
+  RISK_MODE,
+  MIN_RISK_PERCENT,
+  MAX_RISK_PERCENT,
+  CONFIDENCE_FOR_MAX_RISK,
+  DYNAMIC_RISK_NOTICE,
+  computeFixedDollarSizing,
+  computeDynamicTradeRisk,
+} from './oandaRiskSizing.js';
+import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
+import {
+  analyzeMacro,
+  analyzeStructure,
+  analyzeMomentum,
+  computeAlignment,
+  computeConfidenceScore,
+} from './oandaMtfAnalysis.js';
+import { detectFibSetup } from './oandaFibonacci.js';
+import { analyzeInstitutionalFlow } from './oandaInstitutionalFlow.js';
+import { classifyEntryTiming } from './oandaEntryTiming.js';
+import { getForexNewsRisk } from './oandaNewsRisk.js';
+import { analyzeRecentCandleStrength } from './oandaCandleStrength.js';
+import { classifyMarketState } from './oandaMarketState.js';
+import { assessMtfAuthority } from './oandaMtfAuthority.js';
+import { classifyOverextension } from './oandaOverextension.js';
+import { getInstrumentProfile } from './oandaInstrumentProfiles.js';
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
+const MAX_SPREAD_PIPS = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS || '5.0');
+const METALS_MAX_SPREAD_PIPS = parseFloat(process.env.METALS_MAX_SPREAD_PIPS || '50');
+// Strict mode hard-blocks setups with entryTiming.status==='too_early'.
+// HYBRID (default false): only news_blocked + opposing institutional flow
+// hard-block; too_early flows through to the dashboard with a warning.
+const ENTRY_TIMING_STRICT = String(process.env.FOREX_ENTRY_TIMING_STRICT || 'false').toLowerCase() === 'true';
+// Fallback lot size — used only when displaying meta defaults; per-trade lot size
+// is computed dynamically per signal, never taken from this constant.
+const DEFAULT_DISPLAY_LOT_SIZE = parseFloat(process.env.FOREX_FIXED_LOT_SIZE || '0.01');
+
+const DEFAULT_PAIRS = [
+  'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD', 'XAU_USD', 'XAG_USD',
+];
+
+const WATCHLIST = process.env.FOREX_WATCHLIST
+  ? process.env.FOREX_WATCHLIST.split(',').map(p => p.trim()).filter(Boolean)
+  : DEFAULT_PAIRS;
+const PRIORITY_PAIRS = {
+  tier1: [
+    'EUR_USD',
+    'GBP_USD',
+    'USD_JPY',
+    'GBP_JPY',
+    'EUR_JPY',
+    'USD_CHF',
+    'USD_CAD'
+  ],
+
+  tier2: [
+    'GBP_CHF',
+    'EUR_AUD',
+    'GBP_AUD',
+    'GBP_CAD',
+    'CAD_JPY',
+    'CHF_JPY'
+  ],
+
+  tier3: [
+    'AUD_CAD',
+    'AUD_NZD',
+    'NZD_CAD',
+    'EUR_NZD',
+    'GBP_NZD'
+  ]
+};
+
+const ORDERED_WATCHLIST = [
+  ...PRIORITY_PAIRS.tier1,
+  ...PRIORITY_PAIRS.tier2,
+  ...PRIORITY_PAIRS.tier3
+].filter(pair => WATCHLIST.includes(pair));
+
+// ─── Instrument helpers ───────────────────────────────────────────────────────
+
+export function getPipSize(pair) {
+  if (pair.includes('JPY')) return 0.01;
+  if (pair === 'XAU_USD' || pair === 'XAG_USD') return 0.01;
+  return 0.0001;
+}
+
+function isMetalsPair(pair) {
+  return pair === 'XAU_USD' || pair === 'XAG_USD';
+}
+
+function getInstrumentName(pair) {
+  const names = {
+    EUR_USD: 'Euro / US Dollar',
+    GBP_USD: 'British Pound / US Dollar',
+    USD_JPY: 'US Dollar / Japanese Yen',
+    USD_CHF: 'US Dollar / Swiss Franc',
+    AUD_USD: 'Australian Dollar / US Dollar',
+    USD_CAD: 'US Dollar / Canadian Dollar',
+    NZD_USD: 'New Zealand Dollar / US Dollar',
+    EUR_GBP: 'Euro / British Pound',
+    EUR_JPY: 'Euro / Japanese Yen',
+    GBP_JPY: 'British Pound / Japanese Yen',
+    AUD_JPY: 'Australian Dollar / Japanese Yen',
+    EUR_AUD: 'Euro / Australian Dollar',
+    GBP_AUD: 'British Pound / Australian Dollar',
+    XAU_USD: 'Gold',
+    XAG_USD: 'Silver',
+  };
+  return names[pair] || pair.replace('_', '/');
+}
+
+function getAssetClass(pair) {
+  return isMetalsPair(pair) ? 'Metal' : 'Forex';
+}
+
+function getMaxSpreadPips(pair) {
+  return isMetalsPair(pair) ? METALS_MAX_SPREAD_PIPS : MAX_SPREAD_PIPS;
+}
+
+function getOandaMaxSpreadPips(instrument, session) {
+  const pair = String(instrument).replace('/', '_').toUpperCase();
+
+  if (pair === 'EUR_USD') return 3;
+  if (pair === 'GBP_USD') return 4;
+  if (pair === 'AUD_USD') return 5;
+  if (pair === 'NZD_USD') return 6;
+  if (pair === 'USD_CAD') return 6;
+  if (pair === 'USD_JPY') return 5;
+
+  if (pair.includes('JPY')) return 12;
+  if (pair.includes('GBP')) return 8;
+
+  return 6;
+}
+
+/**
+ * Calculate USD notional value for display.
+ * Mirrors calculateForexNotionalUSD in oandaTrade.js — keep in sync.
+ *
+ *   USD base (USD_JPY, USD_CAD, USD_CHF): notional = units
+ *   USD quote (EUR_USD, GBP_USD, AUD_USD): notional = units × price
+ *   Metals (XAU_USD, XAG_USD):            notional = units × price
+ *   Cross pairs (EUR_JPY, GBP_JPY, …):    fallback = units
+ */
+function calculateDisplayNotional(pair, units, entryPrice) {
+  if (pair === 'XAU_USD' || pair === 'XAG_USD') {
+    return Number((units * entryPrice).toFixed(2));
+  }
+  const [base, quote] = pair.split('_');
+  if (base  === 'USD') return units;
+  if (quote === 'USD') return Number((units * entryPrice).toFixed(2));
+  return units; // cross pairs
+}
+
+/**
+ * Trade duration label based on macro volatility regime and session — display only.
+ * Macro/structure/momentum layers handle the actual qualification.
+ */
+function getTradeDuration(session, atrPips, pair) {
+  const metals = isMetalsPair(pair);
+  const lowAtr = metals ? (!atrPips || atrPips < 30) : (!atrPips || atrPips < 4);
+  const goodAtr = metals ? (atrPips >= 50) : (atrPips >= 6);
+  const highVolSession = session === 'London/NewYork Overlap' || session === 'London' || session === 'NewYork';
+  const lowLiqSession = session === 'Sydney' || session === 'Sydney/Tokyo Overlap';
+
+  if (lowLiqSession || lowAtr) return 'Scalp';
+  if (highVolSession && goodAtr) return 'Intraday';
+  if (session === 'Tokyo/London Overlap' && goodAtr) return 'Intraday';
+  return 'Swing';
+}
+
+function getEstimatedHoldMinutes(tradeDuration) {
+  if (tradeDuration === 'Scalp') return 20;
+  if (tradeDuration === 'Intraday') return 90;
+  return 240;
+}
+
+function getExpectedMovementPips(atrPips, tradeDuration) {
+  if (!atrPips) return null;
+  const multiplier = tradeDuration === 'Scalp' ? 0.5 : tradeDuration === 'Intraday' ? 1.5 : 2.5;
+  return Math.round(atrPips * multiplier);
+}
+
+// ─── Pair ranking ─────────────────────────────────────────────────────────────
+
+function rankPairsByQuality(pairs, pricingMap, session) {
+  const sessionBonus = session.includes('Overlap') ? 2 : session === 'London' || session === 'NewYork' ? 1 : 0;
+
+  return [...pairs].sort((a, b) => {
+    const pA = pricingMap[a];
+    const pB = pricingMap[b];
+    if (!pA && !pB) return 0;
+    if (!pA) return 1;
+    if (!pB) return -1;
+
+    const spreadScoreA = pA.spreadPips <= 1.0 ? 3 : pA.spreadPips <= 1.5 ? 2 : 1;
+    const spreadScoreB = pB.spreadPips <= 1.0 ? 3 : pB.spreadPips <= 1.5 ? 2 : 1;
+
+    return (spreadScoreB + sessionBonus) - (spreadScoreA + sessionBonus);
+  });
+}
+
+// ─── Main scanner ─────────────────────────────────────────────────────────────
+
+export async function scanForexPairs(pairsOverride = null) {
+  const pairs = pairsOverride || ORDERED_WATCHLIST;
+  const session = getForexSession();
+
+  setScanInProgress(true);
+  console.log(`\n[SCANNER] ▶ Scan started — session: ${session}`);
+  console.log(`[SCANNER] ${DYNAMIC_RISK_NOTICE}`);
+  console.log(`[SCANNER] Reviewing ${pairs.length} instruments: ${pairs.join(', ')}`);
+
+  // ── Fetch pricing for all pairs up-front ──────────────────────────────────
+  let pricingMap = {};
+  try {
+    const prices = await getPricing(pairs);
+    for (const p of prices) pricingMap[p.instrument] = p;
+  } catch (err) {
+    setScanInProgress(false);
+    console.error('[SCANNER] Failed to fetch pricing:', err.message);
+    throw err;
+  }
+
+  // ── Fetch account summary once (used by fixed-dollar sizing per pair) ─────
+  let accountSummary = null;
+  try {
+    accountSummary = await getAccountSummary();
+  } catch (err) {
+    console.warn(`[SCANNER] Account summary unavailable — falling back to leverage defaults: ${err.message}`);
+  }
+  const accountBalanceUSD = accountSummary ? parseFloat(accountSummary.balance || 0) : null;
+  const accountMarginRate = accountSummary ? parseFloat(accountSummary.marginRate || 0) : 0;
+
+  const rankedPairs = rankPairsByQuality(pairs, pricingMap, session);
+  console.log(`[SCANNER] Pair scan order: ${rankedPairs.join(', ')}`);
+
+  const qualified = [];
+  const rejected = [];
+
+  for (const pair of rankedPairs) {
+    console.log(`[SCANNER] Analyzing ${pair} (${getInstrumentName(pair)})...`);
+
+    try {
+      const pricing = pricingMap[pair];
+      if (!pricing) {
+        rejected.push({ pair, reason: 'No pricing data returned from OANDA' });
+        continue;
+      }
+      if (!pricing.tradeable) {
+        rejected.push({ pair, reason: 'Instrument not tradeable (market closed or suspended)' });
+        continue;
+      }
+
+      // ── Per-instrument spread filter ─────────────────────────────────────
+      const metals = isMetalsPair(pair);
+      const maxSpread = metals
+        ? getMaxSpreadPips(pair)                   // metals: keeps METALS_MAX_SPREAD_PIPS unchanged
+        : getOandaMaxSpreadPips(pair, session);    // forex: pair-aware dynamic limit
+      console.log('[OANDA_DYNAMIC_SPREAD_LIMIT]', {
+        instrument: pair,
+        session,
+        spreadPips: pricing.spreadPips,
+        maxSpread,
+      });
+      console.log(`[OANDA_SPREAD_CHECK] instrument=${pair} bid=${pricing.bid} ask=${pricing.ask} spreadPips=${pricing.spreadPips} max=${maxSpread}`);
+      if (pricing.spreadPips > maxSpread) {
+        rejected.push({
+          pair,
+          reason: `Spread too wide: ${pricing.spreadPips.toFixed(1)} pips > ${maxSpread} pips (${pair}, ${session})`,
+          spreadPips: pricing.spreadPips,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — spread ${pricing.spreadPips.toFixed(1)} pips (limit: ${maxSpread})`);
+        continue;
+      }
+
+      // ── LAYER 0: Fetch Daily + H4 + H1 + M30 + M15 + M5 candles ─────────
+      const [dailyCandles, h4Candles, h1Candles, m30Candles, m15Candles, m5Candles] = await Promise.all([
+        getCandles(pair, 'D',   60).catch(() => []),
+        getCandles(pair, 'H4',  60).catch(() => []),
+        getCandles(pair, 'H1',  80).catch(() => []),
+        getCandles(pair, 'M30', 96).catch(() => []),
+        getCandles(pair, 'M15', 120).catch(() => []),
+        getCandles(pair, 'M5',  120).catch(() => []),
+      ]);
+
+      if (m15Candles.length < 60) {
+        rejected.push({
+          pair,
+          reason: `Not enough M15 candles: ${m15Candles.length} (need 60+)`,
+          rejectionReasons: [`Insufficient M15 history (${m15Candles.length} bars)`],
+        });
+        continue;
+      }
+
+      const pipSize = getPipSize(pair);
+      const atrM15  = m15Candles.length >= 15 ? atr(m15Candles, 14) : null;
+      const atrPips = atrM15 !== null ? +(atrM15 / pipSize).toFixed(2) : null;
+
+      // ── LAYER 1 — MACRO (Daily + H4) ─────────────────────────────────────
+      const macro = analyzeMacro({ dailyCandles, h4Candles, pair });
+
+      // ── LAYER 2 — STRUCTURE (H1 + M30) ──────────────────────────────────
+      const structure = analyzeStructure({ h1Candles, m30Candles, macro, pair });
+
+      // ── LAYER 3 — MOMENTUM / EXECUTION (M15 + M5) ───────────────────────
+      const momentum = analyzeMomentum({
+        m15Candles, m5Candles,
+        macroBias: macro.macroBias,
+        structure,
+        pair,
+        spreadPips: pricing.spreadPips,
+        maxSpreadPips: maxSpread,
+      });
+
+      // ── ALIGNMENT ENGINE — fold all three layers ────────────────────────
+      const alignment = computeAlignment({ macro, structure, momentum });
+
+      // ── Pre-trade safety: low-level risk monitor (volatility spikes, etc) ─
+      const risk = checkMarketConditions({
+        pair,
+        candles: m15Candles,
+        currentSpreadPips: pricing.spreadPips,
+        baselineSpreadPips: getTypicalSpread(pair),
+        atrValue: atrM15,
+        closes: m15Candles.map(c => c.close),
+      });
+      if (!risk.safe) alignment.rejectionReasons.push(`Risk monitor: ${risk.reason}`);
+
+      // ── Direction for downstream sizing ─────────────────────────────────
+      const direction = momentum.executionSignal;       // null when no signal
+
+      // ── ENTRY-QUALITY LAYER ─────────────────────────────────────────────
+      // Fibonacci retracement + institutional-flow proxies + news-risk +
+      // composite entry-timing classifier. These attach to every signal
+      // (qualified AND rejected) for full dashboard visibility.
+      //
+      // Hybrid gate (default): hard-block on news.blocked OR opposing flow.
+      // Soft (warn-only): fib `too_early` is informational unless
+      // FOREX_ENTRY_TIMING_STRICT=true.
+      const fibonacci = detectFibSetup({
+        direction, h1Candles, h4Candles, currentPrice: pricing.mid, pair,
+      });
+      const institutionalFlow = analyzeInstitutionalFlow({
+        pair,
+        tradeDirection: direction,
+        m15Candles, h1Candles, h4Candles,
+        priorTrend: macro.h4Trend,
+        structureType: macro.marketStructure?.type,
+      });
+      const newsRisk = await getForexNewsRisk(pair).catch(err => {
+        console.warn(`[ENTRY_TIMING] ${pair} — newsRisk failed: ${err.message}; treating as low`);
+        return { pair, enabled: true, blocked: false, riskLevel: 'low',
+                 matchingCurrencies: [], upcomingEvents: [], recentEvents: [],
+                 postNewsConfirmationRequired: false, reason: 'news provider error',
+                 provider: { source: null, warning: err.message } };
+      });
+      const entryTiming = classifyEntryTiming({
+        direction, fibonacci, institutionalFlow, structure, momentum, newsRisk,
+        currentPrice: pricing.mid, pair,
+      });
+
+      // ── EXTENDED QUALIFICATION LAYER (2026-05-27 upgrade) ───────────────
+      // Modules added to reduce SL hit rate caused by late entries, weak
+      // candles, wrong market state, HTF conflicts, and bad instrument
+      // tuning. See server/oanda{CandleStrength,MarketState,MtfAuthority,
+      // Overextension,InstrumentProfiles}.js.
+      const profile = getInstrumentProfile(pair);
+      const candleStrength = analyzeRecentCandleStrength({
+        candles: m15Candles, direction, pair, atrPips: momentum.atrPips, window: 3,
+      });
+      const marketState = classifyMarketState({
+        macro, structure, momentum,
+        candlesM15: m15Candles, candlesH1: h1Candles, session,
+      });
+      const mtfAuthority = direction
+        ? assessMtfAuthority({
+            direction,
+            h4Candles, h1Candles, m15Candles,
+            macro, structure,
+          })
+        : null;
+      const overextension = direction
+        ? classifyOverextension({
+            candles: m15Candles, direction,
+            atrPips: momentum.atrPips, pair,
+            structure,
+            srProximity: momentum.srProximity,
+          })
+        : null;
+
+      console.log(
+        `[QUAL] ${pair} ${direction ?? '—'} — state=${marketState.marketState}(${marketState.marketStateScore}) ` +
+        `candle=${candleStrength.classification}(${candleStrength.candleStrengthScore}) ` +
+        `mtf=${mtfAuthority?.multiTimeframeAlignmentScore ?? '—'}/100${mtfAuthority?.conflict ? '/CONFLICT' : ''} ` +
+        `overext=${overextension?.overextensionScore ?? '—'}${overextension?.lateEntryDetected ? '/LATE' : ''} ` +
+        `profile=${profile.assetClass}`
+      );
+
+      // Hard-block additions (Task 2/3/6/7): market-state ban, MTF conflict,
+      // late entry without pullback, profile-allowed states.
+      if (marketState.rules.rejectContinuation && direction) {
+        // continuation trades are rejected in REVERSAL_RISK / CHOPPY / RANGING etc.
+        // Pullback or reversal setups may still be allowed by the entryTiming layer.
+        const isReversal = mtfAuthority?.isReversalSetup === true;
+        const isPullback = overextension?.isPullbackEntry === true;
+        if (!isReversal && !isPullback) {
+          alignment.rejectionReasons.push(
+            `Rejected: market state is ${marketState.marketState.toLowerCase()} — ${marketState.marketStateReason}`
+          );
+        }
+      }
+      if (mtfAuthority?.conflict) {
+        alignment.rejectionReasons.push(
+          `Rejected: HTF ${mtfAuthority.higherTimeframeBias} trend conflicts with ${direction} entry. ${mtfAuthority.multiTimeframeReason}`
+        );
+      }
+      if (overextension?.lateEntryDetected) {
+        alignment.rejectionReasons.push(
+          `Rejected: late entry after extended move. ${overextension.entryTimingReason}`
+        );
+      }
+      if (candleStrength.classification === 'rejection') {
+        alignment.rejectionReasons.push(
+          `Rejected: candle has strong ${direction === 'long' ? 'upper' : 'lower'} wick rejection. ${candleStrength.reason}`
+        );
+      }
+      if (candleStrength.candleStrengthScore < profile.minCandleStrength) {
+        alignment.rejectionReasons.push(
+          `Rejected: candle strength ${candleStrength.candleStrengthScore} < profile floor ${profile.minCandleStrength}. ${candleStrength.reason}`
+        );
+      }
+      if (!profile.allowedMarketStates.includes(marketState.marketState)) {
+        alignment.rejectionReasons.push(
+          `Rejected: ${profile.assetClass} profile does not allow ${marketState.marketState} state ` +
+          `(allowed: ${profile.allowedMarketStates.join(', ')})`
+        );
+      }
+      // Per-instrument spread floor
+      if (Number.isFinite(profile.maxSpreadPips) && pricing.spreadPips > profile.maxSpreadPips) {
+        alignment.rejectionReasons.push(
+          `Rejected: spread ${pricing.spreadPips}p exceeds ${profile.assetClass} profile cap ${profile.maxSpreadPips}p`
+        );
+      }
+
+      console.log(
+        `[ENTRY_TIMING] ${pair} ${direction ?? '—'} — fib=${fibonacci.entryZoneStatus ?? 'unknown'}` +
+        `(${fibonacci.timeframeUsed || '—'},retraced=${fibonacci.pctRetraced ?? '—'}) ` +
+        `flow=${institutionalFlow.direction}/${institutionalFlow.type}(impact=${institutionalFlow.confidenceImpact}) ` +
+        `news=${newsRisk.riskLevel}${newsRisk.blocked ? '/BLOCKED' : ''} ` +
+        `→ status=${entryTiming.status}`
+      );
+
+      // Hybrid hard-blocks: news + opposing institutional flow.
+      // These attach as rejection reasons BEFORE the existing alignment check
+      // so the dashboard shows the proper category.
+      if (newsRisk.blocked) {
+        alignment.rejectionReasons.push(`News block: ${newsRisk.reason}`);
+      }
+      const tradeSign = direction === 'long' ? 'bullish' : direction === 'short' ? 'bearish' : null;
+      if (
+        tradeSign && institutionalFlow.detected &&
+        institutionalFlow.direction !== 'neutral' &&
+        institutionalFlow.direction !== tradeSign
+      ) {
+        alignment.rejectionReasons.push(
+          `Institutional flow proxy points ${institutionalFlow.direction} ` +
+          `(top: ${institutionalFlow.type}) — opposes ${direction} trade`
+        );
+      }
+      // Strict mode: also reject on fib too_early
+      if (ENTRY_TIMING_STRICT && entryTiming.status === 'too_early') {
+        alignment.rejectionReasons.push(
+          `Strict mode: ${entryTiming.reason}`
+        );
+      }
+
+      // ── Per-pair debug log (rich) ───────────────────────────────────────
+      // One line per pair covering: candle counts, latest candle times, trend
+      // per timeframe, the three layer confidences, the alignment score, and
+      // the rejection reasons. Designed to be greppable in the backend logs.
+      const lastTs = (arr) => arr.length ? new Date(arr[arr.length - 1].time * 1000 || arr[arr.length - 1].time).toISOString() : '—';
+      console.log(`[DEBUG] ${pair}`);
+      console.log(`  candles  D=${dailyCandles.length} H4=${h4Candles.length} H1=${h1Candles.length} M30=${m30Candles.length} M15=${m15Candles.length} M5=${m5Candles.length}`);
+      console.log(`  latest   D=${lastTs(dailyCandles)} H4=${lastTs(h4Candles)} H1=${lastTs(h1Candles)} M30=${lastTs(m30Candles)} M15=${lastTs(m15Candles)} M5=${lastTs(m5Candles)}`);
+      console.log(`  trends   D=${macro.dailyTrend} H4=${macro.h4Trend} H1=${structure.h1Trend} M30=${structure.m30Trend} M15=${momentum.m15Trend} M5=${momentum.m5Trend}`);
+      console.log(`  conf     macro=${macro.macroConfidence} struct=${structure.structuralConfidence} exec=${momentum.executionConfidence} (m15Confirm=${momentum.executionConfirmation})`);
+      console.log(`  align    score=${alignment.timeframeAlignmentScore} status=${alignment.alignmentStatus} conflicts=[${alignment.conflictingTimeframes.join(',')}]`);
+      console.log(
+        `[WATERFALL] ${pair} — macro=${macro.macroBias}(${macro.macroConfidence}) ` +
+        `struct=${structure.structureAligned ? 'aligned' : 'misaligned'}(${structure.structuralConfidence}, rev=${structure.reversalRisk}) ` +
+        `momentum=${direction ?? '—'}(${momentum.executionConfidence}) ` +
+        `align=${alignment.timeframeAlignmentScore}/${alignment.alignmentStatus} ` +
+        `conflicts=[${alignment.conflictingTimeframes.join(',')}]`
+      );
+
+      // ── Categorize the rejection so the dashboard can distinguish each
+      //    failure mode. Extended 2026-05-27 with market_state, htf_conflict,
+      //    late_entry, candle_rejection, profile_block, spread_block.
+      const categorizeRejection = () => {
+        const reasons = alignment.rejectionReasons;
+        const has = (re) => reasons.some(r => re.test(r));
+        if (has(/^News block:|high-impact .* news/i)) return 'news_blocked';
+        if (has(/Institutional flow proxy points/i)) return 'flow_opposes';
+        if (has(/HTF .* trend conflicts/i))          return 'htf_conflict';
+        if (has(/late entry after extended move/i))  return 'late_entry';
+        if (has(/wick rejection|candle strength/i))  return 'candle_rejection';
+        if (has(/market state is/i))                 return 'market_state';
+        if (has(/profile does not allow|profile cap|profile floor/i)) return 'profile_block';
+        if (has(/^Rejected: spread |Spread too high/i)) return 'spread_block';
+        if (has(/Risk monitor:/i))                   return 'risk_filter';
+        if (has(/conflict|reversal risk is HIGH/i))  return 'conflicting_setup';
+        if (has(/Macro bias is ranging|no execution signal|opposes macro/i)) return 'no_setup';
+        return 'weak_setup';
+      };
+
+      // ── REJECT if alignment engine says no (or hybrid gate fired) ───────
+      const hardBlockedByEntryQuality =
+        newsRisk.blocked ||
+        (tradeSign && institutionalFlow.detected &&
+          institutionalFlow.direction !== 'neutral' &&
+          institutionalFlow.direction !== tradeSign) ||
+        (ENTRY_TIMING_STRICT && entryTiming.status === 'too_early');
+
+      if (!alignment.tradeQualified || !direction || hardBlockedByEntryQuality) {
+        const rejectionCategory = categorizeRejection();
+        rejected.push({
+          pair,
+          direction: direction ?? null,
+          reason: alignment.rejectionReasons[0] || 'Trade rejected by waterfall',
+          rejectionReasons: alignment.rejectionReasons,
+          rejectionCategory,
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — [${rejectionCategory}] ${alignment.rejectionReasons.length} reason(s)`);
+        continue;
+      }
+
+      // ── Multi-factor confidence (no single indicator dominates) ─────────
+      // newsRisk.riskLevel now feeds the confidence aggregator (previously
+      // hard-coded to 'none'). institutionalFlow.confidenceImpact is then
+      // applied on top to nudge confidence ± based on order-flow alignment.
+      const baseConfidence = computeConfidenceScore({
+        macro, structure, momentum, alignment,
+        spreadPips: pricing.spreadPips,
+        maxSpreadPips: maxSpread,
+        session,
+        newsRisk: newsRisk.riskLevel,
+      });
+      const confidence = Math.max(0, Math.min(100,
+        baseConfidence + (institutionalFlow.confidenceImpact || 0)
+      ));
+
+      if (confidence < MIN_CONFIDENCE) {
+        alignment.rejectionReasons.push(`Aggregate confidence ${confidence}% < min ${MIN_CONFIDENCE}%`);
+        rejected.push({
+          pair,
+          direction,
+          confidence,
+          reason: `Aggregate confidence ${confidence}% < min ${MIN_CONFIDENCE}%`,
+          rejectionReasons: alignment.rejectionReasons,
+          rejectionCategory: 'weak_setup',
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — [weak_setup] aggregate confidence ${confidence}% below threshold`);
+        continue;
+      }
+
+      // ── Display-only volatility state from macro layer ──────────────────
+      const volatilityState =
+        macro.volatilityRegime === 'expanded'   ? 'expanding' :
+        macro.volatilityRegime === 'compressed' ? 'low'       : 'normal';
+
+      // ── Dynamic SL / TP / hold-window (trade lifecycle engine) ──────────
+      const entry = pricing.mid;
+
+      const lifecycle = computeTradeLifecycle({
+        pair, direction, entryPrice: entry,
+        atrPips: momentum.atrPips,
+        m15Candles, h1Candles,
+        spreadPips: pricing.spreadPips,
+        maxSpreadPips: maxSpread,
+        session,
+        macro, structure, momentum, alignment,
+        fibonacci, institutionalFlow,
+        marketState, profile, candleStrength,   // NEW — state-aware TP/SL
+      });
+
+      if (!lifecycle.allowed) {
+        const category = lifecycle.rejectionReason.startsWith('Required SL')
+          ? 'risk_filter'
+          : lifecycle.rejectionReason.includes('R:R')
+          ? 'weak_setup'
+          : 'risk_filter';
+        rejected.push({
+          pair, direction, confidence,
+          reason: lifecycle.rejectionReason,
+          rejectionReasons: [...alignment.rejectionReasons, lifecycle.rejectionReason],
+          rejectionCategory: category,
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+          lifecycle,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — [${category}] lifecycle reject: ${lifecycle.rejectionReason}`);
+        continue;
+      }
+
+      // ── Position sizing using lifecycle SL/TP ───────────────────────────
+      const dynamicRisk = computeDynamicTradeRisk({
+        accountBalanceUSD,
+        confidence,
+        score: alignment.timeframeAlignmentScore / 5,   // 0–20 scale for the sizer
+        minConfidence: MIN_CONFIDENCE,
+        spreadPips: pricing.spreadPips,
+        maxSpreadPips: maxSpread,
+        volatilityState,
+      });
+
+      if (!dynamicRisk.allowed) {
+        const reason = dynamicRisk.reason === 'no_balance'
+          ? 'Account balance unavailable — cannot size trade dynamically'
+          : `Dynamic risk sizing rejected: ${dynamicRisk.reason}`;
+        alignment.rejectionReasons.push(reason);
+        rejected.push({
+          pair, direction, confidence, reason,
+          rejectionReasons: alignment.rejectionReasons,
+          rejectionCategory: 'risk_filter',
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — ${reason}`);
+        continue;
+      }
+
+      const sizing = computeFixedDollarSizing({
+        pair,
+        direction,
+        entryPrice: entry,
+        targetRiskUSD: dynamicRisk.riskUSD,
+        stopLossPips:   lifecycle.sl.stopLossPips,
+        stopLossPrice:  lifecycle.sl.stopLossPrice,
+        takeProfitPips: lifecycle.tp.takeProfitPips,
+        takeProfitPrice:lifecycle.tp.takeProfitPrice,
+        accountMarginRate,
+        accountBalanceUSD,
+      });
+
+      const stopLossPips   = sizing.stopLossPips;
+      const takeProfitPips = sizing.takeProfitPips;
+      const stopLoss       = sizing.stopLoss;
+      const takeProfit     = sizing.takeProfit;
+      const riskReward     = +sizing.riskReward.toFixed(2);
+      const tradeUnits     = sizing.tradeUnits;
+      const lotSize        = sizing.lotSize;
+
+      const amountTraded   = calculateDisplayNotional(pair, tradeUnits, entry);
+      const sizingWarnings = [...sizing.warnings];
+
+      // ── Per-pair lifecycle debug log ────────────────────────────────────
+      console.log(`[LIFECYCLE] ${pair} ${direction.toUpperCase()}`);
+      console.log(`  SL    pips=${stopLossPips} price=${stopLoss} reason="${lifecycle.sl.invalidationReason}" buffer=${lifecycle.sl.volatilityBufferPips}p atrMult=${lifecycle.sl.atrMultiple}`);
+      console.log(`  TP    pips=${takeProfitPips} price=${takeProfit} R:R=1:${riskReward} reason="${lifecycle.tp.targetReason}"`);
+      console.log(`  caps  cappedByKeyLevel=${lifecycle.tp.cappedByKeyLevel} keyLevelDistance=${lifecycle.tp.keyLevelDistance}p cappedByAtr=${lifecycle.tp.cappedByAtr}`);
+      console.log(`  hold  ${lifecycle.hold.minMinutes}-${lifecycle.hold.maxMinutes}m (conf ${lifecycle.hold.holdConfidence}) velocity=${lifecycle.hold.pipsPerMinute}p/min reason="${lifecycle.hold.timeToTPReason}"`);
+      console.log(`  prob  TP=${lifecycle.probs.tpProbability} SL=${lifecycle.probs.slProbability} | session=${session} vol=${macro.volatilityRegime} atrPips=${momentum.atrPips}`);
+
+      const modifierTag = dynamicRisk.factors.modifiers.length
+        ? ` [${dynamicRisk.factors.modifiers.join(', ')}]`
+        : '';
+      console.log(
+        `[RISK_SIZING] ${pair} ${direction.toUpperCase()} — risk ${dynamicRisk.riskPercent}% ($${sizing.actualRiskUSD}) / reward $${sizing.estimatedRewardUSD} ` +
+        `| SL ${stopLossPips}p TP ${takeProfitPips}p (1:${riskReward}) ` +
+        `| ${tradeUnits} units (${lotSize} lots) | est. margin $${sizing.estimatedMarginRequired} @ ${sizing.effectiveLeverage}:1${modifierTag}`
+      );
+
+      const instrumentName = getInstrumentName(pair);
+      const assetClass = getAssetClass(pair);
+      const tradeDuration = getTradeDuration(session, atrPips, pair);
+      const estimatedHoldMinutes = getEstimatedHoldMinutes(tradeDuration);
+      const expectedMovementPips = getExpectedMovementPips(atrPips, tradeDuration);
+
+      qualified.push({
+        pair,
+        instrumentName,
+        assetClass,
+        direction,
+        score: alignment.timeframeAlignmentScore,    // 0–100 alignment score (UI bar)
+        confidence,
+        entry: +entry.toFixed(5),
+        stopLoss,
+        stopLossPips,
+        takeProfit,
+        takeProfitPips,
+        riskReward,
+        spreadPips: pricing.spreadPips,
+        session,
+        lotSize,
+        tradeUnits,
+        amountTraded,
+        riskPercent: dynamicRisk.riskPercent,
+        // Dynamic per-trade risk fields.
+        riskMode: RISK_MODE,
+        targetRiskUSD: sizing.targetRiskUSD,
+        actualRiskUSD: sizing.actualRiskUSD,
+        estimatedRewardUSD: sizing.estimatedRewardUSD,
+        minimumRiskReward: sizing.minimumRiskReward,
+        notionalUSD: sizing.notionalUSD,
+        estimatedMarginRequired: sizing.estimatedMarginRequired,
+        effectiveLeverage: sizing.effectiveLeverage,
+        pipValuePerStandardLot: sizing.pipValuePerStandardLot,
+        riskSizingFactors: dynamicRisk.factors,
+        sizingWarnings,
+        aggressiveRiskWarning: DYNAMIC_RISK_NOTICE,
+        // Trade lifecycle — dynamic SL/TP/hold/probability
+        lifecycle: {
+          sl: lifecycle.sl,
+          tp: lifecycle.tp,
+          hold: lifecycle.hold,
+          probs: lifecycle.probs,
+          momentumPersistence: lifecycle.momentumPersistence,
+          volatilityPersistence: lifecycle.volatilityPersistence,
+        },
+        // Structure-aware SL audit (mirrors lifecycle.sl.stopLossAnalysis — top-level for dashboard)
+        stopLossAnalysis: lifecycle.sl.stopLossAnalysis,
+        targetReason: lifecycle.tp.targetReason,
+        invalidationReason: lifecycle.sl.invalidationReason,
+        cappedByKeyLevel: lifecycle.tp.cappedByKeyLevel,
+        cappedByAtr: lifecycle.tp.cappedByAtr,
+        keyLevelDistance: lifecycle.tp.keyLevelDistance,
+        tpProbability: lifecycle.probs.tpProbability,
+        slProbability: lifecycle.probs.slProbability,
+        holdWindowMinMinutes: lifecycle.hold.minMinutes,
+        holdWindowMaxMinutes: lifecycle.hold.maxMinutes,
+        holdConfidence: lifecycle.hold.holdConfidence,
+        // Waterfall analysis — full hierarchy for the dashboard
+        macro,
+        structure,
+        momentum,
+        alignment,
+        // Entry-quality layer (Fibonacci + institutional flow + news + timing)
+        fibonacci,
+        institutionalFlow,
+        newsRisk,
+        entryTiming,
+        // Extended qualification (2026-05-27)
+        candleStrength,
+        candleStrengthScore: candleStrength.candleStrengthScore,
+        marketState: marketState.marketState,
+        marketStateScore: marketState.marketStateScore,
+        marketStateReason: marketState.marketStateReason,
+        marketStateRules: marketState.rules,
+        marketStateAnalysis: marketState,
+        mtfAuthority,
+        multiTimeframeAlignmentScore: mtfAuthority?.multiTimeframeAlignmentScore ?? null,
+        multiTimeframeReason: mtfAuthority?.multiTimeframeReason ?? null,
+        overextension,
+        lateEntryDetected: overextension?.lateEntryDetected ?? false,
+        overextensionScore: overextension?.overextensionScore ?? 0,
+        entryTimingReason: overextension?.entryTimingReason ?? null,
+        instrumentProfile: profile,
+        // Dashboard mirrors (Task 10 debug response)
+        recommendedStopLoss: lifecycle.recommendedStopLoss,
+        recommendedTakeProfit: lifecycle.recommendedTakeProfit,
+        riskRewardRatio: lifecycle.riskRewardRatio,
+        expectedHoldTimeMinutes: lifecycle.expectedHoldTimeMinutes,
+        tpSlReason: lifecycle.tpSlReason,
+        liquiditySweepDetected: (institutionalFlow?.signals || []).some(
+          s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout'
+        ),
+        failedBreakoutDetected: (institutionalFlow?.signals || []).some(
+          s => s.subtype === 'failed_breakout'
+        ),
+        liquidityReason: (institutionalFlow?.signals || [])
+          .filter(s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout')
+          .map(s => s.reason).join(' · ') || null,
+        // Display / classification
+        timeframeEstimate: tradeDuration,
+        tradeDuration,
+        estimatedHoldMinutes,
+        volatilityState,
+        atrPips,
+        rsi: momentum.rsi,
+        macd: momentum.macd,
+        // Display-only mirrors from the waterfall — keep flat for the existing
+        // intraday cells. These never drive qualification.
+        trendStrength: macro.trendStrength,
+        momentumScore: momentum.momentumStrength,
+        expectedMovementPips,
+        directionalConflict: false,
+        trend: momentum.m15Trend,
+        emaAlignment: momentum.m15Alignment,
+        candleConfirmation: momentum.candleConfirmation,
+        srProximity: momentum.srProximity,
+        mtfAlignment: {
+          h1Trend: structure.h1Trend,
+          h4Trend: macro.h4Trend,
+          allAligned: alignment.alignmentStatus === 'strong',
+          htfAligned: structure.structureAligned,
+          conflicting: alignment.alignmentStatus === 'conflicting',
+          m5EntryAligned:
+            (direction === 'long'  && momentum.m5Alignment === 'aligned_bullish') ||
+            (direction === 'short' && momentum.m5Alignment === 'aligned_bearish'),
+        },
+        marketStructure: {
+          type: macro.marketStructure.type,
+          hasHigherHighs: macro.marketStructure.hasHigherHighs,
+          hasHigherLows:  macro.marketStructure.hasHigherLows,
+          hasLowerHighs:  macro.marketStructure.hasLowerHighs,
+          hasLowerLows:   macro.marketStructure.hasLowerLows,
+          hasBreakOfStructure: macro.marketStructure.hasBOS,
+          hasRejectionWick: false,
+          isConsolidating: macro.marketStructure.type === 'consolidation',
+          score: macro.marketStructure.type.startsWith('trending_') ? 2 : 0,
+        },
+        scoreBreakdown: {
+          trend:              macro.dailyTrend !== 'neutral' ? 2 : 0,
+          emaAlignment:       momentum.m15Alignment !== 'mixed' ? 2 : 0,
+          rsi:                momentum.rsi  != null ? 1 : 0,
+          macd:               momentum.macd != null ? 1 : 0,
+          atr:                momentum.atrPips >= 6 ? 2 : 1,
+          spread:             (pricing.spreadPips / maxSpread) <= 0.3 ? 2 : 1,
+          session:            session.includes('Overlap') || session === 'London' || session === 'NewYork' ? 2 : 0,
+          mtfAlignment:       structure.structureAligned ? 2 : 0,
+          srProximity:        momentum.srProximity ? 1 : 0,
+          candleConfirmation: momentum.candleConfirmation === 'bullish' || momentum.candleConfirmation === 'bearish' ? 2 : 0,
+        },
+        historicalWinRate: null,
+        generatedAt: new Date().toISOString(),
+      });
+      console.log(`[SCANNER] ✓ ${pair} ${direction.toUpperCase()} — QUALIFIED (alignment ${alignment.timeframeAlignmentScore}/100, conf ${confidence}%)`);
+
+    } catch (err) {
+      console.error(`[SCANNER] Error analyzing ${pair}:`, err.message);
+      rejected.push({ pair, reason: `Analysis error: ${err.message}` });
+    }
+  }
+
+  console.log(`\n[SCANNER] ▶ Scan complete — ${qualified.length} qualified, ${rejected.length} rejected\n`);
+
+  const result = {
+    qualified,
+    rejected,
+    meta: {
+      scannedAt: new Date().toISOString(),
+      session,
+      pairsScanned: pairs.length,
+      totalQualified: qualified.length,
+      totalRejected: rejected.length,
+      minConfidence: MIN_CONFIDENCE,
+      minAlignmentScore: 55,
+      maxSpreadPips: MAX_SPREAD_PIPS,
+      metalsMaxSpreadPips: METALS_MAX_SPREAD_PIPS,
+      pairRankOrder: rankedPairs,
+      watchlist: pairs,
+      defaultDisplayLotSize: DEFAULT_DISPLAY_LOT_SIZE,
+      // Dynamic per-trade risk mode metadata.
+      riskMode: RISK_MODE,
+      minRiskPercent: MIN_RISK_PERCENT,
+      maxRiskPercent: MAX_RISK_PERCENT,
+      confidenceForMaxRisk: CONFIDENCE_FOR_MAX_RISK,
+      accountBalanceUSD: accountBalanceUSD,
+      // SL / TP / R:R are now dynamic per setup — no fixed values in meta.
+      minimumRiskReward: 1.5,           // hard floor enforced by lifecycle engine
+      aggressiveRiskWarning: DYNAMIC_RISK_NOTICE,
+      // Entry-quality layer config — visible to the dashboard.
+      entryTimingMode: ENTRY_TIMING_STRICT ? 'strict' : 'hybrid',
+      newsFilterEnabled: String(process.env.FOREX_NEWS_FILTER_ENABLED ?? 'true').toLowerCase() === 'true',
+      newsHighImpactBlockMinutes:    parseInt(process.env.FOREX_NEWS_HIGH_IMPACT_BLOCK_MINUTES     || '30', 10),
+      newsMediumImpactCautionMinutes:parseInt(process.env.FOREX_NEWS_MEDIUM_IMPACT_CAUTION_MINUTES || '15', 10),
+      postNewsConfirmationMinutes:   parseInt(process.env.FOREX_POST_NEWS_CONFIRMATION_MINUTES     || '60', 10),
+    },
+  };
+
+  updateSignalStore(result);
+  setScanInProgress(false);
+
+  return result;
+}
