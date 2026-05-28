@@ -44,6 +44,7 @@ import { classifyMarketState } from './oandaMarketState.js';
 import { assessMtfAuthority } from './oandaMtfAuthority.js';
 import { classifyOverextension } from './oandaOverextension.js';
 import { getInstrumentProfile } from './oandaInstrumentProfiles.js';
+import { qualifyByAssetClass } from './oandaAssetClassRouter.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
@@ -636,6 +637,51 @@ export async function scanForexPairs(pairsOverride = null) {
         continue;
       }
 
+      // ── ASSET-CLASS ROUTER ─────────────────────────────────────────────
+      // Lifecycle has produced a viable SL/TP. Now run the asset-class
+      // specific qualifier (metals / indices / forex pass-through). This is
+      // where the dashboard's `selectedLogicType` is determined and where
+      // the asset-specific rejection reasons originate.
+      const assetClassQualifier = qualifyByAssetClass({
+        pair, direction,
+        m15Candles, h1Candles, h4Candles,
+        currentPrice: entry,
+        candleStrength, marketState, mtfAuthority, overextension,
+        institutionalFlow, fibonacci, entryTiming, newsRisk,
+        pricing, lifecycle, session, profile,
+      });
+      if (!assetClassQualifier.accepted) {
+        const acRejections = assetClassQualifier.rejectionReasons || [];
+        const allReasons = [...alignment.rejectionReasons, ...acRejections];
+        const acCategory = profile.assetClass === 'Metal'
+          ? 'metals_logic_reject'
+          : profile.assetClass === 'Index'
+            ? 'indices_logic_reject'
+            : 'asset_class_reject';
+        rejected.push({
+          pair, direction, confidence,
+          reason: acRejections[0] || 'Rejected by asset-class logic',
+          rejectionReasons: allReasons,
+          rejectionCategory: acCategory,
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+          lifecycle,
+          selectedLogicType: assetClassQualifier.selectedLogicType,
+          assetClass: assetClassQualifier.assetClass,
+          assetClassRejectionReasons: acRejections,
+          metalsSetupScore: assetClassQualifier.classSpecific?.metalsSetupScore,
+          indexSetupScore: assetClassQualifier.classSpecific?.indexSetupScore,
+          finalQualifiedStatus: 'rejected_asset_class',
+        });
+        console.log(
+          `[SCANNER] ✗ ${pair} — [${acCategory}] ${assetClassQualifier.selectedLogicType} ` +
+          `qualifier rejected (${acRejections.length} reason${acRejections.length === 1 ? '' : 's'})`
+        );
+        continue;
+      }
+
       // ── Position sizing using lifecycle SL/TP ───────────────────────────
       const dynamicRisk = computeDynamicTradeRisk({
         accountBalanceUSD,
@@ -806,6 +852,22 @@ export async function scanForexPairs(pairsOverride = null) {
         liquidityReason: (institutionalFlow?.signals || [])
           .filter(s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout')
           .map(s => s.reason).join(' · ') || null,
+        // Asset-class router output (2026-05-27 paper-trading + metals/indices upgrade)
+        assetClass: profile.assetClass,
+        selectedLogicType: assetClassQualifier.selectedLogicType,
+        assetClassScore: assetClassQualifier.score,
+        assetClassReasons: [
+          ...(assetClassQualifier.classSpecific?.metalsVolatilityReason ? [assetClassQualifier.classSpecific.metalsVolatilityReason] : []),
+          ...(assetClassQualifier.classSpecific?.metalsSessionReason    ? [assetClassQualifier.classSpecific.metalsSessionReason] : []),
+          ...(assetClassQualifier.classSpecific?.metalsLiquidityReason  ? [assetClassQualifier.classSpecific.metalsLiquidityReason] : []),
+          ...(assetClassQualifier.classSpecific?.indexSessionReason     ? [assetClassQualifier.classSpecific.indexSessionReason] : []),
+          ...(assetClassQualifier.classSpecific?.indexStructureReason   ? [assetClassQualifier.classSpecific.indexStructureReason] : []),
+          ...(assetClassQualifier.classSpecific?.indexVolatilityReason  ? [assetClassQualifier.classSpecific.indexVolatilityReason] : []),
+        ],
+        assetClassRejectionReasons: assetClassQualifier.rejectionReasons,
+        metalsSetupScore: assetClassQualifier.classSpecific?.metalsSetupScore,
+        indexSetupScore:  assetClassQualifier.classSpecific?.indexSetupScore,
+        finalQualifiedStatus: 'qualified',
         // Display / classification
         timeframeEstimate: tradeDuration,
         tradeDuration,
@@ -901,6 +963,10 @@ export async function scanForexPairs(pairsOverride = null) {
       newsHighImpactBlockMinutes:    parseInt(process.env.FOREX_NEWS_HIGH_IMPACT_BLOCK_MINUTES     || '30', 10),
       newsMediumImpactCautionMinutes:parseInt(process.env.FOREX_NEWS_MEDIUM_IMPACT_CAUTION_MINUTES || '15', 10),
       postNewsConfirmationMinutes:   parseInt(process.env.FOREX_POST_NEWS_CONFIRMATION_MINUTES     || '60', 10),
+      // Trading environment metadata (2026-05-27 paper-trading layer)
+      environment: (process.env.FOREX_TRADING_ENVIRONMENT || 'practice').toLowerCase(),
+      paperTradingAvailable: true,
+      isPaperTrading: (process.env.FOREX_TRADING_ENVIRONMENT || 'practice').toLowerCase() !== 'live',
     },
   };
 

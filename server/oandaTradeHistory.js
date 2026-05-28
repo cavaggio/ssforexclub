@@ -30,6 +30,10 @@ function saveHistory(history) {
 
 /**
  * Record a new trade (result is 'pending' until the position closes).
+ *
+ * Entry-context fields (2026-05-27 active-trade-mgmt upgrade) — Part 9 of the
+ * spec. Stored at entry so subsequent reassessments can compare current
+ * market conditions against the state when the trade was opened.
  */
 export function recordTrade(trade) {
   const history = loadHistory();
@@ -57,11 +61,62 @@ export function recordTrade(trade) {
     pnl: null,
     durationMinutes: null,
     oandaOrderId: trade.oandaOrderId || null,
+    // ── Entry context (NEW) ────────────────────────────────────────────────
+    entryMarketState:            trade.entryMarketState            ?? null,
+    entryMarketStateScore:       trade.entryMarketStateScore       ?? null,
+    entryCandleStrengthScore:    trade.entryCandleStrengthScore    ?? null,
+    entryMtfAlignmentScore:      trade.entryMtfAlignmentScore      ?? null,
+    entryATR:                    trade.entryATR                    ?? null,
+    entryExpectedHoldTimeMinutes:trade.entryExpectedHoldTimeMinutes?? null,
+    entrySelectedLogicType:      trade.entrySelectedLogicType      ?? null,
+    entryAssetClass:             trade.entryAssetClass             ?? null,
+    entryRiskRewardRatio:        trade.entryRiskRewardRatio        ?? trade.riskReward ?? null,
+    entrySession:                trade.entrySession                ?? trade.session ?? null,
+    entrySpreadPips:             trade.entrySpreadPips             ?? null,
+    originalRecommendedTP:       trade.originalRecommendedTP       ?? trade.takeProfit ?? null,
+    originalRecommendedSL:       trade.originalRecommendedSL       ?? trade.stopLoss ?? null,
+    entryRejectionWarnings:      trade.entryRejectionWarnings      ?? [],
+    // ── Active-management tracking (NEW) ───────────────────────────────────
+    maxFavorableExcursionPips:   0,   // updated by reassessor
+    lastReassessedAt:            null,
   };
   history.push(entry);
   saveHistory(history);
   console.log(`[TRADE_HISTORY] Recorded trade: ${entry.id}`);
   return entry.id;
+}
+
+/**
+ * Update a pending trade's max-favorable-excursion (MFE) in pips.
+ * Called by the reassessor on every reassessment cycle.
+ *
+ * Match priority: id (preferred), then oandaOrderId. Returns the resolved
+ * record or null if not found.
+ */
+export function updateMaxFavorableExcursion({ id, oandaOrderId, currentMfePips, reassessedAt }) {
+  if (!Number.isFinite(currentMfePips)) return null;
+  const history = loadHistory();
+  const idx = history.findIndex(t =>
+    (id && t.id === id) ||
+    (oandaOrderId && t.oandaOrderId === oandaOrderId)
+  );
+  if (idx === -1) return null;
+  const t = history[idx];
+  const prev = Number.isFinite(t.maxFavorableExcursionPips) ? t.maxFavorableExcursionPips : 0;
+  if (currentMfePips > prev) t.maxFavorableExcursionPips = +currentMfePips.toFixed(2);
+  if (reassessedAt) t.lastReassessedAt = reassessedAt;
+  saveHistory(history);
+  return t;
+}
+
+/**
+ * Find an open trade record by OANDA order/trade ID. Used by the reassessor
+ * to pull entry-context fields into the management plan.
+ */
+export function findTradeByBrokerOrderId(oandaOrderId) {
+  if (!oandaOrderId) return null;
+  const history = loadHistory();
+  return history.find(t => t.oandaOrderId === oandaOrderId) || null;
 }
 
 /**

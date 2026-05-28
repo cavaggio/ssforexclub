@@ -16,7 +16,7 @@
  * Pre-trade margin check: rejects if projected free margin < 25% of balance.
  */
 
-import { getAccountId, oandaPost, oandaPut } from './oandaClient.js';
+import { getAccountId, oandaPost, oandaPut, getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
 import { getAccountSummary, getOpenTrades } from './oandaMarketData.js';
 import { recordTrade } from './oandaTradeHistory.js';
 import {
@@ -324,6 +324,31 @@ export async function executeTrade(signal) {
 
   console.log(`\n[TRADE] ▶ Execution request: ${pair} ${direction.toUpperCase()}`);
   console.log(`[TRADE]   Score: ${score}/20, Conf: ${confidence}%, Spread: ${spreadPips} pips`);
+
+  // ── Guard 0: Paper-trading safety (2026-05-27) ────────────────────────────
+  // Resolve the active environment and refuse live execution unless explicitly
+  // allowed. Defaulting policy: missing / unknown environment → practice.
+  // The signal payload MAY override the env (e.g. when a future per-user
+  // broker_connection passes its own env), but never escalate from practice
+  // to live without FOREX_ALLOW_LIVE_EXECUTION.
+  const resolvedEnvironment = (() => {
+    const sigEnv = String(signal?.environment || '').toLowerCase().trim();
+    if (sigEnv === 'live') return 'live';
+    if (sigEnv === 'paper' || sigEnv === 'practice') return 'practice';
+    return getEnvironment();
+  })();
+  if (resolvedEnvironment === 'live' && !isLiveExecutionExplicitlyAllowed()) {
+    console.log('[TRADE] ✗ Live execution requested but FOREX_ALLOW_LIVE_EXECUTION!=true');
+    return blocked(
+      'Live trading disabled or not selected. ' +
+      'Set FOREX_ALLOW_LIVE_EXECUTION=true and pass environment="live" on the signal to enable.'
+    );
+  }
+  if (resolvedEnvironment === 'practice') {
+    console.log(`[TRADE]   Paper trading mode active: using OANDA practice endpoint for ${pair}`);
+  } else {
+    console.log(`[TRADE]   ⚠ LIVE EXECUTION ACTIVE — order will hit ${pair} on the live market`);
+  }
 
   // ── Guard 1: Auto-trade enabled ───────────────────────────────────────────
   if (!AUTO_TRADE_ENABLED) {
@@ -833,6 +858,21 @@ function buildResult({
     units,
     riskAmount,
     oandaOrderId:    tradeId,
+    // Entry context (2026-05-27 active-trade-mgmt upgrade)
+    entryMarketState:             signal.marketState              ?? null,
+    entryMarketStateScore:        signal.marketStateScore         ?? null,
+    entryCandleStrengthScore:     signal.candleStrengthScore      ?? null,
+    entryMtfAlignmentScore:       signal.multiTimeframeAlignmentScore ?? null,
+    entryATR:                     signal.atrPips                  ?? null,
+    entryExpectedHoldTimeMinutes: signal.expectedHoldTimeMinutes  ?? null,
+    entrySelectedLogicType:       signal.selectedLogicType        ?? null,
+    entryAssetClass:              signal.assetClass               ?? null,
+    entryRiskRewardRatio:         signal.riskRewardRatio          ?? null,
+    entrySession:                 signal.session                  ?? null,
+    entrySpreadPips:              signal.spreadPips               ?? null,
+    originalRecommendedTP:        signal.recommendedTakeProfit    ?? takeProfit,
+    originalRecommendedSL:        signal.recommendedStopLoss      ?? stopLoss,
+    entryRejectionWarnings:       signal.sizingWarnings           ?? [],
   });
 
   return {
@@ -855,6 +895,8 @@ function buildResult({
     sizing,
     aggressiveRiskWarning: DYNAMIC_RISK_NOTICE,
     tradeHistoryId,
+    environment: getEnvironment(),
+    isPaperTrading: getEnvironment() !== 'live',
   };
 }
 
@@ -862,7 +904,13 @@ function buildResult({
 
 function blocked(reason) {
   console.log(`[TRADE] ✗ BLOCKED — ${reason}`);
-  return { success: false, blocked: true, reason, executionState: 'REJECTED' };
+  return {
+    success: false,
+    blocked: true,
+    reason,
+    executionState: 'REJECTED',
+    environment: getEnvironment(),  // always include for dashboard visibility
+  };
 }
 
 // ─── Close position ───────────────────────────────────────────────────────────

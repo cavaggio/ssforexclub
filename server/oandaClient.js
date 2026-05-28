@@ -2,10 +2,43 @@
  * server/oandaClient.js
  * Core OANDA v20 REST API HTTP helpers.
  * All OANDA communication flows through these functions.
+ *
+ * Environment resolution (2026-05-27):
+ *   OANDA_ENV                          'practice' | 'live'  default 'practice'
+ *   FOREX_TRADING_ENVIRONMENT          mirror used by /api consumers
+ *   FOREX_ALLOW_LIVE_EXECUTION         must be 'true' to send orders to live
+ *
+ * Defaulting policy: if either env var is missing or unrecognized, we resolve
+ * to 'practice'. The system never silently routes to live.
  */
 
+/**
+ * Normalize and resolve the active OANDA environment. Aliases:
+ *   'paper' / 'demo' / 'sandbox' → 'practice'
+ *   'real'                       → 'live'
+ *   anything else                → 'practice'
+ */
+export function getEnvironment() {
+  const raw = String(
+    process.env.FOREX_TRADING_ENVIRONMENT ||
+    process.env.OANDA_ENV ||
+    'practice'
+  ).toLowerCase().trim();
+  if (raw === 'live' || raw === 'real') return 'live';
+  // 'practice' / 'paper' / 'demo' / 'sandbox' / unknown → safe default
+  return 'practice';
+}
+
+/**
+ * True iff the user has explicitly opted into live execution.
+ * Used by oandaTrade.js as the load-bearing guardrail for live orders.
+ */
+export function isLiveExecutionExplicitlyAllowed() {
+  return String(process.env.FOREX_ALLOW_LIVE_EXECUTION || 'false').toLowerCase() === 'true';
+}
+
 export function getOandaBaseUrl() {
-  const env = process.env.OANDA_ENV || 'practice';
+  const env = getEnvironment();
   if (env === 'live') {
     return process.env.OANDA_API_BASE_LIVE || 'https://api-fxtrade.oanda.com';
   }

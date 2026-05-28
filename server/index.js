@@ -20,6 +20,7 @@ import { getLatestSignals } from './oandaSignalStore.js';
 import { getTradeHistory, getPerformanceStats } from './oandaTradeHistory.js';
 import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
 import { analyzeActiveTrades } from './oandaActiveTradeMonitor.js';
+import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveTradeReassessor.js';
 
 dotenv.config({
   path: path.resolve(process.cwd(), '.env'),
@@ -1699,6 +1700,18 @@ app.get('/api/oanda/active-trades/analysis', async (_req, res) => {
   }
 });
 
+// Active-trade reassessment (2026-05-27 upgrade — trailing / partials / TP-reduction /
+// invalidation / volatility collapse / profit protection). Recommendations only —
+// see Part 12 of the spec.
+app.get('/api/oanda/active-trades/reassess', async (_req, res) => {
+  try {
+    const result = await reassessActiveTrades();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 
 // API guard — must be LAST middleware, before app.listen. Prevents any
@@ -1715,6 +1728,10 @@ app.listen(PORT, () => {
   console.log(`Shadow mode: ${SHADOW_MODE ? 'ON (no real orders)' : 'OFF (LIVE ORDERS ENABLED)'}`);
   console.log(`Claude Advisor: ${process.env.ANTHROPIC_API_KEY ? 'Configured' : 'NOT CONFIGURED (set ANTHROPIC_API_KEY)'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
+
+  // Env-guarded active-trade reassessment scheduler — Part 10 of the
+  // 2026-05-27 active-trade-management upgrade. Default OFF.
+  startReassessmentScheduler();
   console.log(`OANDA env:    ${process.env.OANDA_ENV || 'practice'}`);
   console.log(`Auto-trade:   ${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}`);
   console.log(`Min score:    ${process.env.FOREX_MIN_SCORE || '15'}/20`);
