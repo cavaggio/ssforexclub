@@ -48,6 +48,19 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         method: 'GET',
       });
       const data = (await res.json()) as ScanResult;
+      const raw = await res.json();
+
+      const data: ScanResult = {
+        ok: res.ok,
+        scan: {
+          qualified: raw.qualified ?? [],
+          rejected: raw.rejected ?? [],
+          meta: raw.meta ?? {},
+        },
+        activeBroker: 'oanda',
+        activeEnvironment: raw.meta?.environment ?? 'live',
+        isLiveTrading: raw.meta?.environment === 'live',
+      };
       if (!res.ok) {
         setError(data?.error || `HTTP ${res.status}`);
         setState(data);
