@@ -21,6 +21,7 @@ import { getTradeHistory, getPerformanceStats } from './oandaTradeHistory.js';
 import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
 import { analyzeActiveTrades } from './oandaActiveTradeMonitor.js';
 import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveTradeReassessor.js';
+import { createOandaClient } from './oandaClient.js';
 
 dotenv.config({
   path: path.resolve(process.cwd(), '.env'),
@@ -1713,6 +1714,77 @@ app.get('/api/oanda/active-trades/reassess', async (_req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// INTERNAL endpoints — called by the Next.js Route Handlers with credentials
+// resolved from the authenticated user's broker_connections row.
+//
+// Authentication: a shared secret in the X-Internal-Auth header. This is NOT
+// exposed to the browser — only the Next.js server (running inside the same
+// trust boundary) knows the secret. The shared secret is rotated by ops, not
+// per-user.
+//
+// Per-request body: { apiKey, accountId, baseUrl, environment, ... }
+//   - apiKey/accountId/baseUrl are the decrypted broker credentials for ONE user
+//   - environment is informational only — baseUrl is authoritative
+//
+// Hard-fails when any credential is missing — never falls back to env.
+// ══════════════════════════════════════════════════════════════════════════════
+
+function requireInternalAuth(req, res) {
+  const expected = process.env.SCANNER_INTERNAL_SECRET;
+  if (!expected) {
+    res.status(500).json({ ok: false, error: 'SCANNER_INTERNAL_SECRET is not configured on the scanner' });
+    return false;
+  }
+  const got = req.header('x-internal-auth') || '';
+  if (got !== expected) {
+    res.status(401).json({ ok: false, error: 'Invalid or missing X-Internal-Auth header' });
+    return false;
+  }
+  return true;
+}
+
+function buildClientFromBody(body, res) {
+  const { apiKey, accountId, baseUrl, environment } = body || {};
+  if (!apiKey)    { res.status(400).json({ ok: false, error: 'Missing apiKey in body' });    return null; }
+  if (!accountId) { res.status(400).json({ ok: false, error: 'Missing accountId in body' }); return null; }
+  if (!baseUrl)   { res.status(400).json({ ok: false, error: 'Missing baseUrl in body' });   return null; }
+  try {
+    return createOandaClient({ apiKey, accountId, baseUrl, environment });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || String(err) });
+    return null;
+  }
+}
+
+// POST /api/internal/oanda/scan
+app.post('/api/internal/oanda/scan', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  try {
+    const result = await scanForexPairs(req.body?.pairs || null, { client });
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_SCAN] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/active-trades/reassess
+app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  try {
+    const result = await reassessActiveTrades({ client });
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_REASSESS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 
 // API guard — must be LAST middleware, before app.listen. Prevents any
 // unmatched /api/* path from ever falling through to a static catch-all.
@@ -1722,7 +1794,7 @@ app.use('/api', (req, res) => {
 
 console.log('USING LIVE-ONLY SERVER INDEX FILE');
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Trading API Server running on port ${PORT}`);
   console.log(`Alpaca mode: LIVE ONLY`);
   console.log(`Shadow mode: ${SHADOW_MODE ? 'ON (no real orders)' : 'OFF (LIVE ORDERS ENABLED)'}`);
