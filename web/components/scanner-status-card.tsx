@@ -38,7 +38,15 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
     setError(null);
     setState(null);
     try {
-      const res = await fetch('/api/scanner/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      const scannerBaseUrl = process.env.NEXT_PUBLIC_SCANNER_BASE_URL;
+
+      if (!scannerBaseUrl) {
+        throw new Error('NEXT_PUBLIC_SCANNER_BASE_URL is not set');
+      }
+
+      const res = await fetch(`${scannerBaseUrl}/api/oanda/scan?pairs=EUR_USD,USD_CAD`, {
+        method: 'GET',
+      });
       const data = (await res.json()) as ScanResult;
       if (!res.ok) {
         setError(data?.error || `HTTP ${res.status}`);
