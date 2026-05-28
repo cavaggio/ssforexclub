@@ -205,22 +205,28 @@ function baseResolution(
 }
 
 /**
- * Strip server-only callbacks before serializing the resolved broker for
- * an API response. Returns the spec'd Part 8 envelope.
+ * Plain-JSON projection of `ResolvedBroker` — strings, booleans, numbers
+ * and arrays only. Crucially, NO function fields (i.e. no `getCredentials`).
+ *
+ * React will throw at runtime if a Server Component passes a non-serializable
+ * value to a Client Component:
+ *
+ *   Error: Functions cannot be passed directly to Client Components unless
+ *   you explicitly expose it by marking it with "use server".
+ *
+ * Every Server Component that hands broker context down to a `"use client"`
+ * component MUST funnel it through `toClientSafeBrokerStatus()` first.
  */
-export function toClientSafeBrokerStatus(r: ResolvedBroker) {
-  return {
-    activeBroker: r.activeBroker,
-    activeEnvironment: r.activeEnvironment,
-    activeConnectionId: r.activeConnectionId,
-    isLiveTrading: r.isLiveTrading,
-    isPaperTrading: r.isPaperTrading,
-    liveTradingAcknowledged: r.liveTradingAcknowledged,
-    environmentSource: r.environmentSource,
-    platformLiveTradingEnabled: r.platformLiveTradingEnabled,
-    brokerCredentialStatus: r.brokerCredentialStatus,
-    reason: r.reason,
-    // baseUrl is safe to expose — it's just the public API host.
-    baseUrl: r.baseUrl,
-  };
+export type ClientSafeBrokerStatus = Omit<ResolvedBroker, 'getCredentials'>;
+
+/**
+ * Strip server-only callbacks (currently just `getCredentials`) before
+ * serializing the resolved broker for an API response or client-component
+ * prop. Destructure-and-rest pattern: if a future field is added that is
+ * also non-serializable, add it to the `_stripped` destructure list.
+ */
+export function toClientSafeBrokerStatus(r: ResolvedBroker): ClientSafeBrokerStatus {
+  const { getCredentials: _stripped, ...clientSafe } = r;
+  void _stripped;   // referenced solely to satisfy `noUnusedLocals`
+  return clientSafe;
 }

@@ -1,234 +1,203 @@
 /**
  * web/app/dashboard/page.tsx
  *
- * Authenticated dashboard. Scaffolding only — placeholder cards. The next
- * iteration will:
+ * Main trading dashboard. Shows the user's active environment summary at the
+ * top and reserves the rest of the page for the scanner UI.
  *
- *   - render a "Connect Broker" wizard that writes to broker_connections
- *   - call the Express scanner (../server) for the user's signals
- *   - render the ForexSignalStackTab UI we ported from the Vite app
+ * NOTE — scanner content is a deliberate placeholder for now. The legacy
+ * Signal Stack scanner UI lives in src/ (Vite app) and is tightly coupled to
+ * the Express scanner's /api/oanda/scan endpoint, which is not yet
+ * user-scoped — it still reads broker credentials from process.env on the
+ * server side. Wiring it through a per-user Next.js proxy is the next
+ * iteration; until that lands, the placeholder is honest about it.
  *
- * For now we just confirm auth and list the user's current broker connections
- * (will be empty for fresh accounts). Every read is server-side, scoped to the
- * authenticated user via `auth().userId` — no frontend-supplied user IDs.
+ * Broker / environment management lives at /dashboard/settings.
  */
 
+import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
-import { summarizeEnvironments } from '@/lib/environments';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
-import { TradingModeToggle } from '@/components/trading-mode-toggle';
-import { ConnectBrokerForm } from '@/components/connect-broker-form';
-import { LiveAckCard } from '@/components/live-ack-card';
+import { ScannerStatusCard } from '@/components/scanner-status-card';
 
 export default async function DashboardPage() {
   const { userId } = await auth();
-  // Type-narrow — middleware + layout already enforce this is non-null in prod.
   if (!userId) return null;
 
   let connections: Awaited<ReturnType<typeof listBrokerConnectionsForUser>> = [];
-  let connectionError: string | null = null;
   try {
     connections = await listBrokerConnectionsForUser(userId);
-  } catch (err) {
-    connectionError = err instanceof Error ? err.message : String(err);
+  } catch {
+    // Surface the error in the active-mode card below; don't bring the page down.
   }
-
-  const envSummary = summarizeEnvironments(connections);
+  // Strip the server-only `getCredentials` callback before any client-bound
+  // read. Even though this page doesn't pass the whole object to a client
+  // component today, using the client-safe projection keeps the boundary
+  // explicit and prevents a future regression.
   const resolvedBroker = await resolveActiveBrokerForUser(userId);
-  const clientSafeBrokerStatus = toClientSafeBrokerStatus(resolvedBroker);
-  // Suppress unused-var lint — used by future API consumers that POST this object back to the scanner.
-  void clientSafeBrokerStatus;
+  const brokerStatus   = toClientSafeBrokerStatus(resolvedBroker);
+
+  const isLive = brokerStatus.isLiveTrading;
+  const hasAnyConnection = connections.length > 0;
+  const modeLabel = isLive
+    ? 'Live'
+    : brokerStatus.activeEnvironment === 'practice'
+      ? 'Practice'
+      : 'Paper';
 
   return (
     <div
       style={{
-        maxWidth: 960,
+        maxWidth: 1100,
         margin: '0 auto',
         display: 'flex',
         flexDirection: 'column',
-        gap: 24,
+        gap: 20,
       }}
     >
+      {/* ── Page header ─────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 26, letterSpacing: '-0.3px' }}>Trading dashboard</h1>
+          <p style={{ color: 'var(--muted)', marginTop: 4, fontSize: 13 }}>
+            Live scanner output, signal cards, and active-trade management for the broker
+            account you have selected in <Link href="/dashboard/settings">Settings</Link>.
+          </p>
+        </div>
+      </div>
+
+      {/* ── Active-mode strip — always visible so it's clear which account
+            the bot is acting on. Red border in live mode. */}
       <section
         style={{
           background: 'var(--panel)',
-          border: '1px solid var(--border)',
+          border: isLive ? '1px solid var(--bad)' : '1px solid var(--border)',
           borderRadius: 10,
-          padding: 24,
+          padding: '16px 20px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 16,
+          flexWrap: 'wrap',
+          boxShadow: isLive ? '0 0 0 2px rgba(255,77,77,0.15) inset' : undefined,
         }}
       >
-        <h2 style={{ margin: 0, fontSize: 20 }}>Welcome to Signal Stack</h2>
-        <p style={{ color: 'var(--muted)', marginTop: 8 }}>
-          You&apos;re signed in. Broker connections, signals, and trades will appear here
-          once you link an account.
-        </p>
-      </section>
-
-      {/* ── Per-user trading-mode toggle (Paper / Live) — Part 2 of the
-          2026-05-27 user-environment-toggle spec. Renders only when the user
-          has at least one broker connection so they don't see a useless toggle
-          before connecting an account. */}
-      {connections.length > 0 && (
-        <TradingModeToggle resolved={resolvedBroker} />
-      )}
-
-      {/* Live-trading risk acknowledgement — shown until the user accepts it
-          once. Switching back to practice does NOT reset the flag. */}
-      {!resolvedBroker.liveTradingAcknowledged && connections.some((c) => c.environment === 'live') && (
-        <LiveAckCard />
-      )}
-
-      {/* Connect-broker form — Part 3. Always rendered so a user can add
-          additional broker accounts after their first connection. */}
-      <ConnectBrokerForm />
-
-      {/* ── Trading environments (paper / live status) ─────────────────────
-          Read-only summary. Live-account UI is intentionally untouched. */}
-      <section
-        style={{
-          background: 'var(--panel)',
-          border: '1px solid var(--border)',
-          borderRadius: 10,
-          padding: 24,
-        }}
-      >
-        <h3 style={{ margin: 0, fontSize: 16 }}>Trading environments</h3>
-        <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13 }}>
-          Paper trading is always available. Live trading turns on automatically when a live
-          broker account is linked and the platform-level live-execution flag is enabled.
-        </p>
-
-        <div
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+            Active mode
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 22,
+              fontWeight: 800,
+              color: isLive ? 'var(--bad)' : 'var(--text)',
+            }}
+          >
+            {brokerStatus.activeBroker ? brokerStatus.activeBroker.toUpperCase() : '—'}{' '}
+            <span style={{ color: 'var(--muted)', fontWeight: 600 }}>·</span> {modeLabel}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)', maxWidth: 600, lineHeight: 1.5 }}>
+            {brokerStatus.reason}
+          </div>
+        </div>
+        <Link
+          href="/dashboard/settings"
           style={{
-            marginTop: 16,
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-            gap: 12,
+            padding: '8px 16px',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            color: 'var(--text)',
+            textDecoration: 'none',
+            fontSize: 13,
+            fontWeight: 600,
+            background: 'var(--bg)',
+            whiteSpace: 'nowrap',
           }}
         >
-          <div
-            style={{
-              padding: '14px 16px',
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-            }}
-          >
-            <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Paper Trading
-            </div>
-            <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: 'var(--good)' }}>
-              {envSummary.paperTradingAvailable ? 'Available' : 'Unavailable'}
-            </div>
-            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              OANDA practice · Alpaca paper
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '14px 16px',
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-            }}
-          >
-            <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Live Trading
-            </div>
-            <div
-              style={{
-                marginTop: 6,
-                fontSize: 16,
-                fontWeight: 700,
-                color: envSummary.liveTradingEnabled ? 'var(--good)' : 'var(--muted)',
-              }}
-            >
-              {envSummary.liveTradingEnabled ? 'Enabled' : 'Not enabled'}
-            </div>
-            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              {envSummary.liveExecutionAllowedByPlatform
-                ? envSummary.liveTradingEnabled
-                  ? 'Live broker account linked'
-                  : 'No live broker account linked yet'
-                : 'Platform-level live execution disabled'}
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '14px 16px',
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-            }}
-          >
-            <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Active Environment
-            </div>
-            <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700 }}>
-              {envSummary.activeEnvironment}
-            </div>
-            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              Defaults to paper when nothing is linked.
-            </div>
-          </div>
-        </div>
+          Manage in Settings →
+        </Link>
       </section>
 
-      <section
+      {/* ── First-run nudge if no broker connected ──────────────────────── */}
+      {!hasAnyConnection && (
+        <section
+          style={{
+            background: '#1f1100',
+            border: '1px solid #5c4400',
+            borderRadius: 10,
+            padding: 24,
+          }}
+        >
+          <h3 style={{ margin: 0, fontSize: 16, color: 'var(--warn)' }}>
+            Connect a broker to get started
+          </h3>
+          <p style={{ color: 'var(--text)', marginTop: 8, fontSize: 13, lineHeight: 1.5 }}>
+            The trading dashboard activates once you link an OANDA practice or live
+            account in <Link href="/dashboard/settings">Settings</Link>. Practice mode is
+            available immediately and risk-free.
+          </p>
+        </section>
+      )}
+
+      {/* Live scanner — calls /api/scanner/scan with the user's resolved
+          broker credentials. The Route Handler returns 409 with the
+          resolver's reason if creds are missing for the selected mode. */}
+      <ScannerStatusCard hasBroker={hasAnyConnection} />
+
+      {/* ── Placeholder cards for future content blocks ─────────────────── */}
+      <div
         style={{
-          background: 'var(--panel)',
-          border: '1px solid var(--border)',
-          borderRadius: 10,
-          padding: 24,
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: 16,
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0, fontSize: 16 }}>Broker connections</h3>
-          <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-            {connections.length} active
-          </span>
-        </div>
-
-        {connectionError ? (
-          <p style={{ color: 'var(--bad)', marginTop: 12, fontSize: 13 }}>
-            Could not load broker connections: {connectionError}
-          </p>
-        ) : connections.length === 0 ? (
-          <p style={{ color: 'var(--muted)', marginTop: 12, fontSize: 13 }}>
-            No broker accounts connected yet. The connect-broker wizard ships in the next
-            release.
-          </p>
-        ) : (
-          <ul style={{ marginTop: 16, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {connections.map((c) => (
-              <li
-                key={c.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  padding: '12px 16px',
-                  background: 'var(--bg)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                }}
-              >
-                <span>
-                  <strong>{c.broker.toUpperCase()}</strong>
-                  <span style={{ color: 'var(--muted)', marginLeft: 8 }}>
-                    {c.environment} &middot; {c.accountId}
-                  </span>
-                </span>
-                <span style={{ color: c.isActive ? 'var(--good)' : 'var(--muted)' }}>
-                  {c.isActive ? 'active' : 'disabled'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        <PlaceholderCard
+          title="Recent signals"
+          note="Qualified setups from your last scan."
+        />
+        <PlaceholderCard
+          title="Open trades"
+          note="Active positions and management plans."
+        />
+        <PlaceholderCard
+          title="30-min reassessment"
+          note="Trailing, partials, TP reduction and invalidation."
+        />
+      </div>
     </div>
+  );
+}
+
+function PlaceholderCard({ title, note }: { title: string; note: string }) {
+  return (
+    <section
+      style={{
+        background: 'var(--panel)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: 20,
+      }}
+    >
+      <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
+      <p style={{ color: 'var(--muted)', marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+        {note}
+      </p>
+      <div
+        style={{
+          marginTop: 14,
+          padding: 16,
+          background: 'var(--bg)',
+          border: '1px dashed var(--border)',
+          borderRadius: 6,
+          fontSize: 12,
+          color: 'var(--muted)',
+          textAlign: 'center',
+        }}
+      >
+        Awaiting scanner proxy.
+      </div>
+    </section>
   );
 }

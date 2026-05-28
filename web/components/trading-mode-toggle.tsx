@@ -12,7 +12,10 @@
 'use client';
 
 import { useActionState } from 'react';
-import type { ResolvedBroker } from '@/lib/brokerResolver';
+// IMPORTANT: take the client-safe projection of ResolvedBroker. The full
+// ResolvedBroker carries a `getCredentials` callback that React refuses to
+// serialize across the Server → Client component boundary.
+import type { ClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { setActiveTradingModeAction, type ActionResult } from '@/app/dashboard/actions';
 
 type ToggleMode = {
@@ -37,7 +40,7 @@ async function actionWrapper(_prev: ActionResult | null, formData: FormData): Pr
 export function TradingModeToggle({
   resolved,
 }: {
-  resolved: ResolvedBroker;
+  resolved: ClientSafeBrokerStatus;
 }) {
   const [state, formAction, pending] = useActionState(actionWrapper, null);
   const isLive = resolved.isLiveTrading;
