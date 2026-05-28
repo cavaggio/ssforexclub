@@ -1,32 +1,25 @@
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-
-// Single source of truth for "where this Next.js app lives on disk".
-// Used for BOTH `outputFileTracingRoot` (production trace) and
-// `turbopack.root` (dev bundler workspace pin). They must resolve to the
-// exact same absolute path or Next.js 16 emits:
-//   ⚠ Both `outputFileTracingRoot` and `turbopack.root` are set, but they
-//   must have the same value.
-//
-// The repo has a sibling Vite/Express app at ../, with its own
-// package-lock.json. Without an explicit root pin, Next.js walks up and
-// picks the parent as the workspace root — which conflicts with the
-// Vercel project root (= this folder, the Next.js app).
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  outputFileTracingRoot: root,
-  turbopack: {
-    root,
-  },
-  // The Express scanner runs in a separate Node process (../server). The
-  // Next.js app never imports scanner code directly — it calls it over HTTP —
-  // so we don't need transpilePackages or serverComponentsExternalPackages.
+  // Note on workspace-root configuration:
+  //
+  // The repo has a sibling Vite/Express app at ../ with its own
+  // package-lock.json. Earlier versions of this config explicitly pinned
+  // `outputFileTracingRoot` and `turbopack.root` to silence the
+  // "multiple lockfiles detected" warning. That broke the Vercel
+  // post-build step, which expects to find `.next/routes-manifest-deterministic.json`
+  // relative to the git checkout root (`/vercel/path0`) — pinning the
+  // Next.js root one level deeper made Vercel look for `.next` in the
+  // wrong directory.
+  //
+  // Letting Next.js / Vercel auto-detect the workspace root produces a
+  // harmless local warning but a working production build. If we ever
+  // need to silence the warning again, the right place is either:
+  //   - move web/ to be the actual repo root (and the Vite app elsewhere), or
+  //   - convert the repo to an npm workspace so there's a single lockfile.
   reactStrictMode: true,
   experimental: {
-    // Per-user data is server-only. Mark these so they're never bundled into
-    // client components by accident.
+    // Per-user data is server-only. Mark Server Actions explicitly so they
+    // aren't bundled into client components by accident.
     serverActions: { bodySizeLimit: '1mb' },
   },
 };
