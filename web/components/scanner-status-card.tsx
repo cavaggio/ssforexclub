@@ -50,7 +50,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       const data = (await res.json()) as ScanResult;
       const raw = await res.json();
 
-      const data: ScanResult = {
+      const normalizedData: ScanResult = {
         ok: res.ok,
         scan: {
           qualified: raw.qualified ?? [],
@@ -62,10 +62,10 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         isLiveTrading: raw.meta?.environment === 'live',
       };
       if (!res.ok) {
-        setError(data?.error || `HTTP ${res.status}`);
-        setState(data);
+        setError(normalizedData?.error || `HTTP ${res.status}`);
+        setState(normalizedData);
       } else {
-        setState(data);
+        setState(normalizedData);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
