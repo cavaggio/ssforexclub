@@ -8,10 +8,15 @@
  * gates, lifecycle reasoning, and live trade reassessment — instead of just
  * summary counts.
  *
- * Data sources (all Railway-direct via NEXT_PUBLIC_SCANNER_BASE_URL):
- *   - GET /api/oanda/scan                       — qualified + rejected + meta
- *   - GET /api/oanda/active-trades/analysis     — live trade reassessment
- *   - GET /api/oanda/active-trades/reassess     — 30-min management plans
+ * Data sources — ALL via authenticated Next.js API routes (never Railway
+ * directly from the browser). Each route resolves the caller's Clerk identity,
+ * fetches their broker credentials from Supabase server-side, and forwards a
+ * server-to-server request to the Railway scanner. The user's token never
+ * touches the browser.
+ *
+ *   - POST /api/scanner/scan                       — qualified + rejected + meta
+ *   - POST /api/scanner/active-trades/analysis     — live trade reassessment
+ *   - POST /api/scanner/active-trades/reassess     — 30-min management plans
  *
  * Normalized response wrapper:
  *   { ok, scan: { qualified, rejected, meta }, activeBroker,
@@ -1390,72 +1395,93 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
   const [reassessLoading, setReassessLoading] = useState(false);
   const [reassessError, setReassessError] = useState<string | null>(null);
 
-  const scannerBaseUrl = process.env.NEXT_PUBLIC_SCANNER_BASE_URL;
-
   const runScan = useCallback(async () => {
     setPending(true);
     setError(null);
     setState(null);
     try {
-      if (!scannerBaseUrl) throw new Error('NEXT_PUBLIC_SCANNER_BASE_URL is not set');
-      const res = await fetch(`${scannerBaseUrl}/api/oanda/scan`, { method: 'GET' });
+      const res = await fetch('/api/scanner/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const raw = await res.json();
 
-      const normalizedData: NormalizedScan = {
-        ok: res.ok,
-        scan: {
-          qualified: raw.qualified ?? [],
-          rejected: raw.rejected ?? [],
-          meta: raw.meta ?? ({} as ForexScanResult['meta']),
-        },
-        activeBroker: 'oanda',
-        activeEnvironment: raw.meta?.environment ?? 'live',
-        isLiveTrading: raw.meta?.environment === 'live',
-      };
-      if (!res.ok) {
-        setError(normalizedData?.error || raw?.error || `HTTP ${res.status}`);
-        setState(normalizedData);
-      } else {
-        setState(normalizedData);
+      if (!res.ok || !raw?.ok) {
+        // Surface the resolver's reason (e.g. no_credentials,
+        // live_not_acknowledged) without storing partial scan data.
+        setError(raw?.error || `HTTP ${res.status}`);
+        setState({
+          ok: false,
+          scan: { qualified: [], rejected: [], meta: {} as ForexScanResult['meta'] },
+          activeBroker: raw?.activeBroker ?? 'oanda',
+          activeEnvironment: raw?.activeEnvironment ?? 'practice',
+          isLiveTrading: false,
+          error: raw?.error,
+          brokerCredentialStatus: raw?.brokerCredentialStatus,
+        });
+        return;
       }
+
+      // The Next.js route returns:
+      //   { ok, activeBroker, activeEnvironment, isLiveTrading, isPaperTrading,
+      //     scan: { qualified, rejected, meta } }
+      const scan = (raw.scan ?? {}) as Partial<ForexScanResult>;
+      setState({
+        ok: true,
+        scan: {
+          qualified: scan.qualified ?? [],
+          rejected: scan.rejected ?? [],
+          meta: scan.meta ?? ({} as ForexScanResult['meta']),
+        },
+        activeBroker: raw.activeBroker ?? 'oanda',
+        activeEnvironment: raw.activeEnvironment ?? 'practice',
+        isLiveTrading: !!raw.isLiveTrading,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setPending(false);
     }
-  }, [scannerBaseUrl]);
+  }, []);
 
   const refreshActiveTrades = useCallback(async () => {
-    if (!scannerBaseUrl) return;
     setActiveLoading(true);
     setActiveError(null);
     try {
-      const res = await fetch(`${scannerBaseUrl}/api/oanda/active-trades/analysis`, { method: 'GET' });
+      const res = await fetch('/api/scanner/active-trades/analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      setActiveTrades(json as ActiveTradesResponse);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setActiveTrades(json.analysis as ActiveTradesResponse);
     } catch (err) {
       setActiveError(err instanceof Error ? err.message : String(err));
     } finally {
       setActiveLoading(false);
     }
-  }, [scannerBaseUrl]);
+  }, []);
 
   const refreshReassess = useCallback(async () => {
-    if (!scannerBaseUrl) return;
     setReassessLoading(true);
     setReassessError(null);
     try {
-      const res = await fetch(`${scannerBaseUrl}/api/oanda/active-trades/reassess`, { method: 'GET' });
+      const res = await fetch('/api/scanner/active-trades/reassess', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      setReassess(json as ReassessResponse);
+      if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setReassess(json.reassessment as ReassessResponse);
     } catch (err) {
       setReassessError(err instanceof Error ? err.message : String(err));
     } finally {
       setReassessLoading(false);
     }
-  }, [scannerBaseUrl]);
+  }, []);
 
   useEffect(() => {
     if (hasBroker) {

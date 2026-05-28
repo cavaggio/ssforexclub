@@ -1743,17 +1743,34 @@ function requireInternalAuth(req, res) {
   return true;
 }
 
+function maskAccountId(accountId) {
+  if (!accountId || typeof accountId !== 'string') return '<none>';
+  if (accountId.length <= 4) return '***';
+  return `${accountId.slice(0, 3)}…${accountId.slice(-3)}`;
+}
+
 function buildClientFromBody(body, res) {
   const { apiKey, accountId, baseUrl, environment } = body || {};
   if (!apiKey)    { res.status(400).json({ ok: false, error: 'Missing apiKey in body' });    return null; }
   if (!accountId) { res.status(400).json({ ok: false, error: 'Missing accountId in body' }); return null; }
   if (!baseUrl)   { res.status(400).json({ ok: false, error: 'Missing baseUrl in body' });   return null; }
   try {
-    return createOandaClient({ apiKey, accountId, baseUrl, environment });
+    const client = createOandaClient({ apiKey, accountId, baseUrl, environment });
+    // Guardrail: any internal-endpoint call MUST use the per-request client.
+    // Surface a structured log with masked accountId. Never log apiKey/token.
+    return client;
   } catch (err) {
     res.status(400).json({ ok: false, error: err?.message || String(err) });
     return null;
   }
+}
+
+function logInternalCall(tag, body) {
+  const env = body?.environment ?? '<missing>';
+  const accountId = body?.accountId;
+  console.log(
+    `[INTERNAL ${tag}] broker=oanda env=${env} accountId=${maskAccountId(accountId)} usingDefaultClient=false`,
+  );
 }
 
 // POST /api/internal/oanda/scan
@@ -1761,6 +1778,7 @@ app.post('/api/internal/oanda/scan', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
+  logInternalCall('SCAN', req.body);
   try {
     const result = await scanForexPairs(req.body?.pairs || null, { client });
     res.json(result);
@@ -1770,11 +1788,27 @@ app.post('/api/internal/oanda/scan', async (req, res) => {
   }
 });
 
+// POST /api/internal/oanda/active-trades/analysis
+app.post('/api/internal/oanda/active-trades/analysis', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  logInternalCall('ANALYSIS', req.body);
+  try {
+    const result = await analyzeActiveTrades({ client });
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_ANALYSIS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 // POST /api/internal/oanda/active-trades/reassess
 app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
+  logInternalCall('REASSESS', req.body);
   try {
     const result = await reassessActiveTrades({ client });
     res.json(result);

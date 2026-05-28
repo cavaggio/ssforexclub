@@ -2,14 +2,13 @@
  * web/app/dashboard/page.tsx
  *
  * Main trading dashboard. Shows the user's active environment summary at the
- * top and reserves the rest of the page for the scanner UI.
+ * top and renders the rich scanner panel for the rest of the page.
  *
- * NOTE — scanner content is a deliberate placeholder for now. The legacy
- * Signal Stack scanner UI lives in src/ (Vite app) and is tightly coupled to
- * the Express scanner's /api/oanda/scan endpoint, which is not yet
- * user-scoped — it still reads broker credentials from process.env on the
- * server side. Wiring it through a per-user Next.js proxy is the next
- * iteration; until that lands, the placeholder is honest about it.
+ * The scanner panel calls authenticated relative routes (/api/scanner/scan,
+ * /api/scanner/active-trades/analysis, /api/scanner/active-trades/reassess);
+ * each route resolves the caller's broker credentials server-side via Clerk +
+ * Supabase and forwards a server-to-server request to Railway. The browser
+ * never sees Railway's URL or the user's broker token.
  *
  * Broker / environment management lives at /dashboard/settings.
  */

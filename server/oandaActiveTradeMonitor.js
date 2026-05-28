@@ -45,7 +45,7 @@ function maxSpreadFor(pair) {
  *   { id, instrument, currentUnits, price, openTime, unrealizedPL,
  *     stopLossOrder: { price }, takeProfitOrder: { price } }
  */
-async function analyzeOneTrade(oandaTrade, session) {
+async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
   const pair = oandaTrade.instrument;
   const units = parseFloat(oandaTrade.currentUnits);
   const side = units >= 0 ? 'long' : 'short';
@@ -71,17 +71,17 @@ async function analyzeOneTrade(oandaTrade, session) {
     : null;
 
   // Live mid price for the instrument
-  const pricing = (await getPricing([pair]))[0];
+  const pricing = (await getPricing([pair], { client }))[0];
   const currentPrice = pricing ? pricing.mid : entryPrice;
 
   // Fresh candles for the waterfall
   const [dailyCandles, h4Candles, h1Candles, m30Candles, m15Candles, m5Candles] = await Promise.all([
-    getCandles(pair, 'D',   60).catch(() => []),
-    getCandles(pair, 'H4',  60).catch(() => []),
-    getCandles(pair, 'H1',  80).catch(() => []),
-    getCandles(pair, 'M30', 96).catch(() => []),
-    getCandles(pair, 'M15', 120).catch(() => []),
-    getCandles(pair, 'M5',  120).catch(() => []),
+    getCandles(pair, 'D',   60,  { client }).catch(() => []),
+    getCandles(pair, 'H4',  60,  { client }).catch(() => []),
+    getCandles(pair, 'H1',  80,  { client }).catch(() => []),
+    getCandles(pair, 'M30', 96,  { client }).catch(() => []),
+    getCandles(pair, 'M15', 120, { client }).catch(() => []),
+    getCandles(pair, 'M5',  120, { client }).catch(() => []),
   ]);
 
   const macro     = analyzeMacro({ dailyCandles, h4Candles, pair });
@@ -169,9 +169,17 @@ async function analyzeOneTrade(oandaTrade, session) {
   };
 }
 
-export async function analyzeActiveTrades() {
+/**
+ * @param {Object} [options]
+ * @param {Object} [options.client] per-request OANDA client. When provided,
+ *   all market-data calls and the open-trades fetch go through it. Internal
+ *   /api/internal/oanda/active-trades/analysis endpoint MUST pass this so
+ *   user A's scan never touches user B's broker account.
+ */
+export async function analyzeActiveTrades(options = {}) {
+  const { client } = options;
   const session = getForexSession();
-  const openTrades = await getOpenTrades();
+  const openTrades = await getOpenTrades({ client });
 
   if (!openTrades.length) {
     return {
@@ -186,7 +194,7 @@ export async function analyzeActiveTrades() {
   }
 
   const results = await Promise.all(
-    openTrades.map(t => analyzeOneTrade(t, session).catch(err => ({
+    openTrades.map(t => analyzeOneTrade(t, session, { client }).catch(err => ({
       tradeId: String(t.id),
       instrument: t.instrument,
       error: err?.message || String(err),
