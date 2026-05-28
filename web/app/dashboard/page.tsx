@@ -140,64 +140,10 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {/* Live scanner — calls /api/scanner/scan with the user's resolved
-          broker credentials. The Route Handler returns 409 with the
-          resolver's reason if creds are missing for the selected mode. */}
+      {/* Live scanner — rich panel renders qualified signals, rejected
+          signals/scan details, open trades, and 30-min reassessment, all
+          fetched directly from the Railway scanner backend. */}
       <ScannerStatusCard hasBroker={hasAnyConnection} />
-
-      {/* ── Placeholder cards for future content blocks ─────────────────── */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-          gap: 16,
-        }}
-      >
-        <PlaceholderCard
-          title="Recent signals"
-          note="Qualified setups from your last scan."
-        />
-        <PlaceholderCard
-          title="Open trades"
-          note="Active positions and management plans."
-        />
-        <PlaceholderCard
-          title="30-min reassessment"
-          note="Trailing, partials, TP reduction and invalidation."
-        />
-      </div>
     </div>
-  );
-}
-
-function PlaceholderCard({ title, note }: { title: string; note: string }) {
-  return (
-    <section
-      style={{
-        background: 'var(--panel)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        padding: 20,
-      }}
-    >
-      <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
-      <p style={{ color: 'var(--muted)', marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
-        {note}
-      </p>
-      <div
-        style={{
-          marginTop: 14,
-          padding: 16,
-          background: 'var(--bg)',
-          border: '1px dashed var(--border)',
-          borderRadius: 6,
-          fontSize: 12,
-          color: 'var(--muted)',
-          textAlign: 'center',
-        }}
-      >
-        Awaiting scanner proxy.
-      </div>
-    </section>
   );
 }
