@@ -47,7 +47,6 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       const res = await fetch(`${scannerBaseUrl}/api/oanda/scan?pairs=EUR_USD,USD_CAD`, {
         method: 'GET',
       });
-      const data = (await res.json()) as ScanResult;
       const raw = await res.json();
 
       const normalizedData: ScanResult = {
