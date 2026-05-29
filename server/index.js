@@ -22,6 +22,7 @@ import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
 import { analyzeActiveTrades } from './oandaActiveTradeMonitor.js';
 import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveTradeReassessor.js';
 import { createOandaClient } from './oandaClient.js';
+import { runUserScoped } from './requestContext.js';
 
 dotenv.config({
   path: path.resolve(process.cwd(), '.env'),
@@ -1749,6 +1750,25 @@ function maskAccountId(accountId) {
   return `${accountId.slice(0, 3)}…${accountId.slice(-3)}`;
 }
 
+// Reused by every /api/internal/oanda/* endpoint to assert post-call sanity:
+// the per-request client's accountId must match what we forwarded.
+function assertClientMatchesRequest(client, body) {
+  if (!client) {
+    throw new Error('assertClientMatchesRequest: client is missing — refusing to run');
+  }
+  if (client.isDefault) {
+    throw new Error(
+      'assertClientMatchesRequest: per-request client is flagged isDefault=true — refusing to run user request',
+    );
+  }
+  if (body?.accountId && client.accountId !== body.accountId) {
+    throw new Error(
+      `assertClientMatchesRequest: client.accountId="${maskAccountId(client.accountId)}" ` +
+        `does not match request body accountId="${maskAccountId(body.accountId)}"`,
+    );
+  }
+}
+
 function buildClientFromBody(body, res) {
   const { apiKey, accountId, baseUrl, environment } = body || {};
   if (!apiKey)    { res.status(400).json({ ok: false, error: 'Missing apiKey in body' });    return null; }
@@ -1778,9 +1798,17 @@ app.post('/api/internal/oanda/scan', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
+  assertClientMatchesRequest(client, req.body);
   logInternalCall('SCAN', req.body);
   try {
-    const result = await scanForexPairs(req.body?.pairs || null, { client });
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => scanForexPairs(req.body?.pairs || null, { client }),
+    );
+    console.log(
+      `[INTERNAL SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
+        `qualified=${result?.qualified?.length ?? 0} rejected=${result?.rejected?.length ?? 0}`,
+    );
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_SCAN] error:', err?.message || err);
@@ -1793,9 +1821,13 @@ app.post('/api/internal/oanda/active-trades/analysis', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
+  assertClientMatchesRequest(client, req.body);
   logInternalCall('ANALYSIS', req.body);
   try {
-    const result = await analyzeActiveTrades({ client });
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => analyzeActiveTrades({ client }),
+    );
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_ANALYSIS] error:', err?.message || err);
@@ -1808,9 +1840,13 @@ app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
+  assertClientMatchesRequest(client, req.body);
   logInternalCall('REASSESS', req.body);
   try {
-    const result = await reassessActiveTrades({ client });
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => reassessActiveTrades({ client }),
+    );
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_REASSESS] error:', err?.message || err);
@@ -1851,6 +1887,7 @@ app.post('/api/internal/oanda/trade', async (req, res) => {
     });
     return;
   }
+  assertClientMatchesRequest(client, req.body);
   logInternalCall('TRADE', req.body);
   console.log(
     `[INTERNAL TRADE] pair=${signal.pair} direction=${signal.direction} ` +
@@ -1859,7 +1896,10 @@ app.post('/api/internal/oanda/trade', async (req, res) => {
   // Force environment on the signal so executeTrade's internal guard sees live.
   signal.environment = 'live';
   try {
-    const result = await executeTrade(signal, { client });
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => executeTrade(signal, { client }),
+    );
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_TRADE] error:', err?.message || err);

@@ -1,3 +1,5 @@
+import { isStrictUserPath, getRequestContext } from './requestContext.js';
+
 /**
  * server/oandaClient.js
  *
@@ -134,6 +136,20 @@ let _defaultClient = null;
 let _defaultClientWarned = false;
 
 function getDefaultClient() {
+  // Defense-in-depth: refuse the default client inside an authenticated user
+  // scope. This relies on the AsyncLocalStorage flag set by
+  // `runUserScoped` in server/requestContext.js. If a future code path
+  // inadvertently calls oandaGet/oandaPost without a per-request client while
+  // serving a tester's scan, this throws instead of silently using my env
+  // credentials.
+  if (isStrictUserPath()) {
+    const ctx = getRequestContext();
+    throw new Error(
+      `getDefaultClient() called inside a user-scoped request ` +
+        `(expected accountId "${ctx?.accountId ?? '<unknown>'}"). ` +
+        `Refusing env-based fallback to prevent cross-tenant credential leak.`,
+    );
+  }
   // Return cached client only if env hasn't changed mid-process (unusual but
   // possible in tests). We re-read env each time we'd create a fresh one.
   if (_defaultClient) return _defaultClient;
