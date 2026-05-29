@@ -226,7 +226,18 @@ function rankPairsByQuality(pairs, pricingMap, session) {
 
 // ─── Main scanner ─────────────────────────────────────────────────────────────
 
-export async function scanForexPairs(pairsOverride = null) {
+/**
+ * Run the full multi-asset scan.
+ *
+ * @param {string[]|null} pairsOverride — explicit pair list (otherwise uses ORDERED_WATCHLIST)
+ * @param {Object}        [options]
+ * @param {Object}        [options.client] — per-request OANDA client from
+ *   `createOandaClient`. When passed, every market-data call inside the scan
+ *   uses this user's credentials. When omitted, falls back to the env-based
+ *   default client (dev fallback).
+ */
+export async function scanForexPairs(pairsOverride = null, options = {}) {
+  const { client } = options;
   const pairs = pairsOverride || ORDERED_WATCHLIST;
   const session = getForexSession();
 
@@ -238,7 +249,7 @@ export async function scanForexPairs(pairsOverride = null) {
   // ── Fetch pricing for all pairs up-front ──────────────────────────────────
   let pricingMap = {};
   try {
-    const prices = await getPricing(pairs);
+    const prices = await getPricing(pairs, { client });
     for (const p of prices) pricingMap[p.instrument] = p;
   } catch (err) {
     setScanInProgress(false);
@@ -249,7 +260,7 @@ export async function scanForexPairs(pairsOverride = null) {
   // ── Fetch account summary once (used by fixed-dollar sizing per pair) ─────
   let accountSummary = null;
   try {
-    accountSummary = await getAccountSummary();
+    accountSummary = await getAccountSummary({ client });
   } catch (err) {
     console.warn(`[SCANNER] Account summary unavailable — falling back to leverage defaults: ${err.message}`);
   }
@@ -300,12 +311,12 @@ export async function scanForexPairs(pairsOverride = null) {
 
       // ── LAYER 0: Fetch Daily + H4 + H1 + M30 + M15 + M5 candles ─────────
       const [dailyCandles, h4Candles, h1Candles, m30Candles, m15Candles, m5Candles] = await Promise.all([
-        getCandles(pair, 'D',   60).catch(() => []),
-        getCandles(pair, 'H4',  60).catch(() => []),
-        getCandles(pair, 'H1',  80).catch(() => []),
-        getCandles(pair, 'M30', 96).catch(() => []),
-        getCandles(pair, 'M15', 120).catch(() => []),
-        getCandles(pair, 'M5',  120).catch(() => []),
+        getCandles(pair, 'D',   60,  { client }).catch(() => []),
+        getCandles(pair, 'H4',  60,  { client }).catch(() => []),
+        getCandles(pair, 'H1',  80,  { client }).catch(() => []),
+        getCandles(pair, 'M30', 96,  { client }).catch(() => []),
+        getCandles(pair, 'M15', 120, { client }).catch(() => []),
+        getCandles(pair, 'M5',  120, { client }).catch(() => []),
       ]);
 
       if (m15Candles.length < 60) {
