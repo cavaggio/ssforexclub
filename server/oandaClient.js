@@ -144,11 +144,13 @@ function getDefaultClient() {
   // credentials.
   if (isStrictUserPath()) {
     const ctx = getRequestContext();
-    throw new Error(
+    const err = new Error(
       `getDefaultClient() called inside a user-scoped request ` +
         `(expected accountId "${ctx?.accountId ?? '<unknown>'}"). ` +
         `Refusing env-based fallback to prevent cross-tenant credential leak.`,
     );
+    console.error('[STRICT_GUARD] getDefaultClient inside user scope:', err.stack);
+    throw err;
   }
   // Return cached client only if env hasn't changed mid-process (unusual but
   // possible in tests). We re-read env each time we'd create a fresh one.

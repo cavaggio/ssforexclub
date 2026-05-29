@@ -16,6 +16,29 @@ import { getAccountId, oandaGet } from './oandaClient.js';
 import { isStrictUserPath, getRequestContext } from './requestContext.js';
 
 /**
+ * Debug log emitted at every market-data helper invocation. Shows whether a
+ * per-request client was supplied, and the masked accountId of either the
+ * supplied client or the expected user. Helps trace cross-tenant leak paths
+ * when the strict guard fires.
+ */
+function maskAccountId(accountId) {
+  if (!accountId || typeof accountId !== 'string') return '<none>';
+  if (accountId.length <= 4) return '***';
+  return `${accountId.slice(0, 3)}…${accountId.slice(-3)}`;
+}
+
+function clientCheck(helper, client) {
+  const ctx = getRequestContext();
+  const hasClient = Boolean(client && typeof client.get === 'function');
+  const accountId = client?.accountId ?? ctx?.accountId ?? '<none>';
+  console.log(
+    `[CLIENT_CHECK] helper=${helper} hasClient=${hasClient} ` +
+      `accountId=${maskAccountId(accountId)} ` +
+      `strict=${isStrictUserPath() ? 'true' : 'false'}`,
+  );
+}
+
+/**
  * Internal helper. If a per-request client is provided, use it directly.
  * Otherwise fall back to the legacy module-level helpers (which themselves
  * delegate to the default env-based client).
@@ -25,27 +48,35 @@ import { isStrictUserPath, getRequestContext } from './requestContext.js';
  * throws. This prevents a silent leak where a missing argument routes the
  * scan to the platform's env credentials.
  */
-function resolveAccountId(client) {
+function resolveAccountId(client, helper = 'unknown') {
   if (client && client.accountId) return client.accountId;
   if (isStrictUserPath()) {
     const ctx = getRequestContext();
-    throw new Error(
+    const err = new Error(
       `Strict user-scoped path attempted to resolve accountId without a per-request client. ` +
         `Expected accountId for this request was "${ctx?.accountId ?? '<unknown>'}". ` +
+        `Helper that triggered the guard: ${helper}. ` +
         `This is a defense-in-depth guard against the default env-based client leaking ` +
         `another user's data into a per-user scan.`,
     );
+    // Emit the stack to console.error too, so the call site shows up in
+    // Railway logs even if a downstream `.catch(() => [])` swallows the error.
+    console.error('[STRICT_GUARD] resolveAccountId without client:', err.stack);
+    throw err;
   }
   return getAccountId();
 }
 
-function resolveGet(client) {
+function resolveGet(client, helper = 'unknown') {
   if (client && typeof client.get === 'function') return (path) => client.get(path);
   if (isStrictUserPath()) {
-    throw new Error(
+    const err = new Error(
       `Strict user-scoped path attempted to call OANDA without a per-request client. ` +
+        `Helper that triggered the guard: ${helper}. ` +
         `Refusing default env-based fallback to prevent cross-tenant leak.`,
     );
+    console.error('[STRICT_GUARD] resolveGet without client:', err.stack);
+    throw err;
   }
   return (path) => oandaGet(path);
 }
@@ -57,8 +88,9 @@ function resolveGet(client) {
  * @param {Object} [options.client]  per-request OANDA client (preferred)
  */
 export async function getAccountSummary(options = {}) {
-  const accountId = resolveAccountId(options.client);
-  const get = resolveGet(options.client);
+  clientCheck('getAccountSummary', options.client);
+  const accountId = resolveAccountId(options.client, 'getAccountSummary');
+  const get = resolveGet(options.client, 'getAccountSummary');
   const data = await get(`/v3/accounts/${accountId}/summary`);
   return data.account;
 }
@@ -67,8 +99,9 @@ export async function getAccountSummary(options = {}) {
  * Fetch available tradeable instruments for the account.
  */
 export async function getInstruments(options = {}) {
-  const accountId = resolveAccountId(options.client);
-  const get = resolveGet(options.client);
+  clientCheck('getInstruments', options.client);
+  const accountId = resolveAccountId(options.client, 'getInstruments');
+  const get = resolveGet(options.client, 'getInstruments');
   const data = await get(`/v3/accounts/${accountId}/instruments`);
   return data.instruments || [];
 }
@@ -98,9 +131,10 @@ export function calculateForexSpreadPips(bid, ask, instrument) {
  * @param {Object} [options.client]
  */
 export async function getPricing(instruments, options = {}) {
+  clientCheck('getPricing', options.client);
   const list = Array.isArray(instruments) ? instruments.join(',') : instruments;
-  const accountId = resolveAccountId(options.client);
-  const get = resolveGet(options.client);
+  const accountId = resolveAccountId(options.client, 'getPricing');
+  const get = resolveGet(options.client, 'getPricing');
   const data = await get(`/v3/accounts/${accountId}/pricing?instruments=${list}`);
   const prices = data.prices || [];
 
@@ -144,8 +178,9 @@ export async function getPricing(instruments, options = {}) {
  * unrealizedPL, stopLossOrder, …).
  */
 export async function getOpenTrades(options = {}) {
-  const accountId = resolveAccountId(options.client);
-  const get = resolveGet(options.client);
+  clientCheck('getOpenTrades', options.client);
+  const accountId = resolveAccountId(options.client, 'getOpenTrades');
+  const get = resolveGet(options.client, 'getOpenTrades');
   const data = await get(`/v3/accounts/${accountId}/trades?state=OPEN`);
   return data.trades || [];
 }
@@ -159,7 +194,8 @@ export async function getOpenTrades(options = {}) {
  * @param {Object} [options.client]
  */
 export async function getCandles(instrument, granularity = 'M5', count = 100, options = {}) {
-  const get = resolveGet(options.client);
+  clientCheck(`getCandles[${granularity}]`, options.client);
+  const get = resolveGet(options.client, `getCandles[${granularity}]`);
   const data = await get(
     `/v3/instruments/${instrument}/candles?granularity=${granularity}&count=${count}&price=M`
   );
