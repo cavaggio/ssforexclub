@@ -72,7 +72,8 @@ function maxSpreadFor(pair) {
 /**
  * Build the full management plan for a single open trade.
  */
-async function buildManagementPlanForTrade(oandaTrade, session) {
+async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
+  const { client } = options;
   const pair = oandaTrade.instrument;
   const units = parseFloat(oandaTrade.currentUnits);
   const side = units >= 0 ? 'long' : 'short';
@@ -97,17 +98,17 @@ async function buildManagementPlanForTrade(oandaTrade, session) {
     ? parseFloat(oandaTrade.takeProfitOrder.price)
     : null;
 
-  const pricing = (await getPricing([pair]))[0];
+  const pricing = (await getPricing([pair], { client }))[0];
   const currentPrice = pricing ? pricing.mid : entryPrice;
 
   // Fresh candles
   const [dailyCandles, h4Candles, h1Candles, m30Candles, m15Candles, m5Candles] = await Promise.all([
-    getCandles(pair, 'D',   60).catch(() => []),
-    getCandles(pair, 'H4',  60).catch(() => []),
-    getCandles(pair, 'H1',  80).catch(() => []),
-    getCandles(pair, 'M30', 96).catch(() => []),
-    getCandles(pair, 'M15', 120).catch(() => []),
-    getCandles(pair, 'M5',  120).catch(() => []),
+    getCandles(pair, 'D',   60,  { client }).catch(() => []),
+    getCandles(pair, 'H4',  60,  { client }).catch(() => []),
+    getCandles(pair, 'H1',  80,  { client }).catch(() => []),
+    getCandles(pair, 'M30', 96,  { client }).catch(() => []),
+    getCandles(pair, 'M15', 120, { client }).catch(() => []),
+    getCandles(pair, 'M5',  120, { client }).catch(() => []),
   ]);
 
   // Re-run the waterfall
@@ -368,12 +369,18 @@ async function buildManagementPlanForTrade(oandaTrade, session) {
  *     meta: { reassessedAt, session, environment, autoCloseEnabled, totalActive, notice? }
  *   }
  */
-export async function reassessActiveTrades() {
+/**
+ * @param {Object} [options]
+ * @param {Object} [options.client] — per-request OANDA client. When omitted,
+ *   the legacy env-based default client is used (dev fallback).
+ */
+export async function reassessActiveTrades(options = {}) {
+  const { client } = options;
   const session = getForexSession();
-  const environment = getEnvironment();
+  const environment = client?.environment || getEnvironment();
   let openTrades = [];
   try {
-    openTrades = await getOpenTrades();
+    openTrades = await getOpenTrades({ client });
   } catch (err) {
     return {
       trades: [],
@@ -402,7 +409,7 @@ export async function reassessActiveTrades() {
 
   const trades = await Promise.all(
     openTrades.map(t =>
-      buildManagementPlanForTrade(t, session).catch(err => ({
+      buildManagementPlanForTrade(t, session, { client }).catch(err => ({
         tradeId: String(t.id),
         instrument: t.instrument,
         error: err?.message || String(err),
