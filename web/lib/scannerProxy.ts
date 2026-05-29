@@ -83,16 +83,22 @@ async function callInternalEndpoint(
  * request to the given internal scanner path, and return a normalized response
  * envelope keyed by `payloadKey` (e.g. 'scan', 'analysis', 'reassessment').
  *
+ * `requireLive: true` adds the extra gate "activeEnvironment must be live"
+ * before forwarding — used by /api/scanner/trade. Hard-failing here keeps the
+ * trade button from accidentally executing a live order from a practice
+ * session.
+ *
  * Always hard-fails when no per-user credentials are available. Logs every
  * call with masked identifiers — never tokens.
  */
 export async function callScannerForCurrentUser(args: {
   internalPath: string;
   logTag: string;
-  payloadKey: 'scan' | 'analysis' | 'reassessment';
+  payloadKey: 'scan' | 'analysis' | 'reassessment' | 'trade';
   extraBody?: Record<string, unknown>;
+  requireLive?: boolean;
 }): Promise<NextResponse> {
-  const { internalPath, logTag, payloadKey, extraBody = {} } = args;
+  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false } = args;
 
   const { userId } = await auth();
   if (!userId) {
@@ -115,6 +121,24 @@ export async function callScannerForCurrentUser(args: {
         ok: false,
         error: resolved.reason,
         brokerCredentialStatus: resolved.brokerCredentialStatus,
+        activeEnvironment: resolved.activeEnvironment,
+        activeBroker: resolved.activeBroker,
+      },
+      { status: 409 },
+    );
+  }
+
+  if (requireLive && resolved.activeEnvironment !== 'live') {
+    console.warn(
+      `[${logTag}] hard-fail clerkUserId=${userId} status=not_live ` +
+        `activeEnvironment=${resolved.activeEnvironment} — refusing trade execution`,
+    );
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          'Trade execution requires live mode. Switch to OANDA Live in Settings before executing trades.',
+        brokerCredentialStatus: 'not_live',
         activeEnvironment: resolved.activeEnvironment,
         activeBroker: resolved.activeBroker,
       },

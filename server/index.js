@@ -1818,6 +1818,55 @@ app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
   }
 });
 
+// POST /api/internal/oanda/trade
+//   Body: { apiKey, accountId, baseUrl, environment, signal: ForexSignal }
+//   Auth: X-Internal-Auth shared secret.
+//   Builds a per-request OANDA client from the supplied credentials and calls
+//   executeTrade with the user's signal. The signal's `environment` is forced
+//   to match the resolved env so executeTrade's live-execution guard sees the
+//   correct value. The default env-based client is NEVER used on this path —
+//   missing apiKey/accountId/baseUrl returns 400 before any execution.
+app.post('/api/internal/oanda/trade', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  const signal = req.body?.signal;
+  if (!signal || typeof signal !== 'object') {
+    res.status(400).json({ ok: false, error: 'Missing signal in body' });
+    return;
+  }
+  if (!signal.pair || typeof signal.pair !== 'string') {
+    res.status(400).json({ ok: false, error: 'Invalid signal.pair' });
+    return;
+  }
+  if (signal.direction !== 'long' && signal.direction !== 'short') {
+    res.status(400).json({ ok: false, error: 'Invalid signal.direction (must be long or short)' });
+    return;
+  }
+  const env = String(req.body?.environment ?? '').toLowerCase();
+  if (env !== 'live') {
+    res.status(400).json({
+      ok: false,
+      error: `Internal trade endpoint requires environment=live (got "${env || '<empty>'}")`,
+    });
+    return;
+  }
+  logInternalCall('TRADE', req.body);
+  console.log(
+    `[INTERNAL TRADE] pair=${signal.pair} direction=${signal.direction} ` +
+      `confidence=${signal.confidence ?? '?'} score=${signal.score ?? '?'}`,
+  );
+  // Force environment on the signal so executeTrade's internal guard sees live.
+  signal.environment = 'live';
+  try {
+    const result = await executeTrade(signal, { client });
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_TRADE] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 
 // API guard — must be LAST middleware, before app.listen. Prevents any

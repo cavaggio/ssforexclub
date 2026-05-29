@@ -708,11 +708,66 @@ function IntradayCell({ label, value, color = '#e0e0ff' }: { label: string; valu
 
 // ─── Qualified signal card ────────────────────────────────────────────────────
 
-function SignalCard({ signal }: { signal: ForexSignal }) {
+type TradeOutcome =
+  | { state: 'idle' }
+  | { state: 'pending' }
+  | { state: 'success'; tradeId?: string; fillPrice?: number; units?: number; reason?: string | null }
+  | { state: 'blocked'; reason: string }
+  | { state: 'error'; reason: string };
+
+function SignalCard({
+  signal,
+  liveExecutionEnabled,
+  liveBlockerReason,
+}: {
+  signal: ForexSignal;
+  liveExecutionEnabled: boolean;
+  liveBlockerReason: string | null;
+}) {
   const isLong = signal.direction === 'long';
   const isMetal = signal.assetClass === 'Metal';
   const confColor = signal.confidence >= 60 ? '#2dff7a' : signal.confidence >= 30 ? '#ffcc00' : '#ff8c00';
   const pairDisplay = displayPair(signal.pair);
+  const [outcome, setOutcome] = useState<TradeOutcome>({ state: 'idle' });
+
+  const executeTrade = useCallback(async () => {
+    setOutcome({ state: 'pending' });
+    try {
+      const res = await fetch('/api/scanner/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signal }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        setOutcome({ state: 'error', reason: json?.error || `HTTP ${res.status}` });
+        return;
+      }
+      const trade = (json.trade ?? {}) as {
+        success?: boolean;
+        blocked?: boolean;
+        reason?: string | null;
+        tradeId?: string;
+        fillPrice?: number;
+        units?: number;
+      };
+      if (trade.blocked) {
+        setOutcome({ state: 'blocked', reason: trade.reason || 'Trade blocked by Railway guard' });
+      } else if (trade.success) {
+        setOutcome({
+          state: 'success',
+          tradeId: trade.tradeId,
+          fillPrice: trade.fillPrice,
+          units: trade.units,
+          reason: trade.reason,
+        });
+      } else {
+        setOutcome({ state: 'error', reason: trade.reason || 'Trade execution failed' });
+      }
+    } catch (err) {
+      setOutcome({ state: 'error', reason: err instanceof Error ? err.message : String(err) });
+    }
+  }, [signal]);
 
   return (
     <div style={{ ...s.card, borderColor: isMetal ? '#3d2a00' : '#1e1e30' }}>
@@ -996,11 +1051,89 @@ function SignalCard({ signal }: { signal: ForexSignal }) {
         </div>
       </details>
 
+      {/* Execute Trade — only when the user is in live mode with all gates
+          passing. In any other state the button is replaced by an inline
+          blocker that explains why so the user can act on it. */}
+      <div style={{ marginTop: 18 }}>
+        {liveExecutionEnabled ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button
+              type="button"
+              onClick={executeTrade}
+              disabled={outcome.state === 'pending' || outcome.state === 'success'}
+              style={{
+                padding: '12px 24px',
+                background:
+                  outcome.state === 'success'
+                    ? 'linear-gradient(135deg, #0d3320, #1a5c38)'
+                    : 'linear-gradient(135deg, #401400, #5c1a1a)',
+                color: outcome.state === 'success' ? '#2dff7a' : '#ffaa66',
+                border: outcome.state === 'success' ? '1px solid #2dff7a' : '1px solid #ff6633',
+                borderRadius: 8,
+                fontFamily: 'inherit',
+                fontWeight: 800,
+                fontSize: 14,
+                letterSpacing: '0.5px',
+                textTransform: 'uppercase',
+                cursor:
+                  outcome.state === 'pending' || outcome.state === 'success' ? 'not-allowed' : 'pointer',
+                width: 'fit-content',
+              }}
+            >
+              {outcome.state === 'pending'
+                ? 'Executing…'
+                : outcome.state === 'success'
+                  ? '✓ Trade executed'
+                  : `Execute ${isLong ? 'BUY' : 'SELL'} (LIVE)`}
+            </button>
+            {outcome.state === 'success' && (
+              <div style={tradeBoxStyle('good')}>
+                <strong>Filled.</strong> tradeId {outcome.tradeId ?? '—'} · fill{' '}
+                {outcome.fillPrice != null ? outcome.fillPrice : '—'} · {outcome.units ?? '—'} units
+              </div>
+            )}
+            {outcome.state === 'blocked' && (
+              <div style={tradeBoxStyle('warn')}>
+                <strong>Blocked by safety guard:</strong> {outcome.reason}
+              </div>
+            )}
+            {outcome.state === 'error' && (
+              <div style={tradeBoxStyle('bad')}>
+                <strong>Execution error:</strong> {outcome.reason}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={tradeBoxStyle('warn')}>
+            <strong>Live execution unavailable.</strong>{' '}
+            {liveBlockerReason || 'Switch to OANDA Live in Settings to execute trades.'}
+          </div>
+        )}
+      </div>
+
       <div style={{ marginTop: 14, fontSize: 12, color: '#666', fontFamily: "'JetBrains Mono', monospace" }}>
         generated {new Date(signal.generatedAt).toLocaleTimeString()}
       </div>
     </div>
   );
+}
+
+function tradeBoxStyle(tone: 'good' | 'warn' | 'bad'): React.CSSProperties {
+  const palette: Record<'good' | 'warn' | 'bad', { bg: string; bd: string; fg: string }> = {
+    good: { bg: '#0d3320', bd: '#1a5c38', fg: '#2dff7a' },
+    warn: { bg: '#2d1f00', bd: '#5c4400', fg: '#ffcc66' },
+    bad:  { bg: '#320d0d', bd: '#5c1a1a', fg: '#ff8888' },
+  };
+  const c = palette[tone];
+  return {
+    padding: '10px 14px',
+    background: c.bg,
+    border: `1px solid ${c.bd}`,
+    color: c.fg,
+    borderRadius: 8,
+    fontSize: 13,
+    lineHeight: 1.5,
+  };
 }
 
 // ─── Rejected row ─────────────────────────────────────────────────────────────
@@ -1492,6 +1625,15 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
 
   const scan = state?.scan;
   const qualified = scan?.qualified ?? [];
+  // Trade execution is only offered when the scanner response confirms live
+  // mode AND the call succeeded (state.ok). Anything less surfaces an inline
+  // blocker on each signal card so the user knows what to fix.
+  const liveExecutionEnabled = !!(state?.ok && state?.isLiveTrading);
+  const liveBlockerReason: string | null = !state?.ok
+    ? 'Run a scan first to verify your broker resolution.'
+    : !state.isLiveTrading
+      ? `Active environment is "${state.activeEnvironment ?? 'practice'}" — switch to OANDA Live in Settings to execute trades.`
+      : null;
   const rejected = scan?.rejected ?? [];
   const meta = scan?.meta;
 
@@ -1637,7 +1779,14 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
               : '.'}
           </EmptyBlock>
         ) : (
-          qualified.map((sig) => <SignalCard key={`${sig.pair}_${sig.direction}`} signal={sig} />)
+          qualified.map((sig) => (
+            <SignalCard
+              key={`${sig.pair}_${sig.direction}`}
+              signal={sig}
+              liveExecutionEnabled={liveExecutionEnabled}
+              liveBlockerReason={liveBlockerReason}
+            />
+          ))
         )}
       </section>
 
