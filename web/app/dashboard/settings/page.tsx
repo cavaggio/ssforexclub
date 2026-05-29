@@ -30,13 +30,16 @@ export default async function SettingsPage() {
     connectionError = err instanceof Error ? err.message : String(err);
   }
 
-  const envSummary = summarizeEnvironments(connections);
   // `resolvedBroker` carries a server-only `getCredentials` callback — never
   // pass it directly to a `"use client"` component. `toClientSafeBrokerStatus`
   // strips the callback so the toggle can receive a plain-JSON object that
   // React can serialize across the Server → Client boundary.
   const resolvedBroker = await resolveActiveBrokerForUser(userId);
   const brokerStatus   = toClientSafeBrokerStatus(resolvedBroker);
+  // The Trading-environments panel MUST reflect what the scanner will actually
+  // use. summarizeEnvironments derives from the resolver output, not a parallel
+  // calculation, so the panel and the scanner can never disagree.
+  const envSummary = summarizeEnvironments(connections, brokerStatus);
 
   return (
     <div
@@ -86,9 +89,9 @@ export default async function SettingsPage() {
       >
         <h3 style={{ margin: 0, fontSize: 16 }}>Trading environments</h3>
         <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13 }}>
-          Paper trading is always available. Live trading turns on automatically when a
-          live broker account is linked and the platform-level live-execution flag is
-          enabled.
+          Reflects what the scanner will actually use for your account. Live trading
+          requires the platform flag, an active live credential, the risk
+          acknowledgement, and the live toggle above.
         </p>
 
         <div
@@ -109,21 +112,44 @@ export default async function SettingsPage() {
             label="Live Trading"
             value={envSummary.liveTradingEnabled ? 'Enabled' : 'Not enabled'}
             valueColor={envSummary.liveTradingEnabled ? 'var(--good)' : 'var(--muted)'}
-            note={
-              envSummary.liveExecutionAllowedByPlatform
-                ? envSummary.liveTradingEnabled
-                  ? 'Live broker account linked'
-                  : 'No live broker account linked yet'
-                : 'Platform-level live execution disabled'
-            }
+            note={describeLiveGate(envSummary)}
           />
           <EnvCard
             label="Active Environment"
             value={envSummary.activeEnvironment}
-            valueColor="var(--text)"
-            note="Defaults to paper when nothing is linked."
+            valueColor={envSummary.activeEnvironment === 'live' ? 'var(--bad)' : 'var(--text)'}
+            note="Mirrors the toggle above — same value the scanner uses."
           />
         </div>
+
+        {/* Detailed gate status — shown when live is partially set up so the
+            user can see exactly which step is still missing. */}
+        {!envSummary.liveTradingEnabled && envSummary.liveConnectionLinked && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: '12px 14px',
+              background: 'var(--bg)',
+              border: '1px dashed var(--border)',
+              borderRadius: 8,
+              fontSize: 12,
+              color: 'var(--muted)',
+              lineHeight: 1.6,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            <strong style={{ color: 'var(--text)' }}>Live gate diagnostic</strong>
+            <GateRow ok={envSummary.liveExecutionAllowedByPlatform} label="Platform live flag (PLATFORM_LIVE_TRADING_ENABLED)" />
+            <GateRow ok={envSummary.liveConnectionLinked} label="Live broker credential connected" />
+            <GateRow ok={envSummary.liveTradingAcknowledged} label="Live-trading risk acknowledged" />
+            <GateRow ok={envSummary.userSelectedLive} label="Toggle set to OANDA Live" />
+            <div style={{ marginTop: 4, color: 'var(--muted)' }}>
+              Resolver says: {envSummary.resolverReason}
+            </div>
+          </div>
+        )}
       </section>
 
       <section
@@ -175,6 +201,36 @@ export default async function SettingsPage() {
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+function describeLiveGate(envSummary: {
+  liveTradingEnabled: boolean;
+  liveExecutionAllowedByPlatform: boolean;
+  liveConnectionLinked: boolean;
+  liveTradingAcknowledged: boolean;
+  userSelectedLive: boolean;
+  brokerCredentialStatus: string;
+}): string {
+  if (envSummary.liveTradingEnabled) return 'Live broker account active — scanner is routing live.';
+  if (!envSummary.liveExecutionAllowedByPlatform) return 'Platform-level live execution disabled.';
+  if (!envSummary.liveConnectionLinked) return 'No live broker account linked yet.';
+  if (!envSummary.liveTradingAcknowledged) return 'Live credential linked — accept the risk warning to unlock.';
+  if (!envSummary.userSelectedLive) return 'Live credential ready — flip the toggle above to OANDA Live.';
+  if (envSummary.brokerCredentialStatus === 'no_credentials') {
+    return 'Live selected but no matching active credential — re-link the live account.';
+  }
+  return 'Live not active.';
+}
+
+function GateRow({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ color: ok ? 'var(--good)' : 'var(--bad)', fontWeight: 700, minWidth: 16 }}>
+        {ok ? '✓' : '✗'}
+      </span>
+      <span style={{ color: ok ? 'var(--text)' : 'var(--muted)' }}>{label}</span>
     </div>
   );
 }
