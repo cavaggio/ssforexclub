@@ -45,6 +45,7 @@ import { assessMtfAuthority } from './oandaMtfAuthority.js';
 import { classifyOverextension } from './oandaOverextension.js';
 import { getInstrumentProfile } from './oandaInstrumentProfiles.js';
 import { qualifyByAssetClass } from './oandaAssetClassRouter.js';
+import { computeExpectedRR } from './oandaExpectedRR.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
@@ -693,6 +694,50 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         continue;
       }
 
+      // ── Signal Stack V3 — Expected-R qualification ─────────────────────
+      // Folds lifecycle SL/TP geometry with quality factors (confidence,
+      // alignment, trend, market state, flow, volatility, candle strength)
+      // into a realistic `expectedRR`. Tiers: standard / preferred / premium;
+      // tier === 'reject' (expectedRR < 1.75) rejects the signal here.
+      const rrQual = computeExpectedRR({
+        stopLossPips:   lifecycle.sl.stopLossPips,
+        takeProfitPips: lifecycle.tp.takeProfitPips,
+        confidence,
+        alignmentScore: alignment.timeframeAlignmentScore,
+        trendStrength:  macro.trendStrength,
+        volatilityRegime: macro.volatilityRegime,
+        marketState:    marketState.marketState,
+        allowedMarketStates: profile.allowedMarketStates,
+        institutionalFlow,
+        direction,
+        candleStrengthScore: candleStrength.candleStrengthScore,
+      });
+      console.log(
+        `[EXPECTED_RR] ${pair} ${direction.toUpperCase()} — ` +
+        `geomRR=${rrQual.factors.geometricRR} quality=${rrQual.qualityFactor} ` +
+        `expectedRR=${rrQual.expectedRR} tier=${rrQual.rrTier}`
+      );
+      if (!rrQual.accepted) {
+        rejected.push({
+          pair, direction, confidence,
+          reason: rrQual.rejectionReason,
+          rejectionReasons: [...alignment.rejectionReasons, rrQual.rejectionReason],
+          rejectionCategory: 'low_expected_rr',
+          macro, structure, momentum, alignment,
+          fibonacci, institutionalFlow, newsRisk, entryTiming,
+          candleStrength, marketState, mtfAuthority, overextension, profile,
+          spreadPips: pricing.spreadPips, session,
+          lifecycle,
+          expectedRiskPips: rrQual.expectedRiskPips,
+          expectedRewardPips: rrQual.expectedRewardPips,
+          expectedRR: rrQual.expectedRR,
+          rrTier: rrQual.rrTier,
+          finalQualifiedStatus: 'rejected_expected_rr',
+        });
+        console.log(`[SCANNER] ✗ ${pair} — [low_expected_rr] ${rrQual.rejectionReason}`);
+        continue;
+      }
+
       // ── Position sizing using lifecycle SL/TP ───────────────────────────
       const dynamicRisk = computeDynamicTradeRisk({
         accountBalanceUSD,
@@ -776,6 +821,12 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         direction,
         score: alignment.timeframeAlignmentScore,    // 0–100 alignment score (UI bar)
         confidence,
+        // Signal Stack V3 — Expected-R qualification (per-signal)
+        expectedRiskPips:   rrQual.expectedRiskPips,
+        expectedRewardPips: rrQual.expectedRewardPips,
+        expectedRR:         rrQual.expectedRR,
+        rrTier:             rrQual.rrTier,
+        rrQualityFactor:    rrQual.qualityFactor,
         entry: +entry.toFixed(5),
         stopLoss,
         stopLossPips,

@@ -94,6 +94,27 @@ type ReassessTrade = {
     currentRecommendedTargetPips: number;
   };
   opportunityCostScore?: number;
+  // Signal Stack V3 — pro exit framework
+  breakeven?: { eligible: boolean; recommendedSL: number | null; reason: string };
+  multiTargets?: {
+    stages: Array<{ stage: string; multiple: number; pips: number; price: number }>;
+    currentStage: 'pre-TP1' | 'TP1' | 'TP2' | 'TP3+';
+  };
+  partialClose?: { recommendedPartialClosePercent: number; reason: string };
+  dynamicTrail?: {
+    recommended: boolean;
+    distancePips: number | null;
+    price: number | null;
+    multiplier: number | null;
+  };
+  trendExhaustion?: {
+    trendExhaustionScore: number;
+    trendExhaustionStatus: 'normal' | 'extended' | 'exhausted';
+  };
+  capitalEfficiency?: {
+    capitalEfficiencyScore: number;
+    capitalEfficiencyLabel: 'Excellent' | 'Good' | 'Average' | 'Poor' | 'Exit Candidate';
+  };
   lifecycleRecommendation?: {
     action: 'hold' | 'tighten_sl' | 'reduce_tp' | 'expand_tp' | 'partial_close' | 'close';
     reason: string;
@@ -103,6 +124,9 @@ type ReassessTrade = {
     suggestedNewTP: number;
     shouldAutoClose: boolean;
     autoCloseReason: string | null;
+    source?: string;
+    conflictNotes?: string[];
+    unifiedSummary?: string;
   };
   error?: string;
 };
@@ -827,13 +851,45 @@ function SignalCard({
         </div>
       </div>
 
-      {/* Session + duration */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+      {/* Session + duration + RR tier */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <Badge value={signal.session} type="info" />
         <Badge
           value={signal.tradeDuration}
           type={signal.tradeDuration === 'Intraday' ? 'good' : signal.tradeDuration === 'Scalp' ? 'warn' : 'neutral'}
         />
+        {signal.rrTier && (
+          <Badge
+            value={signal.rrTier.toUpperCase()}
+            type={
+              signal.rrTier === 'premium'
+                ? 'good'
+                : signal.rrTier === 'preferred'
+                  ? 'info'
+                  : signal.rrTier === 'standard'
+                    ? 'warn'
+                    : 'bad'
+            }
+          />
+        )}
+        {signal.expectedRR !== undefined && (
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 13,
+              color: '#aaa',
+              fontWeight: 600,
+            }}
+          >
+            Expected RR: <span style={{ color: '#4db8ff' }}>{signal.expectedRR}</span>
+            {signal.expectedRiskPips !== undefined && signal.expectedRewardPips !== undefined && (
+              <span style={{ color: '#666' }}>
+                {' '}
+                · risk {signal.expectedRiskPips}p · reward {signal.expectedRewardPips}p
+              </span>
+            )}
+          </span>
+        )}
       </div>
 
       {/* Waterfall */}
@@ -1391,6 +1447,36 @@ function ActiveTradeCard({ trade }: { trade: ActiveTradeAnalysis }) {
 
 // ─── 30-min reassessment card ─────────────────────────────────────────────────
 
+/**
+ * Visual-only management action button. Always disabled until the future
+ * auto-execution flag is wired through. Keeps the UI infrastructure in place
+ * so the wiring later only needs to flip `disabled` → `false` and attach the
+ * handler.
+ */
+function DisabledActionButton({ label, enabled }: { label: string; enabled: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled
+      title="Automation not enabled — recommendation only"
+      style={{
+        padding: '6px 12px',
+        background: enabled ? 'var(--bg)' : 'transparent',
+        border: `1px solid ${enabled ? 'var(--border)' : '#1a1a2e'}`,
+        color: enabled ? 'var(--text)' : 'var(--muted)',
+        borderRadius: 6,
+        fontSize: 12,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        cursor: 'not-allowed',
+        opacity: enabled ? 0.85 : 0.5,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function ReassessRow({ trade }: { trade: ReassessTrade }) {
   if (trade.error) {
     return (
@@ -1571,6 +1657,130 @@ function ReassessRow({ trade }: { trade: ReassessTrade }) {
           {trade.lifecycleRecommendation.autoCloseReason ?? 'high-urgency exit'}
         </div>
       )}
+
+      {/* Signal Stack V3 — exit framework badges */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        {trade.multiTargets?.currentStage && (
+          <Badge
+            value={`Stage ${trade.multiTargets.currentStage}`}
+            type={
+              trade.multiTargets.currentStage === 'TP3+'
+                ? 'good'
+                : trade.multiTargets.currentStage === 'TP2'
+                  ? 'info'
+                  : trade.multiTargets.currentStage === 'TP1'
+                    ? 'warn'
+                    : 'neutral'
+            }
+          />
+        )}
+        {trade.trendExhaustion && (
+          <Badge
+            value={`Trend ${trade.trendExhaustion.trendExhaustionStatus} ${trade.trendExhaustion.trendExhaustionScore}/100`}
+            type={
+              trade.trendExhaustion.trendExhaustionStatus === 'normal'
+                ? 'good'
+                : trade.trendExhaustion.trendExhaustionStatus === 'extended'
+                  ? 'warn'
+                  : 'bad'
+            }
+          />
+        )}
+        {trade.capitalEfficiency && (
+          <Badge
+            value={`Capital ${trade.capitalEfficiency.capitalEfficiencyLabel}`}
+            type={
+              trade.capitalEfficiency.capitalEfficiencyLabel === 'Excellent' ||
+              trade.capitalEfficiency.capitalEfficiencyLabel === 'Good'
+                ? 'good'
+                : trade.capitalEfficiency.capitalEfficiencyLabel === 'Average'
+                  ? 'info'
+                  : trade.capitalEfficiency.capitalEfficiencyLabel === 'Poor'
+                    ? 'warn'
+                    : 'bad'
+            }
+          />
+        )}
+        {trade.breakeven?.eligible && <Badge value="Break-Even Eligible" type="good" />}
+      </div>
+
+      {/* Multi-target stage table */}
+      {trade.multiTargets?.stages && (
+        <div style={{ ...s.factorsBox, marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {trade.multiTargets.stages.map((st) => {
+            const isCurrent = trade.multiTargets!.currentStage === st.stage ||
+              (trade.multiTargets!.currentStage === 'TP3+' && st.stage === 'TP3');
+            return (
+              <div key={st.stage} style={{ display: 'flex', gap: 10 }}>
+                <span style={{ minWidth: 36, color: isCurrent ? '#2dff7a' : '#888', fontWeight: 700 }}>
+                  {st.stage}
+                </span>
+                <span style={{ color: '#aaa' }}>{st.pips}p</span>
+                <span style={{ color: '#666' }}>@ {st.price}</span>
+                <span style={{ color: '#666' }}>({st.multiple}R)</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Break-even recommendation */}
+      {trade.breakeven?.eligible && trade.breakeven.recommendedSL != null && (
+        <div style={{ ...s.factorsBox, marginTop: 6 }}>
+          <span style={{ color: '#888' }}>Break-Even Eligible — Recommended SL:</span>{' '}
+          <span style={{ color: '#2dff7a', fontWeight: 700 }}>{trade.breakeven.recommendedSL}</span>
+        </div>
+      )}
+
+      {/* Dynamic trail recommendation */}
+      {trade.dynamicTrail?.recommended && trade.dynamicTrail.distancePips != null && (
+        <div style={{ ...s.factorsBox, marginTop: 6 }}>
+          <span style={{ color: '#888' }}>Dynamic trail (ATR × {trade.dynamicTrail.multiplier}):</span>{' '}
+          <span style={{ color: '#4db8ff', fontWeight: 700 }}>{trade.dynamicTrail.distancePips}p</span>{' '}
+          <span style={{ color: '#666' }}>@ {trade.dynamicTrail.price}</span>
+        </div>
+      )}
+
+      {/* Partial-close plan */}
+      {trade.partialClose && trade.partialClose.recommendedPartialClosePercent > 0 && (
+        <div style={{ ...s.factorsBox, marginTop: 6 }}>
+          <span style={{ color: '#888' }}>Partial close recommendation:</span>{' '}
+          <span style={{ color: '#ffcc00', fontWeight: 700 }}>
+            {trade.partialClose.recommendedPartialClosePercent}%
+          </span>{' '}
+          <span style={{ color: '#666' }}>— {trade.partialClose.reason}</span>
+        </div>
+      )}
+
+      {/* Unified recommendation summary + conflict notes */}
+      {trade.lifecycleRecommendation?.unifiedSummary && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            background: '#08080f',
+            border: '1px solid #181830',
+            borderRadius: 8,
+            fontSize: 13,
+            color: '#aaa',
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ color: '#e0e0ff' }}>Unified:</strong> {trade.lifecycleRecommendation.unifiedSummary}
+        </div>
+      )}
+
+      {/* Disabled action buttons — infrastructure only. Automation not enabled. */}
+      <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+        <DisabledActionButton label="Apply Break-Even" enabled={!!trade.breakeven?.eligible} />
+        <DisabledActionButton label="Apply TP Adjustment" enabled={!!trade.dynamicTP} />
+        <DisabledActionButton
+          label="Apply Partial Close"
+          enabled={(trade.partialClose?.recommendedPartialClosePercent ?? 0) > 0}
+        />
+        <DisabledActionButton label="Apply Trailing Stop" enabled={!!trade.dynamicTrail?.recommended} />
+        <DisabledActionButton label="Close Trade" enabled />
+      </div>
 
       {trade.recommendedStopLoss != null && (
         <div style={{ ...s.factorsBox, marginTop: 10 }}>

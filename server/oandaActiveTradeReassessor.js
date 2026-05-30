@@ -332,6 +332,9 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     (side === 'short' && momentum.m15Trend === 'bullish');
   const marketStateAllowed = profile.allowedMarketStates?.includes(marketState.marketState) ?? true;
 
+  const originalSlPips = Number.isFinite(originalSL)
+    ? Math.abs(entryPrice - originalSL) / pipSize
+    : null;
   const lifecycle = analyzeTradeLifecycle({
     pair,
     tradeId: String(oandaTrade.id),
@@ -340,6 +343,8 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     currentPrice,
     currentSL,
     originalTpPips,
+    originalSlPips,
+    expectedRR: entryContext.entryRiskRewardRatio,
     minutesElapsed,
     expectedHoldTimeMinutes,
     profitR,
@@ -420,6 +425,13 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     expectedRemainingHoldTime: lifecycle.expectedRemainingHoldTime,
     dynamicTP: lifecycle.dynamicTP,
     opportunityCostScore: lifecycle.opportunityCostScore,
+    // Signal Stack V3 — pro exit framework
+    breakeven:           lifecycle.breakeven,
+    multiTargets:        lifecycle.multiTargets,
+    partialClose:        lifecycle.partialClose,
+    dynamicTrail:        lifecycle.dynamicTrail,
+    trendExhaustion:     lifecycle.trendExhaustion,
+    capitalEfficiency:   lifecycle.capitalEfficiency,
     lifecycleRecommendation: lifecycle.recommendation,
     detail: {
       trailing, partial, tpReduction, profitProtection,

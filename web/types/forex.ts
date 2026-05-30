@@ -420,6 +420,8 @@ export interface AlignmentResult {
   };
 }
 
+export type RRTier = 'reject' | 'standard' | 'preferred' | 'premium';
+
 export interface ForexSignal {
   pair: string;
   /** Human-readable name: "Euro / US Dollar", "Gold", "Silver", etc. */
@@ -429,6 +431,12 @@ export interface ForexSignal {
   direction: ForexDirection;
   score: number;
   confidence: number;
+  /** Signal Stack V3 — expected-R qualification (per-signal). */
+  expectedRiskPips?:   number;
+  expectedRewardPips?: number;
+  expectedRR?:         number;
+  rrTier?:             RRTier;
+  rrQualityFactor?:    number;
   entry: number;
   stopLoss: number;
   /** Stop-loss distance in pips — always 20 under the fixed 1:3 price structure. */
