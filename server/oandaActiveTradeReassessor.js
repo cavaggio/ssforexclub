@@ -44,6 +44,10 @@ import {
   findTradeByBrokerOrderId, updateMaxFavorableExcursion,
 } from './oandaTradeHistory.js';
 import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
+import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
+
+const AUTO_CLOSE_ENABLED =
+  String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
 
 const REASSESSMENT_INTERVAL_MS = 30 * 60 * 1000;   // 30 min — Part 10
 let _scheduler = null;
@@ -309,6 +313,61 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
       : 'Recommendation only: live execution disabled.';
   managementReasons.push(safetyReason);
 
+  // ── Dynamic trade lifecycle engine ──────────────────────────────────────
+  // Velocity, momentum decay, dynamic TP, hold-status, opportunity cost, and
+  // recommendation are computed by a pure engine on top of the inputs the
+  // reassessor already gathered. Auto-close is gated by the platform flag.
+  const originalTpPips = Number.isFinite(originalTP)
+    ? Math.abs(originalTP - entryPrice) / pipSize
+    : null;
+  const flowMatchesDirection =
+    institutionalFlow?.detected &&
+    institutionalFlow.direction === (side === 'long' ? 'bullish' : 'bearish');
+  const flowOpposes =
+    institutionalFlow?.detected &&
+    institutionalFlow.direction !== 'neutral' &&
+    institutionalFlow.direction !== (side === 'long' ? 'bullish' : 'bearish');
+  const m15TrendReversed =
+    (side === 'long' && momentum.m15Trend === 'bearish') ||
+    (side === 'short' && momentum.m15Trend === 'bullish');
+  const marketStateAllowed = profile.allowedMarketStates?.includes(marketState.marketState) ?? true;
+
+  const lifecycle = analyzeTradeLifecycle({
+    pair,
+    tradeId: String(oandaTrade.id),
+    side,
+    entryPrice,
+    currentPrice,
+    currentSL,
+    originalTpPips,
+    minutesElapsed,
+    expectedHoldTimeMinutes,
+    profitR,
+    profitPipsNow,
+    tpProgress,
+    pipSize,
+    entryAlignmentScore: entryContext.entryMtfAlignmentScore,
+    currentAlignmentScore: alignment.timeframeAlignmentScore,
+    entryMtfScore: entryContext.entryMtfAlignmentScore,
+    currentMtfScore: mtfAuthority.multiTimeframeAlignmentScore,
+    candleStrengthScore: candleStrength.candleStrengthScore,
+    atrPipsAtEntry: entryContext.entryATR,
+    atrPipsCurrent: momentum.atrPips,
+    mtfConflict: mtfAuthority.conflict,
+    flowOpposes,
+    flowMatchesDirection,
+    m15TrendReversed,
+    volatilityCollapsed: volatilityCollapse.volatilityCollapsed,
+    invalidationDetected: invalidation.invalidationDetected,
+    invalidationReason: invalidation.invalidationReason,
+    currentConfidence,
+    spreadPips: pricing?.spreadPips,
+    maxSpreadPips: maxSpreadFor(pair),
+    marketStateAllowed,
+    liveAutoCloseEnabled: AUTO_CLOSE_ENABLED,
+  });
+  console.log(lifecycle.logLine);
+
   return {
     tradeId: String(oandaTrade.id),
     instrument: pair,
@@ -352,10 +411,21 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     tpProgress: +tpProgress.toFixed(2),
     lastReassessedAt: reassessedAt,
     nextReassessmentDueAt: new Date(Date.now() + REASSESSMENT_INTERVAL_MS).toISOString(),
+    // Dynamic lifecycle engine output — UI renders these on the reassess card.
+    velocityScore: lifecycle.velocityScore,
+    momentumDecayScore: lifecycle.momentumDecayScore,
+    momentumStatus: lifecycle.momentumStatus,
+    holdStatus: lifecycle.holdStatus,
+    holdRatio: lifecycle.holdRatio,
+    expectedRemainingHoldTime: lifecycle.expectedRemainingHoldTime,
+    dynamicTP: lifecycle.dynamicTP,
+    opportunityCostScore: lifecycle.opportunityCostScore,
+    lifecycleRecommendation: lifecycle.recommendation,
     detail: {
       trailing, partial, tpReduction, profitProtection,
       invalidation, volatilityCollapse, trendWeakening,
       entryContext,
+      lifecycle,
     },
   };
 }

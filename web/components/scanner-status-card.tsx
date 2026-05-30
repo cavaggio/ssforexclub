@@ -80,6 +80,30 @@ type ReassessTrade = {
   classicExitRecommendation?: string;
   minutesElapsed?: number;
   tpProgress?: number;
+  // Dynamic lifecycle engine output (2026-05-30)
+  velocityScore?: number;
+  momentumDecayScore?: number;
+  momentumStatus?: 'improving' | 'stable' | 'decaying';
+  holdStatus?: 'on_track' | 'slow' | 'expired' | 'invalidated';
+  holdRatio?: number;
+  expectedRemainingHoldTime?: number;
+  dynamicTP?: {
+    minTargetPips: number;
+    baseTargetPips: number;
+    maxTargetPips: number;
+    currentRecommendedTargetPips: number;
+  };
+  opportunityCostScore?: number;
+  lifecycleRecommendation?: {
+    action: 'hold' | 'tighten_sl' | 'reduce_tp' | 'expand_tp' | 'partial_close' | 'close';
+    reason: string;
+    urgency: 'low' | 'medium' | 'high';
+    confidence: number;
+    suggestedNewSL: number | null;
+    suggestedNewTP: number;
+    shouldAutoClose: boolean;
+    autoCloseReason: string | null;
+  };
   error?: string;
 };
 
@@ -1401,6 +1425,46 @@ function ReassessRow({ trade }: { trade: ReassessTrade }) {
           )}
           <Badge value={action} type={actionType} />
           {trade.classicTradeState && <Badge value={trade.classicTradeState} type="neutral" />}
+          {trade.lifecycleRecommendation && (
+            <Badge
+              value={`→ ${trade.lifecycleRecommendation.action.toUpperCase().replace(/_/g, ' ')}`}
+              type={
+                trade.lifecycleRecommendation.action === 'hold'
+                  ? 'good'
+                  : trade.lifecycleRecommendation.action === 'close'
+                    ? 'bad'
+                    : trade.lifecycleRecommendation.urgency === 'high'
+                      ? 'bad'
+                      : trade.lifecycleRecommendation.urgency === 'medium'
+                        ? 'warn'
+                        : 'info'
+              }
+            />
+          )}
+          {trade.momentumStatus && (
+            <Badge
+              value={`momentum ${trade.momentumStatus}`}
+              type={
+                trade.momentumStatus === 'improving'
+                  ? 'good'
+                  : trade.momentumStatus === 'decaying'
+                    ? 'bad'
+                    : 'warn'
+              }
+            />
+          )}
+          {trade.holdStatus && (
+            <Badge
+              value={`hold ${trade.holdStatus.replace(/_/g, ' ')}`}
+              type={
+                trade.holdStatus === 'on_track'
+                  ? 'good'
+                  : trade.holdStatus === 'slow'
+                    ? 'warn'
+                    : 'bad'
+              }
+            />
+          )}
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, color: plColor, fontWeight: 800 }}>
@@ -1435,7 +1499,78 @@ function ReassessRow({ trade }: { trade: ReassessTrade }) {
         {trade.minutesElapsed !== undefined && (
           <SizingCell label="Elapsed" value={`${trade.minutesElapsed}m`} />
         )}
+        {trade.velocityScore !== undefined && (
+          <SizingCell label="Velocity" value={`${trade.velocityScore}/100`} />
+        )}
+        {trade.momentumDecayScore !== undefined && (
+          <SizingCell label="Decay" value={`${trade.momentumDecayScore}/100`} />
+        )}
+        {trade.opportunityCostScore !== undefined && (
+          <SizingCell label="Opp. cost" value={`${trade.opportunityCostScore}/100`} />
+        )}
+        {trade.expectedRemainingHoldTime !== undefined && (
+          <SizingCell label="Remaining" value={`${trade.expectedRemainingHoldTime}m`} />
+        )}
       </div>
+
+      {trade.dynamicTP && (
+        <div style={{ ...s.factorsBox, marginTop: 10 }}>
+          <span style={{ color: '#888' }}>Dynamic TP:</span>{' '}
+          <span style={{ color: '#4db8ff', fontWeight: 700 }}>
+            {trade.dynamicTP.currentRecommendedTargetPips}p
+          </span>{' '}
+          <span style={{ color: '#666' }}>
+            (min {trade.dynamicTP.minTargetPips}p · base {trade.dynamicTP.baseTargetPips}p · max{' '}
+            {trade.dynamicTP.maxTargetPips}p)
+          </span>
+        </div>
+      )}
+
+      {trade.lifecycleRecommendation && (
+        <div style={{ ...s.factorsBox, marginTop: 6 }}>
+          <div>
+            <span style={{ color: '#888' }}>Lifecycle action:</span>{' '}
+            <span
+              style={{
+                color:
+                  trade.lifecycleRecommendation.urgency === 'high'
+                    ? '#ff6666'
+                    : trade.lifecycleRecommendation.urgency === 'medium'
+                      ? '#ffaa00'
+                      : '#2dff7a',
+                fontWeight: 700,
+              }}
+            >
+              {trade.lifecycleRecommendation.action.toUpperCase().replace(/_/g, ' ')}
+            </span>{' '}
+            <span style={{ color: '#666' }}>
+              ({trade.lifecycleRecommendation.urgency} urgency · confidence{' '}
+              {trade.lifecycleRecommendation.confidence}%)
+            </span>
+          </div>
+          <div style={{ marginTop: 4, color: '#aaa', lineHeight: 1.5 }}>
+            {trade.lifecycleRecommendation.reason}
+          </div>
+        </div>
+      )}
+
+      {trade.lifecycleRecommendation?.shouldAutoClose && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: '8px 14px',
+            background: '#320d0d',
+            border: '1px solid #ff4d4d',
+            color: '#ff8888',
+            borderRadius: 8,
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong>⚠ Auto-close armed:</strong>{' '}
+          {trade.lifecycleRecommendation.autoCloseReason ?? 'high-urgency exit'}
+        </div>
+      )}
 
       {trade.recommendedStopLoss != null && (
         <div style={{ ...s.factorsBox, marginTop: 10 }}>
