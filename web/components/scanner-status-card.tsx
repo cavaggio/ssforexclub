@@ -32,6 +32,7 @@ import type {
   ForexRejected,
   ActiveTradeAnalysis,
   ActiveTradesResponse,
+  CalibrationSnapshot,
   MacroAnalysis,
   StructureAnalysis,
   MomentumAnalysis,
@@ -1873,6 +1874,10 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
   const [reassessLoading, setReassessLoading] = useState(false);
   const [reassessError, setReassessError] = useState<string | null>(null);
 
+  const [calibration, setCalibration] = useState<CalibrationSnapshot | null>(null);
+  const [calibrationLoading, setCalibrationLoading] = useState(false);
+  const [calibrationError, setCalibrationError] = useState<string | null>(null);
+
   const runScan = useCallback(async () => {
     setPending(true);
     setError(null);
@@ -1961,12 +1966,35 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
     }
   }, []);
 
+  const refreshCalibration = useCallback(async () => {
+    setCalibrationLoading(true);
+    setCalibrationError(null);
+    try {
+      const res = await fetch('/api/scanner/calibration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setCalibration(json.calibration as CalibrationSnapshot);
+    } catch (err) {
+      setCalibrationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCalibrationLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (hasBroker) {
       refreshActiveTrades();
       refreshReassess();
     }
-  }, [hasBroker, refreshActiveTrades, refreshReassess]);
+    // Calibration is broker-free — fetch on mount regardless. It uses the
+    // platform's resolved trade history to derive the active rejection
+    // threshold and the monthly E[RR] vs Realized-R panel.
+    refreshCalibration();
+  }, [hasBroker, refreshActiveTrades, refreshReassess, refreshCalibration]);
 
   const scan = state?.scan;
   const qualified = scan?.qualified ?? [];
@@ -2237,6 +2265,175 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         )}
         {reassess?.trades?.map((t) => <ReassessRow key={t.tradeId} trade={t} />)}
       </section>
+
+      {/* ── Strategy calibration (self-improvement layer) ──────────────────── */}
+      <section style={s.section}>
+        <SectionHeader
+          title="Strategy calibration"
+          subtitle="Monthly Expected-RR vs Realized-R. The rejection threshold auto-tightens when projections consistently overshoot reality, so qualifying trades clear a higher bar."
+          right={
+            <button
+              type="button"
+              onClick={refreshCalibration}
+              disabled={calibrationLoading}
+              style={s.refreshBtn}
+            >
+              {calibrationLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          }
+        />
+        {calibrationError && (
+          <div
+            style={{
+              padding: '10px 14px',
+              background: '#320d0d',
+              border: '1px solid #5c1a1a',
+              color: 'var(--bad)',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            <strong>Failed:</strong> {calibrationError}
+          </div>
+        )}
+        {!calibrationError && !calibration && !calibrationLoading && (
+          <EmptyBlock>Calibration data unavailable.</EmptyBlock>
+        )}
+        {calibration && <CalibrationPanel snapshot={calibration} />}
+      </section>
+    </div>
+  );
+}
+
+function CalibrationPanel({ snapshot }: { snapshot: CalibrationSnapshot }) {
+  const tightened =
+    snapshot.calibratedRejectionThreshold > snapshot.defaultRejectionThreshold + 0.001;
+  const loosened =
+    snapshot.calibratedRejectionThreshold < snapshot.defaultRejectionThreshold - 0.001;
+  const cr = snapshot.rolling.captureRatio;
+  const crColor =
+    cr == null ? 'var(--muted)' : cr >= 0.9 ? 'var(--good)' : cr >= 0.7 ? 'var(--warn)' : 'var(--bad)';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+          gap: 10,
+        }}
+      >
+        <StatChip
+          label="Active threshold"
+          value={String(snapshot.calibratedRejectionThreshold)}
+          tone={tightened ? 'bad' : loosened ? 'good' : undefined}
+        />
+        <StatChip label="Default threshold" value={String(snapshot.defaultRejectionThreshold)} />
+        <StatChip
+          label="Capture ratio"
+          value={cr == null ? '—' : String(cr)}
+          tone={cr == null ? undefined : cr >= 0.9 ? 'good' : cr < 0.7 ? 'bad' : undefined}
+        />
+        <StatChip label="Sample size" value={String(snapshot.rolling.sampleCount)} />
+        {snapshot.rolling.avgExpectedRR !== undefined && (
+          <StatChip label="Avg Expected RR" value={String(snapshot.rolling.avgExpectedRR)} />
+        )}
+        {snapshot.rolling.avgRealizedR !== undefined && (
+          <StatChip label="Avg Realized R" value={String(snapshot.rolling.avgRealizedR)} />
+        )}
+      </div>
+
+      <div
+        style={{
+          padding: '10px 14px',
+          background: 'var(--bg)',
+          border: `1px solid ${tightened ? '#5c4400' : 'var(--border)'}`,
+          borderRadius: 8,
+          fontSize: 13,
+          lineHeight: 1.5,
+          color: tightened ? '#ffcc66' : 'var(--muted)',
+        }}
+      >
+        <strong style={{ color: 'var(--text)' }}>
+          {tightened ? '⚙ Tightened: ' : loosened ? '⚙ Loosened: ' : '⚙ Calibrated: '}
+        </strong>
+        {snapshot.adjustmentReason}
+      </div>
+
+      {snapshot.monthly.length === 0 ? (
+        <EmptyBlock>No resolved trades yet — monthly stats appear once trades close.</EmptyBlock>
+      ) : (
+        <div
+          style={{
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '10px 14px',
+            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+            fontSize: 12,
+            color: '#aaa',
+            overflowX: 'auto',
+          }}
+        >
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '110px 80px 100px 100px 100px 80px',
+              gap: 10,
+              fontWeight: 700,
+              color: 'var(--muted)',
+              borderBottom: '1px solid var(--border)',
+              paddingBottom: 6,
+              marginBottom: 6,
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+            }}
+          >
+            <span>Month</span>
+            <span>Samples</span>
+            <span>Avg E[RR]</span>
+            <span>Avg Real R</span>
+            <span>Capture</span>
+            <span>Win rate</span>
+          </div>
+          {snapshot.monthly.map((m) => (
+            <div
+              key={m.month}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '110px 80px 100px 100px 100px 80px',
+                gap: 10,
+                padding: '6px 0',
+                color: 'var(--text)',
+              }}
+            >
+              <span style={{ color: 'var(--text)', fontWeight: 600 }}>{m.month}</span>
+              <span>{m.sampleCount}</span>
+              <span style={{ color: '#4db8ff' }}>{m.avgExpectedRR}</span>
+              <span style={{ color: m.avgRealizedR >= 0 ? '#2dff7a' : '#ff6666' }}>
+                {m.avgRealizedR}
+              </span>
+              <span
+                style={{
+                  color: m.captureRatio >= 0.9 ? '#2dff7a' : m.captureRatio >= 0.7 ? '#ffcc00' : '#ff6666',
+                }}
+              >
+                {(m.captureRatio * 100).toFixed(0)}%
+              </span>
+              <span>{(m.winRate * 100).toFixed(0)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+        Updated {new Date(snapshot.computedAt).toLocaleString()}. Sample window: rolling{' '}
+        {snapshot.lookbackTrades} trades · minimum {snapshot.minSamplesForAdjust} required to
+        adjust threshold. {!snapshot.eligibleForAdjustment && '— Using default threshold until threshold becomes eligible.'}
+      </span>
+      <span style={{ fontSize: 11, color: '#888', fontStyle: 'italic' }}>
+        Trade-history data is currently platform-wide; per-user calibration follows once trade
+        history moves into Supabase.
+      </span>
     </div>
   );
 }

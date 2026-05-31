@@ -46,6 +46,8 @@ import { classifyOverextension } from './oandaOverextension.js';
 import { getInstrumentProfile } from './oandaInstrumentProfiles.js';
 import { qualifyByAssetClass } from './oandaAssetClassRouter.js';
 import { computeExpectedRR } from './oandaExpectedRR.js';
+import { getCalibrationSnapshot } from './oandaCalibration.js';
+import { getTradeHistory } from './oandaTradeHistory.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
@@ -243,6 +245,19 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
   const session = getForexSession();
 
   setScanInProgress(true);
+  // ── Signal Stack V3 self-improvement layer ────────────────────────────────
+  // Read the calibration snapshot (monthly Expected-RR vs Realized-R + the
+  // auto-adjusted rejection threshold) once per scan. The scanner passes the
+  // calibrated threshold into computeExpectedRR so qualification standards
+  // tighten automatically when the platform's projections overshoot reality.
+  const calibration = getCalibrationSnapshot(getTradeHistory(1000));
+  console.log(
+    `[CALIBRATION] threshold=${calibration.calibratedRejectionThreshold} ` +
+    `(default ${calibration.defaultRejectionThreshold}) ` +
+    `samples=${calibration.rolling.sampleCount} ` +
+    `captureRatio=${calibration.rolling.captureRatio ?? 'n/a'} ` +
+    `eligible=${calibration.eligibleForAdjustment}`,
+  );
   console.log(`\n[SCANNER] ▶ Scan started — session: ${session}`);
   console.log(`[SCANNER] ${DYNAMIC_RISK_NOTICE}`);
   console.log(`[SCANNER] Reviewing ${pairs.length} instruments: ${pairs.join(', ')}`);
@@ -711,6 +726,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         institutionalFlow,
         direction,
         candleStrengthScore: candleStrength.candleStrengthScore,
+        rejectionThreshold: calibration.calibratedRejectionThreshold,
       });
       console.log(
         `[EXPECTED_RR] ${pair} ${direction.toUpperCase()} — ` +
@@ -1029,6 +1045,10 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       environment: (process.env.FOREX_TRADING_ENVIRONMENT || 'practice').toLowerCase(),
       paperTradingAvailable: true,
       isPaperTrading: (process.env.FOREX_TRADING_ENVIRONMENT || 'practice').toLowerCase() !== 'live',
+      // Signal Stack V3 self-improvement layer — calibration snapshot used
+      // for this scan. The dashboard renders the monthly E[RR] vs Realized-R
+      // and the active rejection threshold below.
+      calibration,
     },
   };
 

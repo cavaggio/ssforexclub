@@ -642,6 +642,36 @@ export interface ForexScanResult {
   meta: ForexScanMeta;
 }
 
+// ─── Signal Stack V3 — calibration (self-improvement layer) ────────────────
+
+export interface MonthlyCalibrationBucket {
+  month: string;             // 'YYYY-MM'
+  sampleCount: number;
+  avgExpectedRR: number;
+  avgRealizedR: number;
+  winRate: number;           // 0..1
+  captureRatio: number;
+}
+
+export interface CalibrationSnapshot {
+  monthly: MonthlyCalibrationBucket[];
+  rolling: {
+    sampleCount: number;
+    sumExpected?: number;
+    sumRealized?: number;
+    avgExpectedRR?: number;
+    avgRealizedR?: number;
+    captureRatio: number | null;
+  };
+  defaultRejectionThreshold: number;
+  calibratedRejectionThreshold: number;
+  eligibleForAdjustment: boolean;
+  minSamplesForAdjust: number;
+  lookbackTrades: number;
+  adjustmentReason: string;
+  computedAt: string;
+}
+
 export interface OandaDiagnostics {
   timestamp: string;
   env: 'practice' | 'live';

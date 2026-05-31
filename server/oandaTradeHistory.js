@@ -79,6 +79,16 @@ export function recordTrade(trade) {
     // ── Active-management tracking (NEW) ───────────────────────────────────
     maxFavorableExcursionPips:   0,   // updated by reassessor
     lastReassessedAt:            null,
+    // ── Signal Stack V3 — expected vs realised feedback (2026-05-30) ───────
+    // Calibrated expected RR (not geometric) — drives the calibration engine
+    // that auto-adjusts the rejection threshold based on capture ratio.
+    expectedRR:              trade.expectedRR              ?? null,
+    expectedRiskPips:        trade.expectedRiskPips        ?? null,
+    expectedRewardPips:      trade.expectedRewardPips      ?? null,
+    rrTier:                  trade.rrTier                  ?? null,
+    rrQualityFactor:         trade.rrQualityFactor         ?? null,
+    realizedR:               null,    // populated by resolveTradeResult
+    resolvedAt:              null,
   };
   history.push(entry);
   saveHistory(history);
@@ -129,8 +139,19 @@ export function resolveTradeResult(tradeId, result, pnl, durationMinutes) {
     trade.result = result;
     trade.pnl = pnl;
     trade.durationMinutes = durationMinutes;
+    trade.resolvedAt = new Date().toISOString();
+    // R-multiple realised on this trade = pnl / riskAmount. Drives the
+    // calibration engine's capture-ratio computation.
+    const risk = Number.isFinite(trade.riskAmount) ? trade.riskAmount : null;
+    if (risk && risk > 0 && Number.isFinite(pnl)) {
+      trade.realizedR = Math.round((pnl / risk) * 100) / 100;
+    } else {
+      trade.realizedR = null;
+    }
     saveHistory(history);
-    console.log(`[TRADE_HISTORY] Resolved trade ${tradeId}: ${result}, PnL: ${pnl}`);
+    console.log(
+      `[TRADE_HISTORY] Resolved trade ${tradeId}: ${result}, PnL: ${pnl}, realizedR: ${trade.realizedR}`,
+    );
   }
 }
 

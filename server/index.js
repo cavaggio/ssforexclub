@@ -22,6 +22,7 @@ import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
 import { analyzeActiveTrades } from './oandaActiveTradeMonitor.js';
 import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveTradeReassessor.js';
 import { createOandaClient } from './oandaClient.js';
+import { getCalibrationSnapshot } from './oandaCalibration.js';
 import { runUserScoped } from './requestContext.js';
 
 dotenv.config({
@@ -1850,6 +1851,26 @@ app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_REASSESS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/calibration
+//   No OANDA client required — this is read-only over the trade-history file
+//   (which is platform-wide today; will become per-user when history moves to
+//   Supabase). Auth still via X-Internal-Auth so it can't be reached from the
+//   browser.
+app.post('/api/internal/oanda/calibration', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  try {
+    const snapshot = getCalibrationSnapshot(getTradeHistory(1000));
+    console.log(
+      `[INTERNAL CALIBRATION] threshold=${snapshot.calibratedRejectionThreshold} ` +
+        `samples=${snapshot.rolling.sampleCount} eligible=${snapshot.eligibleForAdjustment}`,
+    );
+    res.json(snapshot);
+  } catch (err) {
+    console.error('[INTERNAL_CALIBRATION] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

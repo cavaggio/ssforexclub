@@ -30,8 +30,8 @@ export const RR_TIER_THRESHOLDS = {
   premium:   3.5,
 };
 
-export function classifyRRTier(expectedRR) {
-  if (!Number.isFinite(expectedRR) || expectedRR < RR_TIER_THRESHOLDS.reject) return 'reject';
+export function classifyRRTier(expectedRR, rejectionThreshold = RR_TIER_THRESHOLDS.reject) {
+  if (!Number.isFinite(expectedRR) || expectedRR < rejectionThreshold) return 'reject';
   if (expectedRR < RR_TIER_THRESHOLDS.preferred) return 'standard';
   if (expectedRR < RR_TIER_THRESHOLDS.premium) return 'preferred';
   return 'premium';
@@ -135,11 +135,12 @@ export function computeExpectedRR(ctx) {
   const expectedRiskPips   = +stopLossPips.toFixed(1);
   const expectedRewardPips = +(takeProfitPips * qualityFactor).toFixed(1);
   const expectedRR         = +(geometricRR * qualityFactor).toFixed(2);
-  const rrTier             = classifyRRTier(expectedRR);
+  const activeThreshold    = finite(ctx.rejectionThreshold, RR_TIER_THRESHOLDS.reject);
+  const rrTier             = classifyRRTier(expectedRR, activeThreshold);
   const accepted           = rrTier !== 'reject';
   const rejectionReason    = accepted
     ? null
-    : `Expected RR ${expectedRR} below minimum ${RR_TIER_THRESHOLDS.reject} ` +
+    : `Expected RR ${expectedRR} below calibrated minimum ${activeThreshold} ` +
       `(geometric ${geometricRR.toFixed(2)} × quality ${qualityFactor.toFixed(2)})`;
 
   return {

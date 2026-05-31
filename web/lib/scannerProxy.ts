@@ -94,15 +94,30 @@ async function callInternalEndpoint(
 export async function callScannerForCurrentUser(args: {
   internalPath: string;
   logTag: string;
-  payloadKey: 'scan' | 'analysis' | 'reassessment' | 'trade';
+  payloadKey: 'scan' | 'analysis' | 'reassessment' | 'trade' | 'calibration';
   extraBody?: Record<string, unknown>;
   requireLive?: boolean;
+  skipCredentials?: boolean;
 }): Promise<NextResponse> {
-  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false } = args;
+  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false, skipCredentials = false } = args;
 
   const { userId } = await auth();
   if (!userId) {
     return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
+  }
+
+  // For broker-free routes (e.g. calibration), we still require Clerk auth
+  // but skip the broker-credential gate and don't forward apiKey/accountId.
+  if (skipCredentials) {
+    console.log(`[${logTag}] clerkUserId=${userId} skipCredentials=true`);
+    const result = await callInternalEndpoint(internalPath, { ...extraBody });
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
+    }
+    return NextResponse.json({
+      ok: true,
+      [payloadKey]: result.data,
+    });
   }
 
   const resolved = await resolveActiveBrokerForUser(userId);

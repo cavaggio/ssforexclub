@@ -99,7 +99,8 @@ function normalizeDirection(currentUnits) {
  * Returns `true` when an OANDA position genuinely matches the local lock.
  * Returns `false` when the lock is stale (and removes it).
  */
-export async function reconcileTradeLock(pair, direction) {
+export async function reconcileTradeLock(pair, direction, options = {}) {
+  const { client } = options;
   const key = `${pair}_${direction}`;
   console.log(`[TRADE LOCK CHECK] ${key}`);
 
@@ -110,7 +111,7 @@ export async function reconcileTradeLock(pair, direction) {
 
   let brokerTrades;
   try {
-    brokerTrades = await getOpenTrades();
+    brokerTrades = await getOpenTrades({ client });
   } catch (err) {
     // Be conservative: if we can't reach the broker, treat the lock as valid.
     console.warn(`[TRADE LOCK CHECK] ${key} — broker query failed (${err?.message || err}); keeping lock as a safety measure.`);
@@ -312,7 +313,19 @@ function extractCancelTx(tx) {
  * @param {object} signal  Qualified signal from oandaScanner
  * @returns {object}       Enriched result with executionState and executionLog
  */
-export async function executeTrade(signal) {
+/**
+ * Execute a forex/metals trade. 2026-05-27 multi-tenant refactor: accepts an
+ * optional `{ client }` carrying the AUTHENTICATED USER's OANDA credentials.
+ * When passed, every broker call (account summary, market order, SL/TP
+ * updates) uses that user's credentials. When omitted, falls back to the
+ * env-based default client (dev fallback only).
+ *
+ * @param {Object} signal
+ * @param {Object} [options]
+ * @param {Object} [options.client]
+ */
+export async function executeTrade(signal, options = {}) {
+  const { client } = options;
   const { pair, direction, score, confidence, entry, stopLoss, takeProfit, spreadPips } = signal;
   const tradeKey = `${pair}_${direction}`;
   const metals   = isMetalsPair(pair);
@@ -471,7 +484,7 @@ export async function executeTrade(signal) {
   // ── Guard 7: No duplicate (reconciled against OANDA) ──────────────────────
   // Local lock is checked first, but never trusted on its own. We verify against
   // live broker positions; a stale lock is removed automatically and we proceed.
-  const stillActive = await reconcileTradeLock(pair, direction);
+  const stillActive = await reconcileTradeLock(pair, direction, { client });
   if (stillActive) {
     console.warn(`[DUPLICATE TRADE REJECTED] ${tradeKey} — broker confirms an open position with same side`);
     return blocked(`Duplicate trade already active: ${tradeKey}`);
@@ -488,7 +501,7 @@ export async function executeTrade(signal) {
   // ── Guard 9: Account + balance + daily loss cap ───────────────────────────
   let account;
   try {
-    account = await getAccountSummary();
+    account = await getAccountSummary({ client });
   } catch (err) {
     return blocked(`Failed to fetch account: ${err.message}`);
   }
@@ -545,8 +558,8 @@ export async function executeTrade(signal) {
   } else {
     console.warn('[TRADE] Signal has no lifecycle data — recomputing from fresh candles.');
     const [m15CandlesLive, h1CandlesLive] = await Promise.all([
-      getCandles(pair, 'M15', 80).catch(() => []),
-      getCandles(pair, 'H1', 80).catch(() => []),
+      getCandles(pair, 'M15', 80, { client }).catch(() => []),
+      getCandles(pair, 'H1',  80, { client }).catch(() => []),
     ]);
     const lifecycle = computeTradeLifecycle({
       pair, direction, entryPrice: entry,
@@ -643,7 +656,8 @@ export async function executeTrade(signal) {
   }
 
   const riskAmount = sizing.actualRiskUSD;
-  const accountId  = getAccountId();
+  // Use the per-request client's accountId when present; fall back to env-default.
+  const accountId  = client?.accountId || getAccountId();
 
   executionLog.push(logEntry('SIZING_DYNAMIC', {
     riskMode: sizing.riskMode,
@@ -703,7 +717,11 @@ export async function executeTrade(signal) {
 
   let oandaResponse;
   try {
-    oandaResponse = await oandaPost(`/v3/accounts/${accountId}/orders`, orderPayload);
+    // Route through the per-request client when provided; legacy oandaPost
+    // is only used when no client was passed (dev fallback).
+    oandaResponse = client
+      ? await client.post(`/v3/accounts/${accountId}/orders`, orderPayload)
+      : await oandaPost(`/v3/accounts/${accountId}/orders`, orderPayload);
   } catch (err) {
     console.error(`[TRADE] ✗ Order submission error: ${err.message}`);
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
@@ -873,6 +891,12 @@ function buildResult({
     originalRecommendedTP:        signal.recommendedTakeProfit    ?? takeProfit,
     originalRecommendedSL:        signal.recommendedStopLoss      ?? stopLoss,
     entryRejectionWarnings:       signal.sizingWarnings           ?? [],
+    // Signal Stack V3 — expected-RR feedback inputs (used by calibration)
+    expectedRR:                   signal.expectedRR               ?? null,
+    expectedRiskPips:             signal.expectedRiskPips         ?? null,
+    expectedRewardPips:           signal.expectedRewardPips       ?? null,
+    rrTier:                       signal.rrTier                   ?? null,
+    rrQualityFactor:              signal.rrQualityFactor          ?? null,
   });
 
   return {
