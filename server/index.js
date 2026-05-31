@@ -15,7 +15,14 @@ import alpacaAssets from './alpacaAssets.js';
 import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { scanForexPairs } from './oandaScanner.js';
-import { executeTrade, closePosition, getTradeState, resetDailyCounters, reconcileAllLocks } from './oandaTrade.js';
+import {
+  executeTrade,
+  closePosition,
+  closeBrokerTrade,
+  getTradeState,
+  resetDailyCounters,
+  reconcileAllLocks,
+} from './oandaTrade.js';
 import { getLatestSignals } from './oandaSignalStore.js';
 import { getTradeHistory, getPerformanceStats } from './oandaTradeHistory.js';
 import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
@@ -1851,6 +1858,48 @@ app.post('/api/internal/oanda/active-trades/reassess', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_REASSESS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/close
+//   Body: { apiKey, accountId, baseUrl, environment, tradeId, instrument, units }
+//   units: omitted | 'ALL' → full close. Numeric → partial.
+//   Auth: X-Internal-Auth. Builds per-request client; runs inside runUserScoped
+//   so any helper that forgets { client } throws the cross-tenant guard.
+app.post('/api/internal/oanda/close', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  const { tradeId, instrument, units } = req.body || {};
+  if (!tradeId || typeof tradeId !== 'string') {
+    res.status(400).json({ ok: false, error: 'Missing tradeId in body' });
+    return;
+  }
+  if (units != null && String(units).toUpperCase() !== 'ALL') {
+    const n = Number(units);
+    if (!Number.isFinite(n) || n <= 0) {
+      res.status(400).json({ ok: false, error: 'Invalid units (must be ALL or positive number)' });
+      return;
+    }
+  }
+  logInternalCall('CLOSE', req.body);
+  console.log(
+    `[INTERNAL CLOSE] tradeId=${tradeId} instrument=${instrument ?? '?'} units=${units ?? 'ALL'}`,
+  );
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => closeBrokerTrade({ tradeId, instrument, units, client }),
+    );
+    if (!result.ok) {
+      res.status(502).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_CLOSE] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

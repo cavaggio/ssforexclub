@@ -62,6 +62,7 @@ type ReassessTrade = {
   tradeId: string;
   instrument: string;
   direction?: 'long' | 'short';
+  units?: number;
   recommendedAction?: string;
   currentPnL?: number;
   profitRMultiple?: number;
@@ -1199,6 +1200,353 @@ function SignalCard({
   );
 }
 
+// ─── Close-trade button + confirmation modal ────────────────────────────────
+
+type CloseMode = 'close' | 'partial_close';
+
+type CloseResult = {
+  ok: boolean;
+  action?: 'closed' | 'partial_closed';
+  instrument?: string | null;
+  unitsClosed?: number;
+  brokerOrderId?: string | null;
+  pnl?: number | null;
+  message?: string;
+  error?: string;
+};
+
+function CloseTradeButton({
+  tradeId,
+  instrument,
+  totalUnits,
+  unrealizedPL,
+  direction,
+  mode,
+  partialPercent,
+  reason,
+  isLive,
+  onAfter,
+}: {
+  tradeId: string;
+  instrument: string;
+  totalUnits: number;
+  unrealizedPL?: number | null;
+  direction?: 'long' | 'short';
+  mode: CloseMode;
+  partialPercent?: number;
+  reason: string;
+  isLive: boolean;
+  onAfter: () => Promise<void> | void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<CloseResult | null>(null);
+
+  // Partial unit count rounded down to a whole-unit minimum of 1.
+  const unitsForRequest =
+    mode === 'partial_close' && partialPercent && partialPercent > 0
+      ? Math.max(1, Math.floor((totalUnits * partialPercent) / 100))
+      : null;
+
+  const buttonLabel =
+    mode === 'close'
+      ? 'Close Trade'
+      : `Close ${partialPercent ?? 25}% (~${unitsForRequest ?? '?'} units)`;
+
+  const buttonTone: 'bad' | 'warn' = mode === 'close' ? 'bad' : 'warn';
+
+  const execute = async () => {
+    setPending(true);
+    setResult(null);
+    try {
+      const res = await fetch('/api/scanner/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tradeId,
+          instrument,
+          units: mode === 'partial_close' ? unitsForRequest ?? undefined : 'ALL',
+        }),
+      });
+      const json = (await res.json()) as { ok?: boolean; error?: string; close?: CloseResult };
+      if (!res.ok || !json?.ok) {
+        setResult({ ok: false, error: json?.error || `HTTP ${res.status}` });
+      } else {
+        setResult({ ok: true, ...(json.close ?? {}) });
+        // Refresh parent's active trades + reassess view.
+        try {
+          await onAfter();
+        } catch {
+          /* parent-side refresh failure is non-fatal */
+        }
+      }
+    } catch (err) {
+      setResult({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setResult(null);
+          setConfirming(true);
+        }}
+        disabled={pending || result?.ok === true}
+        style={{
+          padding: '8px 16px',
+          background: buttonTone === 'bad' ? '#320d0d' : '#2d1f00',
+          color: buttonTone === 'bad' ? '#ff8888' : '#ffcc66',
+          border: buttonTone === 'bad' ? '1px solid #ff4d4d' : '1px solid #ff8c00',
+          borderRadius: 6,
+          fontFamily: 'inherit',
+          fontWeight: 700,
+          fontSize: 13,
+          cursor: pending || result?.ok ? 'not-allowed' : 'pointer',
+          letterSpacing: '0.3px',
+        }}
+      >
+        {result?.ok
+          ? mode === 'close'
+            ? '✓ Closed'
+            : '✓ Partial closed'
+          : pending
+            ? 'Submitting…'
+            : buttonLabel}
+      </button>
+
+      {/* Inline post-execution status — keeps the modal closed once the user
+          has acted on it. */}
+      {result && !confirming && (
+        <span
+          style={{
+            marginLeft: 10,
+            fontSize: 12,
+            color: result.ok ? '#2dff7a' : '#ff8888',
+            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+          }}
+        >
+          {result.ok
+            ? `${result.action === 'partial_closed' ? `${result.unitsClosed ?? '?'} units · ` : ''}` +
+              (result.pnl != null ? `pnl $${result.pnl.toFixed(2)} · ` : '') +
+              `order ${result.brokerOrderId ?? '—'}`
+            : `Failed: ${result.error}`}
+        </span>
+      )}
+
+      {/* Confirmation modal */}
+      {confirming && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !pending) setConfirming(false);
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: 'var(--panel)',
+              border: `1px solid ${buttonTone === 'bad' ? '#5c1a1a' : '#5c4400'}`,
+              borderRadius: 10,
+              padding: 24,
+              maxWidth: 500,
+              width: 'calc(100% - 32px)',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
+            }}
+          >
+            <h3 style={{ margin: 0, fontSize: 18, color: buttonTone === 'bad' ? '#ff8888' : '#ffcc66' }}>
+              {mode === 'close' ? 'Confirm trade close' : 'Confirm partial close'}
+            </h3>
+
+            <div style={{ marginTop: 14, display: 'grid', gap: 8, fontSize: 13 }}>
+              <Row label="Instrument" value={instrument} />
+              {direction && <Row label="Direction" value={direction.toUpperCase()} />}
+              {unrealizedPL != null && (
+                <Row
+                  label="Unrealized P/L"
+                  value={`$${unrealizedPL.toFixed(2)}`}
+                  valueColor={unrealizedPL >= 0 ? '#2dff7a' : '#ff6666'}
+                />
+              )}
+              <Row label="Total units on trade" value={String(totalUnits)} />
+              <Row
+                label="Units to close"
+                value={mode === 'close' ? 'ALL' : `${unitsForRequest ?? '?'} (${partialPercent ?? 25}%)`}
+                valueColor={buttonTone === 'bad' ? '#ff8888' : '#ffcc66'}
+              />
+              <Row label="Recommended action" value={mode === 'close' ? 'CLOSE' : 'PARTIAL CLOSE'} />
+            </div>
+
+            {reason && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '8px 12px',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: 'var(--muted)',
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong style={{ color: 'var(--text)' }}>Reason:</strong> {reason}
+              </div>
+            )}
+
+            <div
+              style={{
+                marginTop: 14,
+                padding: '10px 12px',
+                background: isLive ? '#320d0d' : '#1a1a2e',
+                border: isLive ? '1px solid #5c1a1a' : '1px solid #2a2a4a',
+                borderRadius: 6,
+                fontSize: 13,
+                color: isLive ? '#ff8888' : 'var(--muted)',
+              }}
+            >
+              <strong>{isLive ? '⚠ LIVE: ' : 'Paper mode: '}</strong>
+              {isLive
+                ? 'This will send a live order to OANDA and may affect real funds.'
+                : 'This will send the close request to your OANDA practice account.'}
+            </div>
+
+            {result && !result.ok && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '8px 12px',
+                  background: '#320d0d',
+                  border: '1px solid #5c1a1a',
+                  color: '#ff8888',
+                  borderRadius: 6,
+                  fontSize: 13,
+                }}
+              >
+                <strong>Error:</strong> {result.error}
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                disabled={pending}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontFamily: 'inherit',
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: pending ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await execute();
+                  if (result?.ok || !confirming) setConfirming(false);
+                }}
+                disabled={pending}
+                style={{
+                  padding: '8px 16px',
+                  background: buttonTone === 'bad' ? '#5c1a1a' : '#5c4400',
+                  color: buttonTone === 'bad' ? '#ffaaaa' : '#ffdd99',
+                  border: buttonTone === 'bad' ? '1px solid #ff4d4d' : '1px solid #ff8c00',
+                  borderRadius: 6,
+                  fontFamily: 'inherit',
+                  fontWeight: 800,
+                  fontSize: 13,
+                  cursor: pending ? 'wait' : 'pointer',
+                  letterSpacing: '0.5px',
+                }}
+              >
+                {pending ? 'Submitting…' : mode === 'close' ? 'Confirm close' : 'Confirm partial close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Row({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
+      <span
+        style={{
+          color: valueColor ?? 'var(--text)',
+          fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+          fontWeight: 600,
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Convert a recommendation (from lifecycle engine or classic reassess) into the
+ * close-button mode + partial percent. Returns null when no execution applies
+ * (hold / SL-move / TP-adjust recommendations).
+ */
+function deriveCloseMode(args: {
+  lifecycleAction?: string;
+  classicAction?: string;
+  classicExitRecommendation?: string;
+  shouldAutoClose?: boolean;
+  partialPercent?: number | null;
+  defaultPartialPercent?: number;
+}): { mode: CloseMode; partialPercent: number } | null {
+  const a = (args.lifecycleAction ?? '').toLowerCase();
+  const c = (args.classicAction ?? '').toUpperCase();
+  const exitRec = (args.classicExitRecommendation ?? '').toUpperCase();
+
+  // Hard close paths.
+  if (
+    a === 'close' ||
+    args.shouldAutoClose === true ||
+    c.startsWith('EXIT') ||
+    exitRec === 'CLOSE_TRADE' ||
+    exitRec === 'CLOSE_IMMEDIATELY'
+  ) {
+    return { mode: 'close', partialPercent: 100 };
+  }
+  // Partial paths.
+  if (
+    a === 'partial_close' ||
+    c === 'PARTIAL_EXIT' ||
+    exitRec === 'TAKE_PARTIAL_PROFIT'
+  ) {
+    const pct =
+      args.partialPercent && args.partialPercent > 0 && args.partialPercent <= 100
+        ? args.partialPercent
+        : args.defaultPartialPercent ?? 25;
+    return { mode: 'partial_close', partialPercent: pct };
+  }
+  return null;
+}
+
 function tradeBoxStyle(tone: 'good' | 'warn' | 'bad'): React.CSSProperties {
   const palette: Record<'good' | 'warn' | 'bad', { bg: string; bd: string; fg: string }> = {
     good: { bg: '#0d3320', bd: '#1a5c38', fg: '#2dff7a' },
@@ -1319,7 +1667,15 @@ const REC_COLOR: Record<string, BadgeType> = {
   CLOSE_IMMEDIATELY: 'bad',
 };
 
-function ActiveTradeCard({ trade }: { trade: ActiveTradeAnalysis }) {
+function ActiveTradeCard({
+  trade,
+  onAfterClose,
+  isLive,
+}: {
+  trade: ActiveTradeAnalysis;
+  onAfterClose: () => Promise<void> | void;
+  isLive: boolean;
+}) {
   if (trade.error) {
     return (
       <div style={{ ...s.card, borderColor: '#5c1a1a' }}>
@@ -1430,6 +1786,32 @@ function ActiveTradeCard({ trade }: { trade: ActiveTradeAnalysis }) {
         </div>
       </div>
 
+      {/* Execution button driven by the exit recommendation. Hold/SL-move
+          recommendations show no execution button — display only. */}
+      {(() => {
+        const closeMode = deriveCloseMode({
+          classicExitRecommendation: trade.exitRecommendation,
+          defaultPartialPercent: 50,
+        });
+        if (!closeMode) return null;
+        return (
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <CloseTradeButton
+              tradeId={trade.tradeId}
+              instrument={trade.instrument}
+              totalUnits={trade.units}
+              unrealizedPL={trade.unrealizedPL}
+              direction={trade.side}
+              mode={closeMode.mode}
+              partialPercent={closeMode.partialPercent}
+              reason={trade.exitReason}
+              isLive={isLive}
+              onAfter={onAfterClose}
+            />
+          </div>
+        );
+      })()}
+
       <details>
         <summary style={{ cursor: 'pointer', color: '#888', fontSize: 13, fontWeight: 600 }}>Mini waterfall (current state)</summary>
         <div style={{ marginTop: 8 }}>
@@ -1478,7 +1860,15 @@ function DisabledActionButton({ label, enabled }: { label: string; enabled: bool
   );
 }
 
-function ReassessRow({ trade }: { trade: ReassessTrade }) {
+function ReassessRow({
+  trade,
+  onAfterClose,
+  isLive,
+}: {
+  trade: ReassessTrade;
+  onAfterClose: () => Promise<void> | void;
+  isLive: boolean;
+}) {
   if (trade.error) {
     return (
       <div style={{ ...s.rejectedRow, borderColor: '#5c1a1a' }}>
@@ -1771,17 +2161,53 @@ function ReassessRow({ trade }: { trade: ReassessTrade }) {
         </div>
       )}
 
-      {/* Disabled action buttons — infrastructure only. Automation not enabled. */}
-      <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-        <DisabledActionButton label="Apply Break-Even" enabled={!!trade.breakeven?.eligible} />
-        <DisabledActionButton label="Apply TP Adjustment" enabled={!!trade.dynamicTP} />
-        <DisabledActionButton
-          label="Apply Partial Close"
-          enabled={(trade.partialClose?.recommendedPartialClosePercent ?? 0) > 0}
-        />
-        <DisabledActionButton label="Apply Trailing Stop" enabled={!!trade.dynamicTrail?.recommended} />
-        <DisabledActionButton label="Close Trade" enabled />
-      </div>
+      {/* Execution panel — close/partial buttons activate when the
+          recommendation calls for them. SL-move / TP-adjust / trailing-stop
+          remain infrastructure-only buttons until those endpoints land. */}
+      {(() => {
+        const closeMode = deriveCloseMode({
+          lifecycleAction: trade.lifecycleRecommendation?.action,
+          classicAction: trade.recommendedAction,
+          shouldAutoClose: trade.lifecycleRecommendation?.shouldAutoClose,
+          partialPercent:
+            trade.partialClose?.recommendedPartialClosePercent ??
+            trade.partialExitPercent ??
+            null,
+          defaultPartialPercent: 25,
+        });
+        const reason =
+          trade.lifecycleRecommendation?.unifiedSummary ??
+          trade.lifecycleRecommendation?.reason ??
+          (trade.managementReasons ?? []).join(' · ') ??
+          '';
+        const direction = trade.direction;
+        const totalUnits = trade.units != null
+          ? Math.abs(Number(trade.units))
+          : 0;
+        return (
+          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <DisabledActionButton label="Apply Break-Even" enabled={!!trade.breakeven?.eligible} />
+            <DisabledActionButton label="Apply TP Adjustment" enabled={!!trade.dynamicTP} />
+            <DisabledActionButton label="Apply Trailing Stop" enabled={!!trade.dynamicTrail?.recommended} />
+            {closeMode ? (
+              <CloseTradeButton
+                tradeId={trade.tradeId}
+                instrument={trade.instrument}
+                totalUnits={totalUnits || 1}
+                unrealizedPL={trade.currentPnL}
+                direction={direction}
+                mode={closeMode.mode}
+                partialPercent={closeMode.partialPercent}
+                reason={reason}
+                isLive={isLive}
+                onAfter={onAfterClose}
+              />
+            ) : (
+              <DisabledActionButton label="Close Trade" enabled={false} />
+            )}
+          </div>
+        );
+      })()}
 
       {trade.recommendedStopLoss != null && (
         <div style={{ ...s.factorsBox, marginTop: 10 }}>
@@ -1995,6 +2421,12 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
     // threshold and the monthly E[RR] vs Realized-R panel.
     refreshCalibration();
   }, [hasBroker, refreshActiveTrades, refreshReassess, refreshCalibration]);
+
+  // Re-fetch both the analysis + reassess panels after any close-trade
+  // execution so the UI reflects the new broker state.
+  const refreshAfterClose = useCallback(async () => {
+    await Promise.allSettled([refreshActiveTrades(), refreshReassess()]);
+  }, [refreshActiveTrades, refreshReassess]);
 
   const scan = state?.scan;
   const qualified = scan?.qualified ?? [];
@@ -2213,7 +2645,14 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
             {activeTrades?.meta?.notice || 'No open trades on the broker account.'}
           </EmptyBlock>
         )}
-        {activeTrades?.trades?.map((t) => <ActiveTradeCard key={t.tradeId} trade={t} />)}
+        {activeTrades?.trades?.map((t) => (
+          <ActiveTradeCard
+            key={t.tradeId}
+            trade={t}
+            onAfterClose={refreshAfterClose}
+            isLive={!!state?.isLiveTrading}
+          />
+        ))}
       </section>
 
       {/* ── 30-min reassessment ─────────────────────────────────────────── */}
@@ -2263,7 +2702,14 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
             {reassess?.meta?.notice || 'No open positions to reassess.'}
           </EmptyBlock>
         )}
-        {reassess?.trades?.map((t) => <ReassessRow key={t.tradeId} trade={t} />)}
+        {reassess?.trades?.map((t) => (
+          <ReassessRow
+            key={t.tradeId}
+            trade={t}
+            onAfterClose={refreshAfterClose}
+            isLive={!!state?.isLiveTrading}
+          />
+        ))}
       </section>
 
       {/* ── Strategy calibration (self-improvement layer) ──────────────────── */}

@@ -957,6 +957,127 @@ export async function closePosition(instrument) {
   }
 }
 
+/**
+ * Multi-tenant close helper.
+ *
+ *   PUT /v3/accounts/{accountId}/trades/{tradeId}/close
+ *     body: { units: 'ALL' | String(N) }
+ *
+ * Closes a specific OANDA trade by tradeId, supporting full or partial.
+ * Requires a per-request client (no env-default fallback) — the dashboard
+ * close path always runs inside runUserScoped on the internal endpoint.
+ *
+ * @param {Object} args
+ * @param {string} args.tradeId      — OANDA trade id (REQUIRED)
+ * @param {string} [args.instrument] — OANDA instrument, used for cleanup +
+ *                                     logging. If omitted, the active-trades
+ *                                     local lock cache is left untouched.
+ * @param {number|string} [args.units]  — units to close. Omitted or 'ALL' →
+ *                                        full close. Numeric (positive) → partial.
+ * @param {Object} args.client       — per-request OANDA client (REQUIRED)
+ *
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   action: 'closed' | 'partial_closed',
+ *   instrument: string|null,
+ *   tradeId: string,
+ *   unitsClosed: number,
+ *   brokerOrderId: string|null,
+ *   pnl: number|null,
+ *   message: string,
+ *   raw?: object,
+ *   error?: string,
+ * }>}
+ */
+export async function closeBrokerTrade({ tradeId, instrument = null, units, client }) {
+  if (!client) {
+    throw new Error('closeBrokerTrade: per-request client is required');
+  }
+  if (!tradeId) {
+    throw new Error('closeBrokerTrade: tradeId is required');
+  }
+  const isFullClose = units == null || String(units).toUpperCase() === 'ALL';
+  const body = {
+    units: isFullClose ? 'ALL' : String(Math.max(1, Math.floor(Number(units)))),
+  };
+  console.log(
+    `[TRADE_CLOSE] tradeId=${tradeId} instrument=${instrument ?? '?'} ` +
+      `units=${body.units} env=${client.environment}`,
+  );
+  try {
+    const response = await client.put(
+      `/v3/accounts/${client.accountId}/trades/${tradeId}/close`,
+      body,
+    );
+    // OANDA returns orderFillTransaction OR orderCancelTransaction at the top
+    // level. The fill transaction carries the realised PnL on close.
+    const fill = response?.orderFillTransaction ?? null;
+    const cancel = response?.orderCancelTransaction ?? null;
+    if (cancel) {
+      const reason = cancel.reason || 'cancelled by broker';
+      console.warn(`[TRADE_CLOSE] ✗ cancelled tradeId=${tradeId} reason=${reason}`);
+      return {
+        ok: false,
+        action: isFullClose ? 'closed' : 'partial_closed',
+        instrument,
+        tradeId,
+        unitsClosed: 0,
+        brokerOrderId: null,
+        pnl: null,
+        message: `OANDA cancelled close request: ${reason}`,
+        error: reason,
+        raw: response,
+      };
+    }
+    const unitsClosedRaw =
+      fill?.units != null
+        ? fill.units
+        : body.units === 'ALL'
+          ? 0
+          : body.units;
+    const unitsClosed = Math.abs(parseFloat(unitsClosedRaw));
+    const pnl = fill?.pl != null ? parseFloat(fill.pl) : null;
+    const brokerOrderId = fill?.id ?? fill?.tradeID ?? null;
+    if (instrument) {
+      // Best-effort cleanup of the local lock cache for full closes.
+      if (isFullClose) {
+        activeTrades.delete(`${instrument}_long`);
+        activeTrades.delete(`${instrument}_short`);
+      }
+    }
+    console.log(
+      `[TRADE_CLOSE] ✓ tradeId=${tradeId} unitsClosed=${unitsClosed} pnl=${pnl ?? 'n/a'}`,
+    );
+    return {
+      ok: true,
+      action: isFullClose ? 'closed' : 'partial_closed',
+      instrument,
+      tradeId,
+      unitsClosed: Number.isFinite(unitsClosed) ? unitsClosed : 0,
+      brokerOrderId,
+      pnl,
+      message: isFullClose
+        ? `Trade ${tradeId} closed.`
+        : `Closed ${unitsClosed} units of trade ${tradeId}.`,
+      raw: response,
+    };
+  } catch (err) {
+    const message = err?.message || String(err);
+    console.error(`[TRADE_CLOSE] ✗ tradeId=${tradeId} error=${message}`);
+    return {
+      ok: false,
+      action: isFullClose ? 'closed' : 'partial_closed',
+      instrument,
+      tradeId,
+      unitsClosed: 0,
+      brokerOrderId: null,
+      pnl: null,
+      message: `Close failed: ${message}`,
+      error: message,
+    };
+  }
+}
+
 export function getTradeState() {
   return {
     autoTradeEnabled:   AUTO_TRADE_ENABLED,

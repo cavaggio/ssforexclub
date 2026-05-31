@@ -377,6 +377,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     tradeId: String(oandaTrade.id),
     instrument: pair,
     direction: side,
+    units: Math.abs(units),                              // absolute, for partial-close math
     assetClass: profile.assetClass,
     selectedLogicType: entryContext.entrySelectedLogicType ??
       (profile.assetClass === 'Metal' ? 'metals' :
