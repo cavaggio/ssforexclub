@@ -16,6 +16,7 @@
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
 import { logTradeEvent } from '@/lib/tradeLogs';
+import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -82,6 +83,9 @@ export async function POST(req: Request) {
         recommendation: typeof signal.rrTier === 'string' ? signal.rrTier : null,
         reason: reasonStr,
         rawPayload: { signal, trade },
+        // V3 Edge Intelligence — capture the conditions this trade was opened
+        // under. Entry-time fields only; pnl/exit are filled on the close event.
+        edge: opened ? edgeSnapshotFromSignal(signal) : null,
       });
     },
   });

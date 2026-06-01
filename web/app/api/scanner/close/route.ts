@@ -87,6 +87,8 @@ export async function POST(req: Request) {
       // (full) / partial_closed (partial) on success, or error on failure.
       const close = (result.data ?? {}) as Record<string, unknown>;
       const isPartial = close.action === 'partial_closed' || (v.body.units !== 'ALL');
+      const pnl = typeof close.pnl === 'number' ? close.pnl : null;
+      const instrument = typeof v.body.instrument === 'string' ? v.body.instrument : null;
       await logTradeEvent({
         userId: ctx.userId,
         broker: ctx.broker,
@@ -97,15 +99,26 @@ export async function POST(req: Request) {
             ? 'partial_closed'
             : 'manual_close_executed'
           : 'error',
-        instrument: typeof v.body.instrument === 'string' ? v.body.instrument : null,
+        instrument,
         tradeId: typeof v.body.tradeId === 'string' ? v.body.tradeId : null,
         brokerOrderId: typeof close.brokerOrderId === 'string' ? close.brokerOrderId : null,
         unitsClosed: typeof close.unitsClosed === 'number' ? close.unitsClosed : null,
-        realizedPL: typeof close.pnl === 'number' ? close.pnl : null,
+        realizedPL: pnl,
         reason: typeof close.message === 'string'
           ? close.message
           : result.ok ? null : result.error ?? null,
         rawPayload: { close, requestedUnits: v.body.units },
+        // V3 Edge Intelligence — realised outcome of the closed trade. Entry-
+        // condition fields were captured on the 'opened' event; here we record
+        // pair / exit-time / pnl / win-loss so closed trades carry an outcome.
+        edge: result.ok
+          ? {
+              pair: instrument,
+              exitTime: new Date().toISOString(),
+              pnl,
+              winLoss: pnl == null ? null : pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
+            }
+          : null,
       });
     },
   });
