@@ -1,0 +1,42 @@
+[
+  {
+    "time": "2026-06-05T12:30:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "type": "NFP",
+    "title": "Non-Farm Payrolls",
+    "actual": null,
+    "forecast": 185000,
+    "previous": 175000
+  },
+  {
+    "time": "2026-06-11T12:30:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "type": "CPI",
+    "title": "CPI YoY",
+    "actual": null,
+    "forecast": 3.1,
+    "previous": 3.4
+  },
+  {
+    "time": "2026-06-18T18:00:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "type": "FOMC",
+    "title": "FOMC Rate Decision",
+    "actual": null,
+    "forecast": 5.5,
+    "previous": 5.5
+  },
+  {
+    "time": "2026-06-12T11:45:00Z",
+    "currency": "EUR",
+    "impact": "high",
+    "type": "ECB",
+    "title": "ECB Main Refinancing Rate",
+    "actual": null,
+    "forecast": 3.75,
+    "previous": 4.0
+  }
+]
