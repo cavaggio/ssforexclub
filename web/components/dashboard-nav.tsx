@@ -12,8 +12,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const LINKS = [
-  { href: '/dashboard',          label: 'Dashboard' },
-  { href: '/dashboard/settings', label: 'Settings'  },
+  { href: '/dashboard',                  label: 'Dashboard'        },
+  { href: '/dashboard/edge-intelligence', label: 'Edge Intelligence' },
+  { href: '/dashboard/settings',         label: 'Settings'         },
 ];
 
 export function DashboardNav() {
