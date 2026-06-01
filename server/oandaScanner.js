@@ -48,6 +48,9 @@ import { qualifyByAssetClass } from './oandaAssetClassRouter.js';
 import { computeExpectedRR } from './oandaExpectedRR.js';
 import { getCalibrationSnapshot } from './oandaCalibration.js';
 import { getTradeHistory } from './oandaTradeHistory.js';
+// Signal Stack V3 — additive intelligence layers (read-only; never gate qualification)
+import { analyzeMacroRisk, analyzeMacroBias } from './macroEngine.js';
+import { detectMarketRegime } from './marketRegimeEngine.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
@@ -830,6 +833,46 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       const estimatedHoldMinutes = getEstimatedHoldMinutes(tradeDuration);
       const expectedMovementPips = getExpectedMovementPips(atrPips, tradeDuration);
 
+      // ── Signal Stack V3 — additive intelligence (read-only) ──────────────────
+      // These layers annotate the signal for the dashboard/analytics only. They
+      // are wrapped so a failure can never break a scan or alter qualification.
+      let macroAnalysis = null;
+      let marketRegime = null;
+      try {
+        const [macroRisk, macroBias] = await Promise.all([
+          analyzeMacroRisk(pair),
+          analyzeMacroBias(pair),
+        ]);
+        macroAnalysis = {
+          risk: macroRisk.macroRisk,
+          bias: macroBias.macroBias,
+          strength: macroBias.strength,
+          reasons: macroBias.reasons,
+          upcomingEvents: macroRisk.upcomingEvents,
+          hoursUntilNextEvent: macroRisk.hoursUntilNextEvent,
+          recommendation: macroRisk.recommendation,
+        };
+      } catch (macroErr) {
+        console.log(`[SCANNER] macro layer skipped for ${pair}: ${macroErr.message}`);
+      }
+      try {
+        marketRegime = detectMarketRegime({
+          pair,
+          indicators: {
+            atrPips,
+            rsi: momentum.rsi,
+            emaAlignment: momentum.m15Alignment,
+            trend: momentum.m15Trend,
+            trendStrength: macro.trendStrength,
+            volatilityRegime: macro.volatilityRegime,
+            structureType: macro?.marketStructure?.type,
+            marketState: marketState.marketState,
+          },
+        });
+      } catch (regimeErr) {
+        console.log(`[SCANNER] regime layer skipped for ${pair}: ${regimeErr.message}`);
+      }
+
       qualified.push({
         pair,
         instrumentName,
@@ -998,6 +1041,9 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           candleConfirmation: momentum.candleConfirmation === 'bullish' || momentum.candleConfirmation === 'bearish' ? 2 : 0,
         },
         historicalWinRate: null,
+        // Signal Stack V3 — additive intelligence layers (informational only)
+        macroAnalysis,
+        marketRegime,
         generatedAt: new Date().toISOString(),
       });
       console.log(`[SCANNER] ✓ ${pair} ${direction.toUpperCase()} — QUALIFIED (alignment ${alignment.timeframeAlignmentScore}/100, conf ${confidence}%)`);
