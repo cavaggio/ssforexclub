@@ -15,6 +15,7 @@
 
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
+import { logTradeEvent } from '@/lib/tradeLogs';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -56,5 +57,32 @@ export async function POST(req: Request) {
     payloadKey: 'trade',
     requireLive: true,
     extraBody: { signal: validated.signal },
+    afterCall: async (ctx, result) => {
+      const signal = validated.signal;
+      const trade = (result.data ?? {}) as Record<string, unknown>;
+      const opened = result.ok && trade.success === true;
+      const reasonStr = result.ok
+        ? typeof trade.reason === 'string' ? trade.reason : null
+        : result.error ?? null;
+      await logTradeEvent({
+        userId: ctx.userId,
+        broker: ctx.broker,
+        brokerAccountId: ctx.brokerAccountId,
+        environment: ctx.environment,
+        eventType: opened ? 'opened' : 'error',
+        instrument: typeof signal.pair === 'string' ? signal.pair : null,
+        tradeId: typeof trade.tradeId === 'string' ? trade.tradeId : null,
+        brokerOrderId: typeof trade.tradeId === 'string' ? trade.tradeId : null,
+        side: signal.direction === 'long' || signal.direction === 'short' ? signal.direction : null,
+        units: typeof trade.units === 'number' ? Math.abs(trade.units) : null,
+        entryPrice: typeof trade.fillPrice === 'number' ? trade.fillPrice : null,
+        sl: typeof signal.stopLoss === 'number' ? signal.stopLoss : null,
+        tp: typeof signal.takeProfit === 'number' ? signal.takeProfit : null,
+        confidence: typeof signal.confidence === 'number' ? signal.confidence : null,
+        recommendation: typeof signal.rrTier === 'string' ? signal.rrTier : null,
+        reason: reasonStr,
+        rawPayload: { signal, trade },
+      });
+    },
   });
 }

@@ -91,6 +91,14 @@ async function callInternalEndpoint(
  * Always hard-fails when no per-user credentials are available. Logs every
  * call with masked identifiers — never tokens.
  */
+export type AfterCallContext = {
+  userId: string;
+  broker: 'oanda' | 'alpaca';
+  environment: 'practice' | 'live' | 'paper';
+  brokerAccountId: string | null;
+  isLiveTrading: boolean;
+};
+
 export async function callScannerForCurrentUser(args: {
   internalPath: string;
   logTag: string;
@@ -98,8 +106,24 @@ export async function callScannerForCurrentUser(args: {
   extraBody?: Record<string, unknown>;
   requireLive?: boolean;
   skipCredentials?: boolean;
+  /**
+   * Optional hook fired after the internal call returns (whether or not it
+   * succeeded) and before the NextResponse is built. Use this to write trade
+   * logs / audit records from inside the user's authenticated request.
+   * Never throws to the upstream — the proxy wraps it in try/catch.
+   */
+  afterCall?: (ctx: AfterCallContext, result: { ok: boolean; data: unknown; error?: string }) => Promise<void> | void;
 }): Promise<NextResponse> {
-  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false, skipCredentials = false } = args;
+  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false, skipCredentials = false, afterCall } = args;
+
+  const runAfterCall = async (ctx: AfterCallContext, result: { ok: boolean; data: unknown; error?: string }) => {
+    if (!afterCall) return;
+    try {
+      await afterCall(ctx, result);
+    } catch (err) {
+      console.warn(`[${logTag}] afterCall hook failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   const { userId } = await auth();
   if (!userId) {
@@ -186,9 +210,20 @@ export async function callScannerForCurrentUser(args: {
     ...extraBody,
   });
 
+  const afterCtx: AfterCallContext = {
+    userId,
+    broker: (resolved.activeBroker ?? 'oanda') as 'oanda' | 'alpaca',
+    environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+    brokerAccountId: creds.accountId,
+    isLiveTrading: resolved.isLiveTrading,
+  };
+
   if (!result.ok) {
+    await runAfterCall(afterCtx, { ok: false, data: null, error: result.error });
     return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
   }
+
+  await runAfterCall(afterCtx, { ok: true, data: result.data });
 
   return NextResponse.json({
     ok: true,

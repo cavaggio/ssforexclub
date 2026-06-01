@@ -24,6 +24,7 @@
 
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
+import { logTradeEvent } from '@/lib/tradeLogs';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -79,5 +80,33 @@ export async function POST(req: Request) {
     logTag: 'SCANNER_CLOSE',
     payloadKey: 'close',
     extraBody: v.body,
+    afterCall: async (ctx, result) => {
+      // Treat the close response as the payload — closeBrokerTrade returns
+      // { ok, action, instrument, tradeId, unitsClosed, brokerOrderId, pnl,
+      //   message, error?, raw? } either way. Log either manual_close_executed
+      // (full) / partial_closed (partial) on success, or error on failure.
+      const close = (result.data ?? {}) as Record<string, unknown>;
+      const isPartial = close.action === 'partial_closed' || (v.body.units !== 'ALL');
+      await logTradeEvent({
+        userId: ctx.userId,
+        broker: ctx.broker,
+        brokerAccountId: ctx.brokerAccountId,
+        environment: ctx.environment,
+        eventType: result.ok
+          ? isPartial
+            ? 'partial_closed'
+            : 'manual_close_executed'
+          : 'error',
+        instrument: typeof v.body.instrument === 'string' ? v.body.instrument : null,
+        tradeId: typeof v.body.tradeId === 'string' ? v.body.tradeId : null,
+        brokerOrderId: typeof close.brokerOrderId === 'string' ? close.brokerOrderId : null,
+        unitsClosed: typeof close.unitsClosed === 'number' ? close.unitsClosed : null,
+        realizedPL: typeof close.pnl === 'number' ? close.pnl : null,
+        reason: typeof close.message === 'string'
+          ? close.message
+          : result.ok ? null : result.error ?? null,
+        rawPayload: { close, requestedUnits: v.body.units },
+      });
+    },
   });
 }

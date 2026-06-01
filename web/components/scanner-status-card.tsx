@@ -26,6 +26,36 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+
+// Mirrors the row shape exposed by web/lib/tradeLogs.ts. Kept inline to avoid
+// importing the server-only helper from a client component.
+type TradeLogRow = {
+  id: string;
+  created_at: string;
+  broker: string;
+  broker_account_id: string | null;
+  environment: string;
+  event_type:
+    | 'opened' | 'closed' | 'partial_closed' | 'tp_updated' | 'sl_updated'
+    | 'reassessed' | 'auto_close_recommended' | 'manual_close_executed' | 'error';
+  instrument: string | null;
+  trade_id: string | null;
+  broker_order_id: string | null;
+  side: 'long' | 'short' | null;
+  units: number | null;
+  units_closed: number | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  realized_pl: number | null;
+  unrealized_pl: number | null;
+  tp: number | null;
+  sl: number | null;
+  recommendation: string | null;
+  confidence: number | null;
+  reason: string | null;
+  raw_payload: unknown;
+};
+
 import type {
   ForexScanResult,
   ForexSignal,
@@ -2304,6 +2334,11 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
   const [calibrationLoading, setCalibrationLoading] = useState(false);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
 
+  const [tradeLogs, setTradeLogs] = useState<TradeLogRow[]>([]);
+  const [tradeLogsLoading, setTradeLogsLoading] = useState(false);
+  const [tradeLogsError, setTradeLogsError] = useState<string | null>(null);
+  const [tradeLogsFilter, setTradeLogsFilter] = useState<string>('all');
+
   const runScan = useCallback(async () => {
     setPending(true);
     setError(null);
@@ -2392,6 +2427,26 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
     }
   }, []);
 
+  const refreshTradeLogs = useCallback(async (eventTypeFilter?: string) => {
+    setTradeLogsLoading(true);
+    setTradeLogsError(null);
+    try {
+      const qs = new URLSearchParams({ limit: '50' });
+      if (eventTypeFilter && eventTypeFilter !== 'all') qs.set('event_type', eventTypeFilter);
+      const res = await fetch(`/api/scanner/trade-logs?${qs.toString()}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setTradeLogs((json.rows as TradeLogRow[]) ?? []);
+    } catch (err) {
+      setTradeLogsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTradeLogsLoading(false);
+    }
+  }, []);
+
   const refreshCalibration = useCallback(async () => {
     setCalibrationLoading(true);
     setCalibrationError(null);
@@ -2416,17 +2471,20 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       refreshActiveTrades();
       refreshReassess();
     }
-    // Calibration is broker-free — fetch on mount regardless. It uses the
-    // platform's resolved trade history to derive the active rejection
-    // threshold and the monthly E[RR] vs Realized-R panel.
+    // Calibration + trade logs are broker-free — fetch on mount regardless.
     refreshCalibration();
-  }, [hasBroker, refreshActiveTrades, refreshReassess, refreshCalibration]);
+    refreshTradeLogs(tradeLogsFilter);
+  }, [hasBroker, refreshActiveTrades, refreshReassess, refreshCalibration, refreshTradeLogs, tradeLogsFilter]);
 
   // Re-fetch both the analysis + reassess panels after any close-trade
   // execution so the UI reflects the new broker state.
   const refreshAfterClose = useCallback(async () => {
-    await Promise.allSettled([refreshActiveTrades(), refreshReassess()]);
-  }, [refreshActiveTrades, refreshReassess]);
+    await Promise.allSettled([
+      refreshActiveTrades(),
+      refreshReassess(),
+      refreshTradeLogs(tradeLogsFilter),
+    ]);
+  }, [refreshActiveTrades, refreshReassess, refreshTradeLogs, tradeLogsFilter]);
 
   const scan = state?.scan;
   const qualified = scan?.qualified ?? [];
@@ -2747,7 +2805,181 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         )}
         {calibration && <CalibrationPanel snapshot={calibration} />}
       </section>
+
+      {/* ── Trade logs / history ──────────────────────────────────────────── */}
+      <section style={s.section}>
+        <SectionHeader
+          title={`Trade logs (${tradeLogs.length})`}
+          subtitle="Per-user history of opens, closes, reassessments, and recommendations — read from Supabase. Filter by event type to narrow down."
+          right={
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                value={tradeLogsFilter}
+                onChange={(e) => setTradeLogsFilter(e.target.value)}
+                style={{
+                  padding: '6px 10px',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontFamily: 'inherit',
+                  fontSize: 12,
+                }}
+              >
+                <option value="all">All events</option>
+                <option value="opened">Opened</option>
+                <option value="closed">Closed</option>
+                <option value="partial_closed">Partial closed</option>
+                <option value="manual_close_executed">Manual close</option>
+                <option value="auto_close_recommended">Auto-close recommended</option>
+                <option value="reassessed">Reassessed</option>
+                <option value="error">Errors</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => refreshTradeLogs(tradeLogsFilter)}
+                disabled={tradeLogsLoading}
+                style={s.refreshBtn}
+              >
+                {tradeLogsLoading ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+          }
+        />
+        {tradeLogsError && (
+          <div
+            style={{
+              padding: '10px 14px',
+              background: '#320d0d',
+              border: '1px solid #5c1a1a',
+              color: 'var(--bad)',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            <strong>Failed:</strong> {tradeLogsError}
+          </div>
+        )}
+        {!tradeLogsError && tradeLogs.length === 0 && !tradeLogsLoading && (
+          <EmptyBlock>
+            No trade events yet. Open a trade or run a reassessment to see history here.
+          </EmptyBlock>
+        )}
+        {tradeLogs.length > 0 && <TradeLogTable rows={tradeLogs} />}
+      </section>
     </div>
+  );
+}
+
+function TradeLogTable({ rows }: { rows: TradeLogRow[] }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {rows.map((r) => <TradeLogRowItem key={r.id} row={r} />)}
+    </div>
+  );
+}
+
+function TradeLogRowItem({ row }: { row: TradeLogRow }) {
+  const tone: BadgeType =
+    row.event_type === 'opened' ? 'good'
+    : row.event_type === 'closed' || row.event_type === 'manual_close_executed' ? 'info'
+    : row.event_type === 'partial_closed' ? 'warn'
+    : row.event_type === 'auto_close_recommended' ? 'bad'
+    : row.event_type === 'error' ? 'bad'
+    : 'neutral';
+  const pl = row.realized_pl ?? row.unrealized_pl ?? null;
+  return (
+    <details
+      style={{
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '10px 14px',
+      }}
+    >
+      <summary
+        style={{
+          cursor: 'pointer',
+          display: 'flex',
+          gap: 12,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          listStyle: 'none',
+        }}
+      >
+        <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: "'JetBrains Mono', ui-monospace, monospace", minWidth: 160 }}>
+          {new Date(row.created_at).toLocaleString()}
+        </span>
+        <Badge value={row.event_type.replace(/_/g, ' ').toUpperCase()} type={tone} />
+        {row.instrument && (
+          <span style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontWeight: 700, color: 'var(--text)' }}>
+            {displayPair(row.instrument)}
+          </span>
+        )}
+        {row.side && (
+          <Badge value={row.side.toUpperCase()} type={row.side === 'long' ? 'good' : 'bad'} />
+        )}
+        {row.units != null && (
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>{row.units.toLocaleString()} units</span>
+        )}
+        {row.units_closed != null && (
+          <span style={{ fontSize: 12, color: '#ffcc00' }}>↓{row.units_closed.toLocaleString()} closed</span>
+        )}
+        {pl != null && (
+          <span style={{ fontSize: 13, color: pl >= 0 ? '#2dff7a' : '#ff6666', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>
+            ${pl.toFixed(2)}
+          </span>
+        )}
+        {row.recommendation && (
+          <span style={{ fontSize: 12, color: '#4db8ff', fontFamily: "'JetBrains Mono', monospace" }}>
+            rec: {row.recommendation}
+          </span>
+        )}
+        {row.confidence != null && (
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>conf {row.confidence}</span>
+        )}
+      </summary>
+      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+        {row.reason && (
+          <div style={{ marginBottom: 6 }}>
+            <strong style={{ color: 'var(--text)' }}>Reason:</strong> {row.reason}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
+          {row.trade_id && <span>tradeId={row.trade_id}</span>}
+          {row.broker_order_id && row.broker_order_id !== row.trade_id && (
+            <span>orderId={row.broker_order_id}</span>
+          )}
+          <span>{row.broker}/{row.environment}</span>
+          {row.broker_account_id && <span>acct={row.broker_account_id}</span>}
+          {row.entry_price != null && <span>entry={row.entry_price}</span>}
+          {row.exit_price != null && <span>exit={row.exit_price}</span>}
+          {row.tp != null && <span>TP={row.tp}</span>}
+          {row.sl != null && <span>SL={row.sl}</span>}
+        </div>
+        {row.raw_payload != null && (
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Raw payload</summary>
+            <pre
+              style={{
+                marginTop: 6,
+                padding: 8,
+                background: '#08080f',
+                border: '1px solid #1a1a2e',
+                borderRadius: 6,
+                color: '#aaa',
+                fontSize: 11,
+                lineHeight: 1.4,
+                maxHeight: 260,
+                overflow: 'auto',
+              }}
+            >
+              {JSON.stringify(row.raw_payload, null, 2)}
+            </pre>
+          </details>
+        )}
+      </div>
+    </details>
   );
 }
 
