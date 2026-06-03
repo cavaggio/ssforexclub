@@ -91,4 +91,71 @@ export function analyzeSession({ now = null, h1Candles = [], atrPips = null, atr
   return { activeSession, sessionVolatility, sessionBias, sessionQualityScore, reasons };
 }
 
+// ─── Session narrative (V3.5) ────────────────────────────────────────────────
+/**
+ * Turn the raw session + liquidity sweep + structure into an ICT-style trade
+ * story: "London swept Asian Low", "New York continuation", "London breakout",
+ * "Asian accumulation", etc. PURE and read-only — kept OUT of analyzeSession so
+ * that layer's signature/tests are unaffected.
+ *
+ *   buildSessionNarrative({ session, liquidity, structure })
+ *     session   — output of analyzeSession()
+ *     liquidity — output of analyzeLiquidity() (uses the labelled sweep)
+ *     structure — output of analyzeMarketStructure() (BOS / CHoCH)
+ *
+ *   → { sessionNarrative, sessionBias, sessionConfidence }
+ */
+export function buildSessionNarrative({ session = null, liquidity = null, structure = null } = {}) {
+  const sess = session?.activeSession || 'Closed';
+  const sweep = liquidity?.liquiditySweep || null;
+  const sweptSrc = sweep?.sweptSource || null;
+  const sweepDir = sweep?.direction || null;            // 'bullish' | 'bearish'
+  const inLondon = sess.includes('London');
+  const inNY = sess.includes('NewYork');
+  const inAsian = sess === 'Tokyo' || sess === 'Sydney' || sess.includes('Sydney/Tokyo');
+
+  const choch = structure?.chochDetected ? structure.choch?.direction : null;
+  const bos = structure?.bosDetected ? structure.bos?.direction : null;
+  const sweeper = inLondon ? 'London' : inNY ? 'New York' : sess;
+
+  let sessionNarrative;
+  if (sweep && (sweptSrc === 'ASIA_L' || sweptSrc === 'ASIA_H')) {
+    const which = sweptSrc === 'ASIA_L' ? 'Asian Low' : 'Asian High';
+    sessionNarrative = `${sweeper} swept ${which}`;
+    const reversal = (sweptSrc === 'ASIA_L' && choch === 'bullish') ||
+                     (sweptSrc === 'ASIA_H' && choch === 'bearish');
+    if (reversal) sessionNarrative += ` — reversal (CHoCH ${choch})`;
+  } else if (sweep && (sweptSrc === 'EQH' || sweptSrc === 'EQL')) {
+    sessionNarrative = `${sweep.sweptLiquidity} swept — stop run`;
+    if (choch) sessionNarrative += `, CHoCH ${choch}`;
+  } else if (sweep && sweptSrc) {
+    sessionNarrative = `Swept ${sweep.sweptLiquidity}`;
+    if (choch) sessionNarrative += ` — ${sweeper} reversal (CHoCH)`;
+  } else if (inNY && bos && bos === structure?.structureTrend) {
+    sessionNarrative = 'New York continuation';
+  } else if (inLondon && choch) {
+    sessionNarrative = 'London reversal (CHoCH)';
+  } else if (inLondon && bos) {
+    sessionNarrative = 'London breakout';
+  } else if (inAsian && session?.sessionVolatility === 'low') {
+    sessionNarrative = 'Asian accumulation / range';
+  } else {
+    const bias = session?.sessionBias && session.sessionBias !== 'neutral' ? `${session.sessionBias} bias` : 'no clear bias';
+    sessionNarrative = `${sess} — ${bias}`;
+  }
+
+  // A clear sweep direction overrides a vague intraday-flow bias.
+  let sessionBias = session?.sessionBias || 'neutral';
+  if (sweepDir) sessionBias = sweepDir === 'bullish' ? 'bullish' : 'bearish';
+
+  // Confidence: session quality, lifted when a named sweep corroborates structure.
+  let conf = (session?.sessionQualityScore ?? 40) / 100;
+  if (sweptSrc) conf += 0.1;
+  const structDir = choch || bos;
+  if (sweepDir && structDir && (sweepDir === 'bullish') === (structDir === 'bullish')) conf += 0.15;
+  const sessionConfidence = +Math.max(0, Math.min(1, conf)).toFixed(3);
+
+  return { sessionNarrative, sessionBias, sessionConfidence };
+}
+
 export { SESSION_QUALITY };

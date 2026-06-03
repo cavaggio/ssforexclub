@@ -1,45 +1,56 @@
 /**
  * server/v3ExecutionModel.js
  *
- * Signal Stack V3 — re-weighted execution scoring model.
+ * Signal Stack V3.5 — liquidity-first execution scoring model.
  *
- *   scoreV3({ pair, direction?, liquidity, structure, session, volatility,
- *             momentum, emaAlignment, targets })
+ *   scoreV3({ pair, direction?, liquidity, liquidityIntent, premiumDiscount,
+ *             structure, session, sessionNarrative, volatility, momentum,
+ *             emaAlignment, targets })
  *
- * Shifts the engine from a confirmation/EMA/momentum model to a
- * liquidity + structure + volatility model. New priority order and weights:
+ * V3.5 moves the engine from structure-first to LIQUIDITY-FIRST. The three
+ * liquidity factors collectively dominate (50/100). New priority + weights:
  *
- *     Liquidity   28
- *     Structure   24
- *     Session     18
- *     Volatility  16
- *     Momentum     9
- *     EMA          5      (informational only)
- *                ----
- *                100
+ *     Liquidity Intent    20   ← where stops rest / draw on liquidity (primary)
+ *     Liquidity Sweep     17   ← pool-aware sweep + reclaim
+ *     Liquidity Pools     13   ← draw toward nearest pool + remaining opportunity
+ *     Structure           18   ← BOS / CHoCH / trend
+ *     Session Narrative   12   ← "London swept Asian Low", "NY continuation"…
+ *     Volatility          10
+ *     Momentum             6
+ *     EMA                  4   ← informational only; never gates
+ *                        ----
+ *                        100
  *
- * Beyond the weighted score, qualification enforces the "enter earlier"
- * doctrine via two hard rules:
- *   1. There must be an EARLY-ENTRY TRIGGER (liquidity sweep, fresh BOS/CHoCH,
- *      or compression→expansion) — otherwise the entry is a late confirmation.
- *   2. There must be REMAINING OPPORTUNITY (targets.accepted) — no entering
- *      after a major level already caps the move.
+ * Premium/Discount is NOT a standalone weight. It is an entry-quality penalty
+ * folded into the Liquidity-Intent pillar: buying premium / selling discount
+ * haircuts the dominant pillar by up to 40%. It influences quality, never gates.
  *
- * Returns a score, per-pillar breakdown, qualification decision, the chosen
- * direction, and a plain-language trade narrative. This module is PURE — it
- * decides nothing on its own; the scanner consumes it under a feature flag.
+ * Qualification still enforces the "enter earlier" doctrine via the same hard
+ * rules as V3 (unchanged behaviour):
+ *   1. An EARLY-ENTRY TRIGGER (liquidity sweep, fresh BOS/CHoCH, or
+ *      compression→expansion) — otherwise the entry is a late confirmation.
+ *   2. REMAINING OPPORTUNITY (targets.accepted) — no entering after a major
+ *      level already caps the move.
+ *
+ * This module is PURE — it decides nothing on its own; the scanner consumes it
+ * under FOREX_V3_ENGINE_MODE.
  */
 
 export const V3_WEIGHTS = Object.freeze({
-  liquidity: 28,
-  structure: 24,
-  session: 18,
-  volatility: 16,
-  momentum: 9,
-  ema: 5,
+  liquidityIntent: 20,
+  liquiditySweep: 17,
+  liquidityPools: 13,
+  structure: 18,
+  sessionNarrative: 12,
+  volatility: 10,
+  momentum: 6,
+  ema: 4,
 });
 
 const V3_MIN_SCORE = parseFloat(process.env.FOREX_V3_MIN_SCORE || '55');
+
+// How hard premium/discount can haircut the liquidity-intent pillar (0..1).
+const PD_PENALTY_WEIGHT = 0.4;
 
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 const dirSign = (d) => (d === 'long' ? 'bullish' : d === 'short' ? 'bearish' : null);
@@ -64,22 +75,62 @@ function deriveDirection({ structure, liquidity, session }) {
 
 // ─── Pillar scorers (each → 0..1 with notes) ─────────────────────────────────
 
-function scoreLiquidity(direction, liquidity, targets) {
+// Liquidity Intent — the primary factor. Base score is the stop-hunt engine's
+// intentScore (does the trade target the heavier resting liquidity?). The
+// premium/discount penalty folds in here: buying premium / selling discount
+// haircuts the dominant pillar.
+function scoreLiquidityIntent(direction, intent, premiumDiscount) {
   const notes = [];
-  if (!liquidity) return { s: 0.4, notes: ['No liquidity context.'] };
-  const sign = dirSign(direction);
-  let s = 0.4;
-  const sweep = liquidity.liquiditySweep;
-  if (liquidity.liquiditySweepDetected && sweep?.direction === sign) {
-    s += 0.3; notes.push(`Liquidity sweep ${sweep.direction} aligns with ${direction}.`);
-  } else if (liquidity.liquiditySweepDetected && sweep?.direction && sweep.direction !== sign) {
-    s -= 0.15; notes.push(`Liquidity sweep ${sweep.direction} opposes ${direction}.`);
+  if (!intent) return { s: 0.4, notes: ['No liquidity-intent context.'] };
+  let s = Number.isFinite(intent.intentScore) ? intent.intentScore : 0.45;
+  notes.push(`Liquidity bias ${intent.liquidityBias}.`);
+  if (intent.expectedLiquidityTarget) {
+    notes.push(`Expected draw on liquidity: ${intent.expectedLiquidityTarget.label} (${intent.expectedLiquidityTarget.distancePips}p).`);
   }
+  if (premiumDiscount && premiumDiscount.enabled) {
+    const pen = premiumDiscount.entryQualityPenalty || 0;
+    if (pen > 0) {
+      s *= 1 - PD_PENALTY_WEIGHT * pen;
+      notes.push(`${premiumDiscount.premiumDiscountState} entry — ${(pen * 100).toFixed(0)}% premium/discount penalty.`);
+    } else {
+      notes.push(`${premiumDiscount.premiumDiscountState} entry — favourable side.`);
+    }
+  }
+  return { s: clamp01(s), notes };
+}
+
+// Liquidity Sweep — was a named pool's resting liquidity run and reclaimed in
+// the trade direction? A strong aligned sweep is the best early trigger.
+function scoreLiquiditySweep(direction, liquidity) {
+  const sign = dirSign(direction);
+  if (!liquidity || !liquidity.liquiditySweepDetected || !liquidity.liquiditySweep) {
+    return { s: 0.35, notes: ['No liquidity sweep — entry lacks an early stop-run trigger.'] };
+  }
+  const sweep = liquidity.liquiditySweep;
+  const strength = Number.isFinite(sweep.sweepStrength) ? sweep.sweepStrength : 0.5;
+  if (sweep.direction === sign) {
+    return {
+      s: clamp01(0.55 + strength * 0.4),
+      notes: [`${sweep.sweptLiquidity || 'Liquidity'} swept ${sweep.direction} — aligns with ${direction} (strength ${strength}).`],
+    };
+  }
+  if (sweep.direction && sweep.direction !== sign) {
+    return { s: 0.25, notes: [`${sweep.sweptLiquidity || 'Liquidity'} swept ${sweep.direction} — opposes ${direction}.`] };
+  }
+  return { s: 0.5, notes: ['Liquidity sweep detected (direction-neutral).'] };
+}
+
+// Liquidity Pools — is price being drawn toward a pool in the trade direction,
+// and is there enough room before a major level caps the move?
+function scoreLiquidityPools(direction, liquidity, targets) {
+  const notes = [];
+  if (!liquidity) return { s: 0.4, notes: ['No liquidity-pool context.'] };
+  let s = 0.4;
   const target = direction === 'long' ? liquidity.nearestLiquidityAbove : liquidity.nearestLiquidityBelow;
-  if (target) { s += 0.2; notes.push(`Draw toward ${target.label} (${target.distancePips}p).`); }
+  if (target) { s += 0.25; notes.push(`Draw toward ${target.label} (${target.distancePips}p).`); }
   if (targets) {
-    if (targets.accepted) { s += 0.1; notes.push('Remaining opportunity sufficient.'); }
-    else { s -= 0.35; notes.push('Liquidity caps the move — poor remaining opportunity.'); }
+    if (targets.accepted) { s += 0.2; notes.push('Remaining opportunity sufficient.'); }
+    else { s -= 0.3; notes.push('Liquidity caps the move — poor remaining opportunity.'); }
   }
   return { s: clamp01(s), notes };
 }
@@ -107,16 +158,24 @@ function scoreStructure(direction, structure) {
   return { s: clamp01(s), notes };
 }
 
-function scoreSession(direction, session) {
+// Session Narrative — the ICT trade story (sweep + session + structure) and how
+// well its bias agrees with the trade.
+function scoreSessionNarrative(direction, narrative, session) {
   const notes = [];
-  if (!session) return { s: 0.4, notes: ['No session context.'] };
-  let s = (session.sessionQualityScore ?? 40) / 100;
-  if (session.sessionBias && session.sessionBias !== 'neutral') {
-    const sign = dirSign(direction);
-    if ((session.sessionBias === 'bullish') === (sign === 'bullish')) s = Math.min(1, s + 0.05);
-    else s = Math.max(0, s - 0.05);
+  if (!narrative) {
+    if (!session) return { s: 0.4, notes: ['No session context.'] };
+    notes.push(`${session.activeSession} (quality ${session.sessionQualityScore}).`);
+    return { s: clamp01((session.sessionQualityScore ?? 40) / 100), notes };
   }
-  notes.push(`${session.activeSession} (quality ${session.sessionQualityScore}).`);
+  let s = Number.isFinite(narrative.sessionConfidence)
+    ? narrative.sessionConfidence
+    : (session?.sessionQualityScore ?? 40) / 100;
+  const sign = dirSign(direction);
+  if (narrative.sessionBias && narrative.sessionBias !== 'neutral') {
+    if ((narrative.sessionBias === 'bullish') === (sign === 'bullish')) s = Math.min(1, s + 0.05);
+    else s = Math.max(0, s - 0.1);
+  }
+  notes.push(narrative.sessionNarrative);
   return { s: clamp01(s), notes };
 }
 
@@ -152,8 +211,11 @@ export function scoreV3({
   pair,
   direction = null,
   liquidity = null,
+  liquidityIntent = null,
+  premiumDiscount = null,
   structure = null,
   session = null,
+  sessionNarrative = null,
   volatility = null,
   momentum = null,
   emaAlignment = null,
@@ -175,9 +237,11 @@ export function scoreV3({
   }
 
   const p = {
-    liquidity: scoreLiquidity(chosen, liquidity, targets),
+    liquidityIntent: scoreLiquidityIntent(chosen, liquidityIntent, premiumDiscount),
+    liquiditySweep: scoreLiquiditySweep(chosen, liquidity),
+    liquidityPools: scoreLiquidityPools(chosen, liquidity, targets),
     structure: scoreStructure(chosen, structure),
-    session: scoreSession(chosen, session),
+    sessionNarrative: scoreSessionNarrative(chosen, sessionNarrative, session),
     volatility: scoreVolatility(volatility),
     momentum: scoreMomentum(chosen, momentum),
     ema: scoreEma(chosen, emaAlignment),
@@ -202,7 +266,7 @@ export function scoreV3({
     volatility?.volatilityState === 'expanding' ||
     volatility?.volatilityState === 'compressed';
 
-  // Qualification gates.
+  // Qualification gates (behaviour unchanged from V3).
   const rejectionReasons = [];
   if (targets && targets.accepted === false) {
     rejectionReasons.push(targets.rejectionReason || 'Insufficient remaining opportunity.');
@@ -241,7 +305,7 @@ export function scoreV3({
 
 function buildNarrative({ pair, direction, pillars, targets, earlyTrigger, qualified }) {
   const bits = [];
-  for (const key of ['liquidity', 'structure', 'session', 'volatility']) {
+  for (const key of ['liquidityIntent', 'liquiditySweep', 'structure', 'sessionNarrative']) {
     const n = pillars[key]?.notes?.[0];
     if (n) bits.push(n);
   }
@@ -250,7 +314,7 @@ function buildNarrative({ pair, direction, pillars, targets, earlyTrigger, quali
     tgt = ` Targets: TP1 ${targets.tp1.label} (${targets.remainingOpportunityPips}p)` +
           (targets.tp3 ? `, TP3 ${targets.tp3.label} (${targets.expectedMovePotential}p).` : '.');
   }
-  const head = `${qualified ? '✓' : '✗'} ${direction.toUpperCase()} ${pair} [V3]`;
+  const head = `${qualified ? '✓' : '✗'} ${direction.toUpperCase()} ${pair} [V3.5]`;
   const trig = earlyTrigger ? '' : ' (no early trigger)';
   return `${head}${trig}: ${bits.join(' ')}${tgt}`;
 }

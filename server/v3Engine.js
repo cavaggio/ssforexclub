@@ -17,9 +17,11 @@
 
 import { analyzeLiquidity } from './liquidityEngine.js';
 import { analyzeMarketStructure } from './marketStructureEngine.js';
-import { analyzeSession } from './sessionEngine.js';
+import { analyzeSession, buildSessionNarrative } from './sessionEngine.js';
 import { analyzeVolatilityExpansion } from './volatilityExpansionEngine.js';
 import { computeLiquidityTargets } from './liquidityTargeting.js';
+import { analyzeLiquidityIntent } from './liquidityIntent.js';
+import { analyzePremiumDiscount } from './premiumDiscount.js';
 import { scoreV3, deriveDirection } from './v3ExecutionModel.js';
 import { detectFibSetup } from './oandaFibonacci.js';
 import { getPipSize } from './pipMath.js';
@@ -27,23 +29,25 @@ import { getPipSize } from './pipMath.js';
 export const V3_MODE = String(process.env.FOREX_V3_ENGINE_MODE || 'off').toLowerCase();
 export function isV3Enabled() { return V3_MODE === 'shadow' || V3_MODE === 'active'; }
 
+/** detectFibSetup wrapped so a bad candle set can never throw out of evaluateV3. */
+function safeFib(args) {
+  try { return detectFibSetup(args); } catch { return null; }
+}
+
 /**
  * Entry distance from move origin, as a fraction (0..1) of the current impulse.
  * Low = price is near where the move began (early). High = price has already
  * travelled most of the impulse (late). null when no clean impulse is found.
+ * Takes a PRE-COMPUTED fib swing (shared with the premium/discount engine) so
+ * detectFibSetup is only run once per pair.
  */
-function entryDistanceFromOrigin({ pair, direction, h1Candles, h4Candles, currentPrice }) {
-  if (!direction || !Number.isFinite(currentPrice)) return null;
-  try {
-    const fib = detectFibSetup({ direction, h1Candles, h4Candles, currentPrice, pair });
-    if (!fib || !Number.isFinite(fib.swingHigh) || !Number.isFinite(fib.swingLow)) return null;
-    const range = Math.abs(fib.swingHigh - fib.swingLow);
-    if (range <= 0) return null;
-    const origin = direction === 'long' ? fib.swingLow : fib.swingHigh;
-    return +Math.min(1.5, Math.abs(currentPrice - origin) / range).toFixed(3);
-  } catch {
-    return null;
-  }
+function entryDistanceFromOrigin({ direction, fib, currentPrice }) {
+  if (!direction || !Number.isFinite(currentPrice) || !fib) return null;
+  if (!Number.isFinite(fib.swingHigh) || !Number.isFinite(fib.swingLow)) return null;
+  const range = Math.abs(fib.swingHigh - fib.swingLow);
+  if (range <= 0) return null;
+  const origin = direction === 'long' ? fib.swingLow : fib.swingHigh;
+  return +Math.min(1.5, Math.abs(currentPrice - origin) / range).toFixed(3);
 }
 
 export function evaluateV3({
@@ -70,6 +74,17 @@ export function evaluateV3({
 
   const direction = deriveDirection({ structure, liquidity, session });
 
+  // Fib swing — computed ONCE; feeds both the premium/discount engine and the
+  // entry-distance-from-origin KPI (avoids calling detectFibSetup twice).
+  const fib = direction && Number.isFinite(price)
+    ? safeFib({ direction, h1Candles, h4Candles, currentPrice: price, pair })
+    : null;
+
+  // V3.5 liquidity-first engines (all pure / read-only).
+  const liquidityIntent = analyzeLiquidityIntent({ pair, direction, currentPrice: price, liquidity, structure, atrPips });
+  const premiumDiscount = analyzePremiumDiscount({ pair, direction, currentPrice: price, fib });
+  const sessionNarrative = buildSessionNarrative({ session, liquidity, structure });
+
   // Independent V3 stop estimate (the legacy lifecycle SL is computed elsewhere
   // and only for legacy-qualified pairs). Used for the remaining-opportunity gate.
   const slPipsEst = Math.max(8, (Number.isFinite(atrPips) ? atrPips : 10) * 1.2);
@@ -81,8 +96,11 @@ export function evaluateV3({
     pair,
     direction,
     liquidity,
+    liquidityIntent,
+    premiumDiscount,
     structure,
     session,
+    sessionNarrative,
     volatility,
     momentum,
     emaAlignment: momentum?.m15Alignment,
@@ -90,7 +108,7 @@ export function evaluateV3({
   });
 
   const entryDistanceFromOriginPct = entryDistanceFromOrigin({
-    pair, direction: scored.direction, h1Candles, h4Candles, currentPrice: price,
+    direction: scored.direction, fib, currentPrice: price,
   });
 
   return {
@@ -107,8 +125,11 @@ export function evaluateV3({
     entryDistanceFromOriginPct,
     targets,
     liquidity,
+    liquidityIntent,
+    premiumDiscount,
     structure,
     session,
+    sessionNarrative,
     volatility,
     slPipsEst,
   };

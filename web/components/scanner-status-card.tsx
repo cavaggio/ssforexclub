@@ -72,6 +72,7 @@ import type {
   ForexNewsRisk,
   EntryTiming,
   StopLossAnalysis,
+  V3Meta,
 } from '@/types/forex';
 
 // ─── Normalized envelope ──────────────────────────────────────────────────────
@@ -786,6 +787,207 @@ function IntradayCell({ label, value, color = '#e0e0ff' }: { label: string; valu
   );
 }
 
+// ─── V3.5 liquidity-first analysis panel (shadow) ───────────────────────────
+
+/** Short, ICT-style tag for a liquidity pool source ("Targeting PDH"). */
+function liquidityTargetTag(source?: string | null): string | null {
+  switch (source) {
+    case 'PDH': return 'PDH';
+    case 'PDL': return 'PDL';
+    case 'PWH': return 'Weekly High';
+    case 'PWL': return 'Weekly Low';
+    case 'ASIA_H': return 'Asian High';
+    case 'ASIA_L': return 'Asian Low';
+    case 'LON_H': return 'London High';
+    case 'LON_L': return 'London Low';
+    case 'NY_H': return 'NY High';
+    case 'NY_L': return 'NY Low';
+    case 'PSESS_H': return 'Prev Session High';
+    case 'PSESS_L': return 'Prev Session Low';
+    case 'EQH': return 'Equal Highs';
+    case 'EQL': return 'Equal Lows';
+    case 'SWING_H': return 'Swing High';
+    case 'SWING_L': return 'Swing Low';
+    default: return null;
+  }
+}
+
+function V3SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, color: '#6fae84', letterSpacing: '0.8px', textTransform: 'uppercase', fontWeight: 700 }}>
+      {children}
+    </div>
+  );
+}
+
+function V3LiquidityPanel({ v3, pair }: { v3: V3Meta; pair: string }) {
+  const liq = v3.liquidity;
+  const intent = v3.liquidityIntent;
+  const pd = v3.premiumDiscount;
+  const sn = v3.sessionNarrative;
+  const targets = v3.targets;
+  const muted: React.CSSProperties = { fontSize: 12, color: '#8a8aa0', fontFamily: "'JetBrains Mono', monospace" };
+  // Keep each tier's own label and drop tiers that resolve to the same pool
+  // (TP3 can equal TP1 when only one pool sits in the trade direction).
+  const tiers: { name: string; t: NonNullable<NonNullable<typeof targets>['tp1']> }[] = [];
+  const seenTierPrices = new Set<number>();
+  for (const [name, t] of [['TP1', targets?.tp1], ['TP2', targets?.tp2], ['TP3', targets?.tp3]] as const) {
+    if (t && !seenTierPrices.has(t.price)) { seenTierPrices.add(t.price); tiers.push({ name, t }); }
+  }
+
+  const pdPenalty = pd?.entryQualityPenalty ?? 0;
+  const pdBadge: BadgeType = !pd?.enabled ? 'neutral' : pdPenalty === 0 ? 'good' : pdPenalty < 0.5 ? 'warn' : 'bad';
+  const pdMarkerColor = pdPenalty === 0 ? '#2dff7a' : pdPenalty < 0.5 ? '#ffcc00' : '#ff4d4d';
+
+  return (
+    <div
+      style={{
+        background: '#0a0f0a',
+        border: '1px solid #1d3320',
+        borderRadius: 10,
+        padding: 14,
+        marginBottom: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#7CFFA0', letterSpacing: '0.6px', textTransform: 'uppercase' }}>
+          V3.5 Liquidity Analysis
+        </span>
+        <span style={{ fontSize: 10, color: '#888', fontFamily: "'JetBrains Mono', monospace" }}>
+          shadow · score {v3.score}/100{v3.earlyTrigger ? ' · early trigger' : ''}
+          {v3.direction ? ` · ${v3.direction.toUpperCase()}` : ''}
+        </span>
+      </div>
+
+      {/* LIQUIDITY TARGETS */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <V3SectionTitle>Liquidity Targets</V3SectionTitle>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', ...muted }}>
+          <span>
+            <span style={{ color: '#666' }}>Above: </span>
+            {liq.nearestLiquidityAbove
+              ? `${liq.nearestLiquidityAbove.label} @ ${formatPrice(liq.nearestLiquidityAbove.price, pair)} (${liq.nearestLiquidityAbove.distancePips}p)`
+              : '—'}
+          </span>
+          <span>
+            <span style={{ color: '#666' }}>Below: </span>
+            {liq.nearestLiquidityBelow
+              ? `${liq.nearestLiquidityBelow.label} @ ${formatPrice(liq.nearestLiquidityBelow.price, pair)} (${liq.nearestLiquidityBelow.distancePips}p)`
+              : '—'}
+          </span>
+        </div>
+        {tiers.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {tiers.map(({ name, t }) => (
+              <Badge
+                key={name}
+                type={t.major ? 'good' : 'info'}
+                value={`${name} → ${liquidityTargetTag(t.source) ?? t.label} (${Math.abs(t.pips)}p)`}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* LIQUIDITY EVENTS (sweeps) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <V3SectionTitle>Liquidity Events</V3SectionTitle>
+        {liq.sweepDetected ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Badge
+              type={liq.sweepDirection === 'bullish' ? 'good' : 'bad'}
+              value={`✓ Swept ${liq.sweptLiquidity ?? 'liquidity'} (${liq.sweepDirection})`}
+            />
+            {liq.sweepStrength != null && <span style={muted}>strength {(liq.sweepStrength * 100).toFixed(0)}%</span>}
+          </div>
+        ) : (
+          <span style={muted}>No liquidity sweep this scan.</span>
+        )}
+      </div>
+
+      {/* PREMIUM / DISCOUNT */}
+      {pd?.enabled && pd.pricePositionPct != null && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <V3SectionTitle>Premium / Discount</V3SectionTitle>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Badge type={pdBadge} value={pd.premiumDiscountState.toUpperCase()} />
+            <div style={{ flex: 1 }}>
+              <div style={{ position: 'relative', height: 10, background: '#1a1a2e', borderRadius: 5 }}>
+                <div style={{ position: 'absolute', left: '50%', top: -2, bottom: -2, width: 1, background: '#555' }} />
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: `${Math.max(0, Math.min(100, pd.pricePositionPct * 100))}%`,
+                    top: -3,
+                    width: 3,
+                    height: 16,
+                    background: pdMarkerColor,
+                    borderRadius: 2,
+                    transform: 'translateX(-50%)',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#666', marginTop: 3 }}>
+                <span>Discount</span>
+                <span>Equilibrium</span>
+                <span>Premium</span>
+              </div>
+            </div>
+            <span style={{ ...muted, minWidth: 36, textAlign: 'right' }}>{(pd.pricePositionPct * 100).toFixed(0)}%</span>
+          </div>
+          {pdPenalty > 0 && <div style={{ fontSize: 11, color: '#ffaa00' }}>⚠ {pd.reason}</div>}
+        </div>
+      )}
+
+      {/* SESSION NARRATIVE */}
+      {sn && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <V3SectionTitle>Session Narrative</V3SectionTitle>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: '#cfe9d6', fontFamily: "'JetBrains Mono', monospace" }}>
+              {sn.sessionNarrative}
+            </span>
+            <span style={muted}>
+              {sn.sessionBias} · conf {(sn.sessionConfidence * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* STOP TARGET ANALYSIS */}
+      {intent && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <V3SectionTitle>Stop Target Analysis</V3SectionTitle>
+          <div style={{ ...muted, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span>
+              <span style={{ color: '#666' }}>Liquidity above: </span>
+              {intent.likelyStopsAbove.length
+                ? intent.likelyStopsAbove.slice(0, 3).map((p) => p.label).join(', ')
+                : '—'}
+            </span>
+            <span>
+              <span style={{ color: '#666' }}>Liquidity below: </span>
+              {intent.likelyStopsBelow.length
+                ? intent.likelyStopsBelow.slice(0, 3).map((p) => p.label).join(', ')
+                : '—'}
+            </span>
+            <span>
+              <span style={{ color: '#666' }}>Bias / draw: </span>
+              <span style={{ color: trendColor(intent.liquidityBias) }}>{intent.liquidityBias}</span>
+              {intent.expectedLiquidityTarget
+                ? ` → ${intent.expectedLiquidityTarget.label} (${intent.expectedLiquidityTarget.distancePips}p)`
+                : ''}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Qualified signal card ────────────────────────────────────────────────────
 
 type TradeOutcome =
@@ -986,7 +1188,11 @@ function SignalCard({
           label="Take Profit"
           value={formatPrice(signal.takeProfit, signal.pair)}
           color="#2dff7a"
-          sub={`${(signal.takeProfitPips ?? signal.stopLossPips * signal.riskReward).toFixed(0)} pips`}
+          sub={`${(signal.takeProfitPips ?? signal.stopLossPips * signal.riskReward).toFixed(0)} pips${
+            liquidityTargetTag(signal.v3?.targets?.tp1?.source)
+              ? ` · → ${liquidityTargetTag(signal.v3?.targets?.tp1?.source)}`
+              : ''
+          }`}
         />
         <PriceCell
           label="Risk / Reward"
@@ -994,6 +1200,9 @@ function SignalCard({
           color={signal.riskReward >= 3 ? '#2dff7a' : '#ffcc00'}
         />
       </div>
+
+      {/* V3.5 liquidity-first analysis (shadow) */}
+      {signal.v3 && signal.v3.mode !== 'off' && <V3LiquidityPanel v3={signal.v3} pair={signal.pair} />}
 
       {/* Per-trade risk */}
       {(signal.targetRiskUSD !== undefined ||

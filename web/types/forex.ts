@@ -422,6 +422,104 @@ export interface AlignmentResult {
 
 export type RRTier = 'reject' | 'standard' | 'preferred' | 'premium';
 
+// ─── Signal Stack V3.5 — liquidity-first execution engine (shadow) ───────────
+
+export interface V3LiquidityPool {
+  label: string;
+  kind: 'high' | 'low';
+  price: number;
+  source: string;
+  distancePips: number | null;
+}
+
+export interface V3RestingStop {
+  label: string;
+  source: string;
+  price: number;
+  distancePips: number | null;
+  side: 'buy-side' | 'sell-side';
+}
+
+export interface V3LiquiditySweep {
+  type?: string;
+  direction: 'bullish' | 'bearish';
+  sweptPriceLevel?: number;
+  sweptPips?: number;
+  sweptLiquidity?: string;
+  sweptSource?: string | null;
+  sweepStrength?: number;
+  reason?: string;
+}
+
+export interface V3TargetTier {
+  label: string;
+  source: string;
+  price: number;
+  pips: number;
+  major: boolean;
+}
+
+export interface V3Meta {
+  mode: 'off' | 'shadow' | 'active' | string;
+  direction: 'long' | 'short' | null;
+  legacyDirection?: ForexDirection | null;
+  directionAgrees?: boolean;
+  score: number;
+  qualified: boolean;
+  earlyTrigger: boolean;
+  rejectionReasons: string[];
+  narrative: string;
+  entryDistanceFromOriginPct: number | null;
+  liquidity: {
+    pools: V3LiquidityPool[];
+    nearestLiquidityAbove: V3LiquidityPool | null;
+    nearestLiquidityBelow: V3LiquidityPool | null;
+    liquidityDistancePips: number | null;
+    liquidityTarget: V3LiquidityPool | null;
+    liquiditySweepDetected: boolean;
+    liquiditySweep: V3LiquiditySweep | null;
+    sweepDetected?: boolean;
+    sweepDirection?: 'bullish' | 'bearish' | null;
+    sweptLiquidity?: string | null;
+    sweepStrength?: number | null;
+  };
+  liquidityIntent?: {
+    likelyStopsAbove: V3RestingStop[];
+    likelyStopsBelow: V3RestingStop[];
+    liquidityBias: 'bullish' | 'bearish' | 'neutral';
+    expectedLiquidityTarget: V3RestingStop | null;
+    intentScore: number;
+    reasons: string[];
+  };
+  premiumDiscount?: {
+    enabled: boolean;
+    swingHigh: number | null;
+    swingLow: number | null;
+    swingRangePips: number | null;
+    equilibrium: number | null;
+    pricePositionPct: number | null;
+    premiumDiscountState: 'discount' | 'equilibrium' | 'premium' | 'unknown';
+    premiumDiscountScore: number;
+    entryQualityPenalty: number;
+    reason: string;
+  };
+  sessionNarrative?: {
+    sessionNarrative: string;
+    sessionBias: 'bullish' | 'bearish' | 'neutral';
+    sessionConfidence: number;
+  };
+  targets?: {
+    tp1: V3TargetTier | null;
+    tp2: V3TargetTier | null;
+    tp3: V3TargetTier | null;
+    remainingOpportunityPips: number | null;
+    expectedMovePotential: number | null;
+    accepted: boolean;
+    targetSource?: string;
+  } | null;
+  pillars?: Record<string, { score01: number; weight: number; contribution: number; notes: string[] }>;
+}
+
 export interface ForexSignal {
   pair: string;
   /** Human-readable name: "Euro / US Dollar", "Gold", "Silver", etc. */
@@ -520,6 +618,8 @@ export interface ForexSignal {
   entryTiming?: EntryTiming;
   /** Structure-aware stop-loss placement audit (mirror of lifecycle.sl.stopLossAnalysis). */
   stopLossAnalysis?: StopLossAnalysis;
+  /** Signal Stack V3.5 — liquidity-first execution engine output (shadow mode). */
+  v3?: V3Meta;
   /** Intraday duration label: Scalp (<30m), Intraday (30m–3h), Swing (>3h). */
   timeframeEstimate: string;
   /** Typed trade duration classification. */

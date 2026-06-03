@@ -27,7 +27,11 @@ import { getPipSize, toPips, roundPrice } from './pipMath.js';
 const MIN_OPPORTUNITY_RR = parseFloat(process.env.FOREX_V3_MIN_OPPORTUNITY_RR || '1.5');
 const MIN_ABS_TP_PIPS = parseFloat(process.env.FOREX_V3_MIN_TP_PIPS || '8');
 
-const MAJOR_SOURCES = new Set(['PDH', 'PDL', 'PWH', 'PWL', 'ASIA_H', 'ASIA_L', 'PSESS_H', 'PSESS_L']);
+const MAJOR_SOURCES = new Set([
+  'PDH', 'PDL', 'PWH', 'PWL',
+  'ASIA_H', 'ASIA_L', 'LON_H', 'LON_L', 'NY_H', 'NY_L',
+  'PSESS_H', 'PSESS_L',
+]);
 
 function tpObject(pool, entryPrice, pair) {
   return {

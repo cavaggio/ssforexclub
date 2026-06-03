@@ -137,6 +137,51 @@ function clusterEqual(levels, tolerance) {
 
 function avg(arr) { return arr.reduce((s, v) => s + v, 0) / arr.length; }
 
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+// Sources that represent "major" resting liquidity (HTF / session / clustered
+// levels). A sweep of one of these is a stronger signal than a lone swing.
+const MAJOR_SWEEP_SOURCES = new Set([
+  'PDH', 'PDL', 'PWH', 'PWL',
+  'ASIA_H', 'ASIA_L', 'LON_H', 'LON_L', 'NY_H', 'NY_L',
+  'PSESS_H', 'PSESS_L', 'EQH', 'EQL',
+]);
+
+/**
+ * Identify WHICH named pool a generic sweep ran. detectLiquiditySweep reports a
+ * sweptPriceLevel (a recent extreme) and direction (bearish = ran a high,
+ * bullish = ran a low). Match that price to the nearest same-kind pool within a
+ * small pip tolerance; tie-break toward a major source for a meaningful label.
+ * Unmatched sweeps are still valid — just labelled "recent extreme (unnamed)".
+ */
+function labelSweptPool(sweep, pools, pair) {
+  if (!sweep) return null;
+  const ps = getPipSize(pair);
+  const tol = 3 * ps;
+  const wantKind = sweep.direction === 'bearish' ? 'high' : 'low';
+  const candidates = (pools || [])
+    .filter((p) => p.kind === wantKind && Number.isFinite(p.price) &&
+      Math.abs(p.price - sweep.sweptPriceLevel) <= tol)
+    .sort((a, b) => {
+      const da = Math.abs(a.price - sweep.sweptPriceLevel);
+      const db = Math.abs(b.price - sweep.sweptPriceLevel);
+      if (Math.abs(da - db) > ps / 2) return da - db; // clearly nearer wins
+      // near-tie on distance → prefer the major level for a meaningful label
+      return (MAJOR_SWEEP_SOURCES.has(b.source) ? 1 : 0) - (MAJOR_SWEEP_SOURCES.has(a.source) ? 1 : 0);
+    });
+  const matched = candidates[0] || null;
+  const isMajor = matched ? MAJOR_SWEEP_SOURCES.has(matched.source) : false;
+  const sweepStrength = +clamp01(
+    0.5 + Math.min(0.35, (sweep.sweptPips || 0) / 30) + (isMajor ? 0.15 : 0),
+  ).toFixed(2);
+  return {
+    ...sweep,
+    sweptLiquidity: matched ? matched.label : 'recent extreme (unnamed)',
+    sweptSource: matched ? matched.source : null,
+    sweepStrength,
+  };
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 export function analyzeLiquidity({
@@ -199,6 +244,18 @@ export function analyzeLiquidity({
       const al = hiLo(asian.candles);
       if (al) { addPool('Asian Session High', 'high', al.high, 'ASIA_H'); addPool('Asian Session Low', 'low', al.low, 'ASIA_L'); }
     }
+    // Most recent London session — the window that most often raids Asian liquidity.
+    const london = [...sessionBuckets].reverse().find((b) => b.key.endsWith('|London'));
+    if (london) {
+      const ll = hiLo(london.candles);
+      if (ll) { addPool('London Session High', 'high', ll.high, 'LON_H'); addPool('London Session Low', 'low', ll.low, 'LON_L'); }
+    }
+    // Most recent New York session.
+    const ny = [...sessionBuckets].reverse().find((b) => b.key.endsWith('|NewYork'));
+    if (ny) {
+      const nl = hiLo(ny.candles);
+      if (nl) { addPool('New York Session High', 'high', nl.high, 'NY_H'); addPool('New York Session Low', 'low', nl.low, 'NY_L'); }
+    }
     // Previous completed session (the one before the most recent bucket).
     if (sessionBuckets.length >= 2) {
       const prevSession = sessionBuckets[sessionBuckets.length - 2];
@@ -211,7 +268,10 @@ export function analyzeLiquidity({
     }
   }
 
-  // Equal highs / equal lows on M15 (fall back to H1) — resting liquidity magnets.
+  // Equal highs / lows (clustered = liquidity magnets) plus the most recent
+  // single-touch swing high / low on M15 (fall back to H1). The swing pools are
+  // distinct from the equal clusters: a lone pivot that isn't already part of a
+  // cluster is its own (weaker) pocket of resting liquidity.
   const eqSource = m15Candles.length >= 40 ? m15Candles : h1Candles;
   if (eqSource.length >= 20) {
     const { highs, lows } = findPivots(eqSource);
@@ -219,8 +279,18 @@ export function analyzeLiquidity({
       pipSize * 2,
       (atrPips != null ? atrPips : 10) * pipSize * EQUAL_LEVEL_ATR_FRAC,
     );
-    for (const c of clusterEqual(highs, tol)) addPool('Equal Highs', 'high', c, 'EQH');
-    for (const c of clusterEqual(lows, tol)) addPool('Equal Lows', 'low', c, 'EQL');
+    const eqHighs = clusterEqual(highs, tol);
+    const eqLows = clusterEqual(lows, tol);
+    for (const c of eqHighs) addPool('Equal Highs', 'high', c, 'EQH');
+    for (const c of eqLows) addPool('Equal Lows', 'low', c, 'EQL');
+
+    const nearCluster = (lvl, centers) => centers.some((cc) => Math.abs(lvl - cc) <= tol);
+    if (highs.length && !nearCluster(highs[highs.length - 1], eqHighs)) {
+      addPool('Swing High', 'high', highs[highs.length - 1], 'SWING_H');
+    }
+    if (lows.length && !nearCluster(lows[lows.length - 1], eqLows)) {
+      addPool('Swing Low', 'low', lows[lows.length - 1], 'SWING_L');
+    }
   }
 
   // Nearest pools above / below current price.
@@ -242,11 +312,19 @@ export function analyzeLiquidity({
     ? toPips(Math.min(aboveDist, belowDist), pair)
     : null;
 
-  // Liquidity sweep — reuse the production detector (M15, then H1).
+  // Liquidity sweep — reuse the production detector (M15, then H1), then label
+  // WHICH named pool was run so the engine reads "swept Asian Low", not just "a high".
   let liquiditySweep = m15Candles.length ? detectLiquiditySweep({ candles: m15Candles, pair }) : null;
   if (!liquiditySweep && h1Candles.length) liquiditySweep = detectLiquiditySweep({ candles: h1Candles, pair });
+  if (liquiditySweep) liquiditySweep = labelSweptPool(liquiditySweep, pools, pair);
   const liquiditySweepDetected = Boolean(liquiditySweep);
-  if (liquiditySweepDetected) reasons.push(liquiditySweep.reason);
+  if (liquiditySweepDetected) {
+    reasons.push(
+      liquiditySweep.sweptSource
+        ? `${liquiditySweep.reason} — swept ${liquiditySweep.sweptLiquidity}.`
+        : liquiditySweep.reason,
+    );
+  }
 
   // Liquidity target — the pool the market is most likely being drawn toward.
   // If a direction is supplied, the target is the nearest pool on the far side
@@ -267,6 +345,11 @@ export function analyzeLiquidity({
     liquidityDistancePips: nearestDistPips,
     liquiditySweepDetected,
     liquiditySweep: liquiditySweep || null,
+    // Spec-named top-level mirrors for the V3.5 sweep-detection output.
+    sweepDetected: liquiditySweepDetected,
+    sweepDirection: liquiditySweep?.direction || null,
+    sweptLiquidity: liquiditySweep?.sweptLiquidity || null,
+    sweepStrength: liquiditySweep?.sweepStrength ?? null,
     liquidityTarget,
     reasons,
   };
