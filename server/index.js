@@ -15,6 +15,7 @@ import alpacaAssets from './alpacaAssets.js';
 import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { scanForexPairs } from './oandaScanner.js';
+import { V3_MODE } from './v3Engine.js';
 import {
   executeTrade,
   closePosition,
@@ -1991,6 +1992,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Trading API Server running on port ${PORT}`);
   console.log(`Alpaca mode: LIVE ONLY`);
   console.log(`Shadow mode: ${SHADOW_MODE ? 'ON (no real orders)' : 'OFF (LIVE ORDERS ENABLED)'}`);
+  // Signal Stack V3 engine mode at boot — confirms FOREX_V3_ENGINE_MODE reached
+  // THIS service/process. `off` ⇒ evaluateV3() never runs and every signal.v3 is null.
+  console.log(`[V3] FOREX_V3_ENGINE_MODE=${process.env.FOREX_V3_ENGINE_MODE ?? '(unset)'} → resolved V3_MODE='${V3_MODE}' (${V3_MODE === 'off' ? 'V3 OFF — no v3 on signals' : 'V3 ON'})`);
   console.log(`Claude Advisor: ${process.env.ANTHROPIC_API_KEY ? 'Configured' : 'NOT CONFIGURED (set ANTHROPIC_API_KEY)'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
 

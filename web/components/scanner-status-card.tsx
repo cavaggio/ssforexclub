@@ -820,7 +820,7 @@ function V3SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-function V3LiquidityPanel({ v3, pair }: { v3: V3Meta; pair: string }) {
+function V3LiquidityPanel({ v3, pair, compact = false }: { v3: V3Meta; pair: string; compact?: boolean }) {
   const liq = v3.liquidity;
   const intent = v3.liquidityIntent;
   const pd = v3.premiumDiscount;
@@ -838,6 +838,51 @@ function V3LiquidityPanel({ v3, pair }: { v3: V3Meta; pair: string }) {
   const pdPenalty = pd?.entryQualityPenalty ?? 0;
   const pdBadge: BadgeType = !pd?.enabled ? 'neutral' : pdPenalty === 0 ? 'good' : pdPenalty < 0.5 ? 'warn' : 'bad';
   const pdMarkerColor = pdPenalty === 0 ? '#2dff7a' : pdPenalty < 0.5 ? '#ffcc00' : '#ff4d4d';
+
+  // Compact form for rejected rows — keeps the shadow intelligence visible
+  // without the full panel's bars/grids.
+  if (compact) {
+    return (
+      <div
+        style={{
+          background: '#0a0f0a',
+          border: '1px solid #15281a',
+          borderRadius: 8,
+          padding: '8px 12px',
+          marginTop: 10,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 5,
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ color: '#7CFFA0', fontWeight: 700, letterSpacing: '0.4px' }}>V3.5 shadow</span>
+          <span style={{ color: '#888' }}>
+            score {v3.score}/100{v3.direction ? ` · ${v3.direction.toUpperCase()}` : ''}{v3.earlyTrigger ? ' · early trigger' : ''}
+          </span>
+          {liq.sweepDetected && (
+            <Badge type={liq.sweepDirection === 'bullish' ? 'good' : 'bad'} value={`Swept ${liq.sweptLiquidity ?? 'liquidity'}`} />
+          )}
+          {pd?.enabled && pd.premiumDiscountState !== 'unknown' && (
+            <Badge type={pdBadge} value={pd.premiumDiscountState.toUpperCase()} />
+          )}
+        </div>
+        {sn?.sessionNarrative && <div style={{ color: '#cfe9d6' }}>{sn.sessionNarrative}</div>}
+        {intent?.expectedLiquidityTarget && (
+          <div style={{ color: '#8a8aa0' }}>
+            Draw → {intent.expectedLiquidityTarget.label} ({intent.expectedLiquidityTarget.distancePips}p)
+          </div>
+        )}
+        {tiers.length > 0 && (
+          <div style={{ color: '#8a8aa0' }}>
+            Targets: {tiers.map(({ name, t }) => `${name} ${liquidityTargetTag(t.source) ?? t.label}`).join(' · ')}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1879,6 +1924,9 @@ function RejectedRow({ sig }: { sig: ForexRejected }) {
           </span>
         )}
       </div>
+
+      {/* V3.5 liquidity-first analysis (shadow, diagnostic only — never promotes) */}
+      {sig.v3 && sig.v3.mode !== 'off' && <V3LiquidityPanel v3={sig.v3} pair={sig.pair} compact />}
     </div>
   );
 }
@@ -2792,6 +2840,16 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
           >
             <StatChip label="Qualified" value={String(qualified.length)} tone="good" />
             <StatChip label="Rejected" value={String(rejected.length)} />
+            {meta.v3EngineMode !== undefined && (
+              <StatChip
+                label="V3 engine"
+                value={String(meta.v3EngineMode)}
+                tone={meta.v3EngineMode === 'off' ? 'bad' : 'good'}
+              />
+            )}
+            {meta.v3Comparison?.counts?.evaluated !== undefined && (
+              <StatChip label="V3 evaluated" value={String(meta.v3Comparison.counts.evaluated)} />
+            )}
             <StatChip
               label="Mode"
               value={(state.activeEnvironment ?? '—').toString()}

@@ -686,6 +686,9 @@ export interface ForexRejected {
     | 'risk_filter'
     | 'news_blocked'
     | 'flow_opposes';
+  /** Signal Stack V3.5 — liquidity-first analysis (shadow). Diagnostic only;
+   *  V3 never promotes a rejected trade. */
+  v3?: V3Meta;
 }
 
 export interface ForexScanMeta {
@@ -734,6 +737,13 @@ export interface ForexScanMeta {
   newsHighImpactBlockMinutes?: number;
   newsMediumImpactCautionMinutes?: number;
   postNewsConfirmationMinutes?: number;
+  /** Signal Stack V3 engine mode for this scan: 'off' | 'shadow' | 'active'. */
+  v3EngineMode?: string;
+  /** V3 shadow-comparison report (present only when v3EngineMode !== 'off'). */
+  v3Comparison?: {
+    counts?: { evaluated?: number; legacyQualified?: number; v3Qualified?: number };
+    verdict?: string;
+  } | null;
 }
 
 export interface ForexScanResult {

@@ -412,7 +412,8 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           });
           v3ByPair[pair] = v3Eval;
         } catch (v3Err) {
-          console.log(`[V3] eval skipped for ${pair}: ${v3Err.message}`);
+          // Never break a scan, but surface enough to debug a V3-only failure.
+          console.log(`[V3] eval skipped for ${pair}: ${v3Err.message}\n${v3Err.stack || ''}`);
         }
       }
 
@@ -1112,6 +1113,13 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
   // nothing). This is observational; it does not alter `qualified`/`rejected`.
   let v3Report = null;
   if (V3_MODE !== 'off') {
+    // Backfill V3 analysis onto REJECTED signals so the dashboard can surface
+    // V3.5 shadow intelligence even when 0 pairs qualify. Purely additive and
+    // diagnostic — keyed by pair from the already-computed v3ByPair, it never
+    // changes a rejection decision and never promotes a rejected trade.
+    for (const r of rejected) {
+      if (r && r.v3 == null && v3ByPair[r.pair]) r.v3 = v3ByPair[r.pair];
+    }
     try {
       recordV3Shadow({
         qualified, rejected, v3ByPair, session, nowIso: new Date().toISOString(),
