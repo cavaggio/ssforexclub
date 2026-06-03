@@ -2017,10 +2017,18 @@ app.listen(PORT, '0.0.0.0', () => {
     .then(s => console.log(`[STARTUP RECONCILE] ${JSON.stringify({ verified: s.verified, kept: s.kept, stale: s.stale, staleKeys: s.staleKeys, locksAfter: s.locksAfter })}`))
     .catch(err => console.warn(`[STARTUP RECONCILE] failed: ${err?.message || err}`));
 
-  // Start server-side exit manager (breakeven, partial close, trailing stop)
-  if (process.env.FOREX_AUTO_TRADE_ENABLED === 'true') {
+  // Legacy server-side exit manager uses env-based OANDA credentials.
+  // In multi-tenant production, keep it disabled unless explicitly allowed.
+  if (
+    process.env.FOREX_AUTO_TRADE_ENABLED === 'true' &&
+    process.env.ENABLE_LEGACY_EXIT_MANAGER === 'true'
+  ) {
     startExitManager();
   } else {
-    console.log(`[EXIT_MANAGER] Not started — FOREX_AUTO_TRADE_ENABLED is not true`);
+    console.log(
+      `[EXIT_MANAGER] Not started — legacy env-based exit manager disabled ` +
+      `(FOREX_AUTO_TRADE_ENABLED=${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}, ` +
+      `ENABLE_LEGACY_EXIT_MANAGER=${process.env.ENABLE_LEGACY_EXIT_MANAGER || 'false'})`
+    );
   }
 });
