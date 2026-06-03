@@ -385,7 +385,11 @@ app.get('/test123', (_req, res) => {
 app.post('/api/admin/reconcile-trade-locks', async (req, res) => {
   try {
     const summary = await reconcileAllLocks('manual');
-    res.json({ ok: true, summary });
+    res.status(409).json({
+      ok: false,
+      error: 'Manual reconcile requires a request-scoped OANDA client in multi-tenant mode.',
+      summary,
+    });
   } catch (err) {
     console.error('[RECONCILE TRADE LOCKS ERROR]', err);
     res.status(500).json({

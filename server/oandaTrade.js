@@ -138,15 +138,21 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
  * Stale locks are removed; mismatched locks are logged.
  * Returns a summary the caller can log/report.
  */
-export async function reconcileAllLocks(reason = 'startup') {
+export async function reconcileAllLocks(reason = 'startup', options = {}) {
+  const { client } = options;
   if (activeTrades.size === 0) {
     console.log(`[TRADE LOCK CHECK] reconcileAllLocks(${reason}) — no local locks to verify`);
     return { ok: true, verified: 0, stale: 0, kept: 0, locksAfter: [] };
   }
 
+  if (!client) {
+    console.warn(`[TRADE LOCK CHECK] reconcileAllLocks(${reason}) — skipped: missing request-scoped OANDA client`);
+    return { ok: false, skipped: true, reason: 'missing_request_scoped_oanda_client', locksAfter: Array.from(activeTrades) };
+  }
+
   let brokerTrades;
   try {
-    brokerTrades = await getOpenTrades();
+    brokerTrades = await getOpenTrades({ client });
   } catch (err) {
     console.warn(`[TRADE LOCK CHECK] reconcileAllLocks(${reason}) — broker query failed: ${err?.message || err}`);
     return { ok: false, error: err?.message || String(err), locksAfter: Array.from(activeTrades) };
