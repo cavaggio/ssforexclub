@@ -51,6 +51,11 @@ import { getTradeHistory } from './oandaTradeHistory.js';
 // Signal Stack V3 — additive intelligence layers (read-only; never gate qualification)
 import { analyzeMacroRisk, analyzeMacroBias } from './macroEngine.js';
 import { detectMarketRegime } from './marketRegimeEngine.js';
+// Signal Stack V3 — execution engine (liquidity/structure/session/volatility),
+// feature-flagged via FOREX_V3_ENGINE_MODE (off|shadow|active). In off/shadow
+// it NEVER changes a live trade decision.
+import { evaluateV3, isV3Enabled, V3_MODE } from './v3Engine.js';
+import { recordV3Shadow, generateV3ComparisonReport } from './v3ShadowLog.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
@@ -291,6 +296,9 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
   const qualified = [];
   const rejected = [];
+  // Signal Stack V3 execution engine — per-pair evaluations for shadow/active
+  // comparison. Populated only when FOREX_V3_ENGINE_MODE != 'off'.
+  const v3ByPair = {};
 
   for (const pair of rankedPairs) {
     console.log(`[SCANNER] Analyzing ${pair} (${getInstrumentName(pair)})...`);
@@ -383,6 +391,30 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
       // ── Direction for downstream sizing ─────────────────────────────────
       const direction = momentum.executionSignal;       // null when no signal
+
+      // ── Signal Stack V3 execution engine (feature-flagged) ──────────────
+      // Evaluate the liquidity/structure/session/volatility model for every
+      // data-sufficient pair. In off/shadow this is purely observational and
+      // does NOT alter the legacy qualification below. Wrapped so a failure
+      // can never break a scan.
+      let v3Eval = null;
+      if (isV3Enabled()) {
+        try {
+          v3Eval = evaluateV3({
+            pair,
+            legacyDirection: direction,
+            dailyCandles, h4Candles, h1Candles, m15Candles,
+            currentPrice: pricing.mid,
+            atrPips,
+            atrHistorical: macro.atrPipsHistorical ?? null,
+            momentum,
+            now: new Date(),
+          });
+          v3ByPair[pair] = v3Eval;
+        } catch (v3Err) {
+          console.log(`[V3] eval skipped for ${pair}: ${v3Err.message}`);
+        }
+      }
 
       // ── ENTRY-QUALITY LAYER ─────────────────────────────────────────────
       // Fibonacci retracement + institutional-flow proxies + news-risk +
@@ -873,11 +905,30 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         console.log(`[SCANNER] regime layer skipped for ${pair}: ${regimeErr.message}`);
       }
 
+      // ── V3 'active' mode — conservative gate ────────────────────────────
+      // When explicitly switched to 'active', V3 acts as an ADDITIONAL filter
+      // on legacy-qualified setups: a legacy signal that V3 deems a late /
+      // low-opportunity entry is rejected. It NEVER promotes a setup the legacy
+      // model rejected (full V3-native entry generation is gated behind shadow
+      // validation). off/shadow do nothing here.
+      if (V3_MODE === 'active' && v3Eval && !v3Eval.qualified) {
+        rejected.push({
+          pair,
+          reason: `V3 gate: ${v3Eval.rejectionReasons?.[0] || 'V3 did not qualify (late/low-opportunity entry)'}`,
+          rejectionReasons: v3Eval.rejectionReasons,
+          v3: v3Eval,
+        });
+        console.log(`[SCANNER] ✗ ${pair} — [v3_gate] ${v3Eval.rejectionReasons?.[0] || 'V3 rejected'}`);
+        continue;
+      }
+
       qualified.push({
         pair,
         instrumentName,
         assetClass,
         direction,
+        // Signal Stack V3 execution engine evaluation (shadow/active).
+        v3: v3Eval,
         score: alignment.timeframeAlignmentScore,    // 0–100 alignment score (UI bar)
         confidence,
         // Signal Stack V3 — Expected-R qualification (per-signal)
@@ -1056,6 +1107,21 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
   console.log(`\n[SCANNER] ▶ Scan complete — ${qualified.length} qualified, ${rejected.length} rejected\n`);
 
+  // ── Signal Stack V3 shadow comparison ─────────────────────────────────────
+  // Record the legacy-vs-V3 divergence for every evaluated pair (off does
+  // nothing). This is observational; it does not alter `qualified`/`rejected`.
+  let v3Report = null;
+  if (V3_MODE !== 'off') {
+    try {
+      recordV3Shadow({
+        qualified, rejected, v3ByPair, session, nowIso: new Date().toISOString(),
+      });
+      v3Report = generateV3ComparisonReport();
+    } catch (v3Err) {
+      console.log(`[V3_SHADOW] recording skipped: ${v3Err.message}`);
+    }
+  }
+
   const result = {
     qualified,
     rejected,
@@ -1095,6 +1161,9 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       // for this scan. The dashboard renders the monthly E[RR] vs Realized-R
       // and the active rejection threshold below.
       calibration,
+      // Signal Stack V3 execution engine — mode + shadow comparison report.
+      v3EngineMode: V3_MODE,
+      v3Comparison: v3Report,
     },
   };
 

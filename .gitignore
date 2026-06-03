@@ -30,6 +30,9 @@ web/*.tsbuildinfo
 supabase/.branches/
 supabase/.temp/
 
+# Signal Stack V3 shadow-mode runtime comparison log (accrues live; not source)
+server/data/v3-shadow-log.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
