@@ -13,12 +13,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { IctAnalysis, IctApiResponse } from '@/types/ict';
+import type { IctAnalysis, IctApiResponse, IctTradeApiResponse, IctTradeResult } from '@/types/ict';
 
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; analyses: IctAnalysis[]; mode: string; generatedAt: string; signals: number };
+  | { kind: 'ready'; analyses: IctAnalysis[]; mode: string; generatedAt: string; signals: number; executionEnabled: boolean; liveAck: boolean };
 
 export function IctIntelligencePanel() {
   const [state, setState] = useState<State>({ kind: 'loading' });
@@ -38,6 +38,10 @@ export function IctIntelligencePanel() {
         mode: json.ict.meta.ictEngineMode,
         generatedAt: json.ict.meta.generatedAt,
         signals: json.ict.meta.signals,
+        executionEnabled: json.ict.meta.executionEnabled === true,
+        // Live acknowledged = the per-user broker resolved to live (the proxy
+        // already hard-fails otherwise, so reaching here means creds are ready).
+        liveAck: json.activeEnvironment === 'live' || json.isLiveTrading === true,
       });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -64,18 +68,25 @@ export function IctIntelligencePanel() {
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>ICT Intelligence</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            ICT-first market read — liquidity, displacement, MSS/CHoCH, PD arrays, killzones. Shadow only; never trades.
+            ICT-first market read — liquidity, displacement, MSS/CHoCH, PD arrays, killzones. Manual execution only when enabled; never auto-trades.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <Chip label="ICT engine" value={state.mode} tone={state.mode === 'off' ? 'bad' : 'good'} />
+          <Chip label="ICT engine" value={state.mode} tone={state.mode === 'live' ? 'good' : 'muted'} />
+          <Chip
+            label="Execution"
+            value={state.executionEnabled ? (state.liveAck ? 'enabled' : 'no live-ack') : 'disabled'}
+            tone={state.executionEnabled && state.liveAck ? 'good' : 'muted'}
+          />
           <Chip label="Signals" value={String(state.signals)} tone={state.signals > 0 ? 'good' : 'muted'} />
           <button onClick={() => void load()} style={btn}>Refresh</button>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {state.analyses.map((a) => <IctCard key={a.pair} a={a} />)}
+        {state.analyses.map((a) => (
+          <IctCard key={a.pair} a={a} canExecute={state.executionEnabled && state.liveAck} />
+        ))}
       </div>
     </div>
   );
@@ -95,10 +106,53 @@ const dirColor = (d: string | null | undefined) =>
   d === 'bullish' || d === 'long' || d === 'buy' ? 'var(--good)'
   : d === 'bearish' || d === 'short' || d === 'sell' ? 'var(--bad)' : 'var(--muted)';
 
-function IctCard({ a }: { a: IctAnalysis }) {
+type TradeState =
+  | { kind: 'idle' }
+  | { kind: 'pending' }
+  | { kind: 'done'; result: IctTradeResult }
+  | { kind: 'error'; message: string };
+
+function IctCard({ a, canExecute }: { a: IctAnalysis; canExecute: boolean }) {
   const c = a.concepts;
   const dp = a.pair.includes('JPY') ? 3 : a.pair.startsWith('XA') ? 2 : 5;
   const signalTone = a.signal === 'buy' ? 'good' : a.signal === 'sell' ? 'bad' : 'muted';
+  const [trade, setTrade] = useState<TradeState>({ kind: 'idle' });
+
+  // Show the execute button ONLY for a live signal, when execution is enabled
+  // and live trading is acknowledged (creds-ready is implied — the analyze call
+  // 409s otherwise). The server re-validates everything before any order.
+  const showExecute = a.signal !== 'none' && canExecute;
+
+  const onExecute = async () => {
+    const dir = a.signal === 'buy' ? 'long' : 'short';
+    if (a.entry == null || a.stopLoss == null || a.target1 == null) {
+      setTrade({ kind: 'error', message: 'Missing entry/stop/target on signal.' });
+      return;
+    }
+    const ok = window.confirm(
+      `Execute LIVE ICT ${dir.toUpperCase()} on ${a.pair}?\n` +
+      `Entry ${a.entry} · Stop ${a.stopLoss} · Target ${a.target1} · RR ${a.rr ?? '?'}\n` +
+      `Position is sized server-side from ICT_MAX_RISK_PERCENT.`,
+    );
+    if (!ok) return;
+    setTrade({ kind: 'pending' });
+    try {
+      const res = await fetch('/api/ict/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pair: a.pair, direction: dir, units: 0,
+          entry: a.entry, stopLoss: a.stopLoss, targetProfit: a.target1,
+          ictSignalId: a.signalId,
+        }),
+      });
+      const json: IctTradeApiResponse = await res.json();
+      if (!res.ok || !json.ok) { setTrade({ kind: 'error', message: json.error || `HTTP ${res.status}` }); return; }
+      setTrade({ kind: 'done', result: json.ict ?? {} });
+    } catch (err) {
+      setTrade({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  };
 
   return (
     <section style={card}>
@@ -124,6 +178,28 @@ function IctCard({ a }: { a: IctAnalysis }) {
           <KV label="Target 2" value={fmt(a.target2, dp)} color="var(--good)" />
           <KV label="R:R" value={a.rr != null ? `${a.rr}` : '—'} color={a.rr != null && a.rr >= 2 ? 'var(--good)' : 'var(--warn)'} />
           <KV label="Timing" value={a.timing.timingGrade} />
+        </div>
+      )}
+
+      {/* Execute ICT Trade — only when a live signal exists, execution is enabled
+          and live trading is acknowledged. Server re-validates before any order. */}
+      {showExecute && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => void onExecute()}
+            disabled={trade.kind === 'pending'}
+            style={{ ...btn, background: a.signal === 'buy' ? '#0d3320' : '#320d0d', color: a.signal === 'buy' ? 'var(--good)' : 'var(--bad)', border: '1px solid var(--border)', cursor: trade.kind === 'pending' ? 'wait' : 'pointer' }}
+          >
+            {trade.kind === 'pending' ? 'Submitting…' : `Execute ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`}
+          </button>
+          {trade.kind === 'done' && (
+            <span style={{ fontSize: 12, fontFamily: 'var(--mono, monospace)', color: trade.result.success ? 'var(--good)' : 'var(--warn)' }}>
+              {trade.result.success
+                ? `✓ Filled @ ${trade.result.fillPrice} (id ${trade.result.tradeId})`
+                : `✗ ${trade.result.executionState ?? 'rejected'}: ${trade.result.reason ?? 'no fill'}`}
+            </span>
+          )}
+          {trade.kind === 'error' && <span style={{ fontSize: 12, color: 'var(--bad)' }}>✗ {trade.message}</span>}
         </div>
       )}
 

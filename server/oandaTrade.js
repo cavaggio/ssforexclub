@@ -134,6 +134,16 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
 }
 
 /**
+ * Register a duplicate-protection lock for an opened position. Additive export
+ * so the (isolated) ICT executor shares the SAME in-memory lock registry as the
+ * V3 executeTrade path — preventing ICT and V3 from both opening the same pair.
+ * executeTrade still adds its own lock inline; this does not change its behavior.
+ */
+export function registerTradeLock(pair, direction) {
+  activeTrades.add(`${pair}_${direction}`);
+}
+
+/**
  * Startup / on-demand sweep: walk every local lock and verify it against OANDA.
  * Stale locks are removed; mismatched locks are logged.
  * Returns a summary the caller can log/report.

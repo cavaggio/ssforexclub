@@ -73,9 +73,21 @@ export interface IctV3Comparison {
   agrees: boolean;
 }
 
+export interface IctTradeResult {
+  success?: boolean;
+  blocked?: boolean;
+  executionState?: string;
+  reason?: string;
+  tradeId?: string | null;
+  fillPrice?: number | null;
+  units?: number | null;
+}
+
 export interface IctAnalysis {
   pair: string;
   timestamp: string;
+  signalId: string;
+  generatedAtMs: number;
   ictBias: 'bullish' | 'bearish' | 'neutral';
   ictNarrative: string;
   setupType: string | null;
@@ -98,6 +110,7 @@ export interface IctScanResult {
   analyses: IctAnalysis[];
   meta: {
     ictEngineMode: string;
+    executionEnabled: boolean;
     pairsAnalyzed: number;
     generatedAt: string;
     signals: number;
@@ -111,4 +124,12 @@ export interface IctApiResponse {
   ict?: IctScanResult;
   activeBroker?: string;
   activeEnvironment?: string;
+  isLiveTrading?: boolean;
+}
+
+/** Envelope returned by POST /api/ict/trade. */
+export interface IctTradeApiResponse {
+  ok: boolean;
+  error?: string;
+  ict?: IctTradeResult;
 }
