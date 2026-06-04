@@ -17,6 +17,7 @@ import { getAccountSummary, getInstruments, getPricing, getCandles } from './oan
 import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
+import { executeIctTrade } from './ictExecution.js';
 import {
   executeTrade,
   closePosition,
@@ -1851,6 +1852,40 @@ app.post('/api/internal/oanda/ict', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_ICT] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/ict/trade
+//   Body: { apiKey, accountId, baseUrl, environment, pair, direction, units,
+//           entry, stopLoss, targetProfit, ictSignalId }
+//   Manual ICT execution. Requires environment=live (per-user creds only — no
+//   env fallback). The executor itself enforces the ICT flags + live-ack +
+//   server-side signal recompute + shared duplicate lock. Isolated from V3.
+app.post('/api/internal/oanda/ict/trade', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  const env = String(req.body?.environment ?? '').toLowerCase();
+  if (env !== 'live') {
+    res.status(400).json({ ok: false, error: `ICT trade endpoint requires environment=live (got "${env || '<empty>'}")` });
+    return;
+  }
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('ICT_TRADE', req.body);
+  try {
+    const { pair, direction, units, entry, stopLoss, targetProfit, ictSignalId } = req.body || {};
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => executeIctTrade({ pair, direction, units, entry, stopLoss, targetProfit, ictSignalId }, { client }),
+    );
+    console.log(
+      `[INTERNAL ICT_TRADE] accountId=${maskAccountId(client.accountId)} ` +
+        `pair=${pair} dir=${direction} state=${result?.executionState ?? '?'} success=${result?.success === true}`,
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_ICT_TRADE] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

@@ -32,8 +32,29 @@ import {
 } from './ictConcepts.js';
 import { detectSMT, correlatedPeers } from './ictSMT.js';
 
+// shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
-export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'active'; }
+export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'live'; }
+
+// ── Execution flags (all default to OFF/safe) ────────────────────────────────
+// Reading via getters keeps tests able to override process.env per-case, and
+// keeps a single source of truth for the route/executor.
+export function ictExecConfig() {
+  return {
+    mode: ICT_MODE,
+    autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
+    minConfidence: parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'),
+    minRR: parseFloat(process.env.ICT_MIN_RR || '2.0'),
+    maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1'),
+    signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
+  };
+}
+
+/** Execution requires BOTH live mode AND the auto-trade flag. Off by default. */
+export function isIctExecutionEnabled() {
+  const c = ictExecConfig();
+  return c.mode === 'live' && c.autoTradeEnabled === true;
+}
 
 const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '2.0');
 
@@ -110,7 +131,9 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
 
   const currentPrice = m5.length ? m5[m5.length - 1].close
     : m15.length ? m15[m15.length - 1].close : null;
-  const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const generatedAtMs = (now instanceof Date ? now : new Date(now)).getTime();
+  const timestamp = new Date(generatedAtMs).toISOString();
+  const signalId = `${pair}:${generatedAtMs}`;
 
   if (!Number.isFinite(currentPrice) || m15.length < 25) {
     return blankAnalysis(pair, timestamp, 'Insufficient candle data for ICT analysis.');
@@ -298,7 +321,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   } catch { /* V3 comparison is best-effort and never blocks ICT output */ }
 
   return {
-    pair, timestamp,
+    pair, timestamp, signalId, generatedAtMs,
     ictBias,
     ictNarrative,
     setupType,
@@ -353,8 +376,10 @@ function buildNarrative({ pair, dir, bias, sweep, displacement, mss, choch, prem
 function safeFib(args) { try { return detectFibSetup(args); } catch { return null; } }
 
 function blankAnalysis(pair, timestamp, reason) {
+  const generatedAtMs = Date.parse(timestamp) || 0;
   return {
-    pair, timestamp, ictBias: 'neutral', ictNarrative: `${pair}: ${reason}`,
+    pair, timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,
+    ictBias: 'neutral', ictNarrative: `${pair}: ${reason}`,
     setupType: null, signal: 'none', entry: null, stopLoss: null, target1: null,
     target2: null, rr: null, confidence: 0, conceptsDetected: [], rejectionReasons: [reason],
     concepts: null, timing: { lateEntryRisk: null, distanceToTarget: null, distanceToStop: null, timingGrade: 'n/a' },
@@ -398,6 +423,7 @@ export async function analyzeICTPairs(pairs = null, { client, now = new Date() }
     analyses,
     meta: {
       ictEngineMode: ICT_MODE,
+      executionEnabled: isIctExecutionEnabled(),
       pairsAnalyzed: list.length,
       generatedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
       signals: analyses.filter((a) => a.signal !== 'none').length,
