@@ -2061,7 +2061,19 @@ app.listen(PORT, '0.0.0.0', () => {
   // THIS service/process. `off` ⇒ evaluateV3() never runs and every signal.v3 is null.
   console.log(`[V3] FOREX_V3_ENGINE_MODE=${process.env.FOREX_V3_ENGINE_MODE ?? '(unset)'} → resolved V3_MODE='${V3_MODE}' (${V3_MODE === 'off' ? 'V3 OFF — no v3 on signals' : 'V3 ON'})`);
   // ICT engine is shadow-only analysis (never trades); 'off' disables the tab's data.
-  console.log(`[ICT] ICT_ENGINE_MODE=${process.env.ICT_ENGINE_MODE ?? '(unset)'} → resolved ICT_MODE='${ICT_MODE}' (analysis only — never trades)`);
+  const ictExecutionEnabled =
+    process.env.ICT_ENGINE_MODE === 'live' &&
+    process.env.ICT_AUTO_TRADE_ENABLED === 'true';
+
+  console.log(
+    `[ICT] mode=${process.env.ICT_ENGINE_MODE || 'shadow'} ` +
+    `autoTrade=${process.env.ICT_AUTO_TRADE_ENABLED === 'true'} ` +
+    `executionEnabled=${ictExecutionEnabled} ` +
+    `minConfidence=${process.env.ICT_MIN_CONFIDENCE || 80} ` +
+    `minRR=${process.env.ICT_MIN_RR || 2.0} ` +
+    `maxRiskPercent=${process.env.ICT_MAX_RISK_PERCENT || 1} ` +
+    `signalTtlSec=${process.env.ICT_SIGNAL_TTL_SEC || 300}`
+  );
   console.log(`Claude Advisor: ${process.env.ANTHROPIC_API_KEY ? 'Configured' : 'NOT CONFIGURED (set ANTHROPIC_API_KEY)'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
 
