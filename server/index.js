@@ -16,7 +16,6 @@ import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
-import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import {
   executeTrade,
   closePosition,
@@ -1830,31 +1829,6 @@ app.post('/api/internal/oanda/scan', async (req, res) => {
   }
 });
 
-// POST /api/internal/oanda/ict
-//   Standalone ICT-first analysis (shadow only — never trades). Body may carry
-//   { pairs } to scope; otherwise the ICT watchlist is used.
-app.post('/api/internal/oanda/ict', async (req, res) => {
-  if (!requireInternalAuth(req, res)) return;
-  const client = buildClientFromBody(req.body, res);
-  if (!client) return;
-  assertClientMatchesRequest(client, req.body);
-  logInternalCall('ICT', req.body);
-  try {
-    const result = await runUserScoped(
-      { accountId: client.accountId, environment: client.environment },
-      () => analyzeICTPairs(req.body?.pairs || null, { client }),
-    );
-    console.log(
-      `[INTERNAL ICT] complete accountId=${maskAccountId(client.accountId)} ` +
-        `pairs=${result?.meta?.pairsAnalyzed ?? 0} signals=${result?.meta?.signals ?? 0}`,
-    );
-    res.json(result);
-  } catch (err) {
-    console.error('[INTERNAL_ICT] error:', err?.message || err);
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
-});
-
 // POST /api/internal/oanda/active-trades/analysis
 app.post('/api/internal/oanda/active-trades/analysis', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
@@ -2025,8 +1999,6 @@ app.listen(PORT, '0.0.0.0', () => {
   // Signal Stack V3 engine mode at boot — confirms FOREX_V3_ENGINE_MODE reached
   // THIS service/process. `off` ⇒ evaluateV3() never runs and every signal.v3 is null.
   console.log(`[V3] FOREX_V3_ENGINE_MODE=${process.env.FOREX_V3_ENGINE_MODE ?? '(unset)'} → resolved V3_MODE='${V3_MODE}' (${V3_MODE === 'off' ? 'V3 OFF — no v3 on signals' : 'V3 ON'})`);
-  // ICT engine is shadow-only analysis (never trades); 'off' disables the tab's data.
-  console.log(`[ICT] ICT_ENGINE_MODE=${process.env.ICT_ENGINE_MODE ?? '(unset)'} → resolved ICT_MODE='${ICT_MODE}' (analysis only — never trades)`);
   console.log(`Claude Advisor: ${process.env.ANTHROPIC_API_KEY ? 'Configured' : 'NOT CONFIGURED (set ANTHROPIC_API_KEY)'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
 

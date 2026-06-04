@@ -14,7 +14,6 @@ import { usePathname } from 'next/navigation';
 const LINKS = [
   { href: '/dashboard',                  label: 'Dashboard'        },
   { href: '/dashboard/edge-intelligence', label: 'Edge Intelligence' },
-  { href: '/dashboard/ict-intelligence', label: 'ICT Intelligence' },
   { href: '/dashboard/settings',         label: 'Settings'         },
 ];
 
