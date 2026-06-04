@@ -16,7 +16,7 @@ import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
-import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
+import { analyzeICTPairs, ICT_MODE, isIctExecutionEnabled, ictExecConfig } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
 import {
   executeTrade,
@@ -2060,8 +2060,20 @@ app.listen(PORT, '0.0.0.0', () => {
   // Signal Stack V3 engine mode at boot — confirms FOREX_V3_ENGINE_MODE reached
   // THIS service/process. `off` ⇒ evaluateV3() never runs and every signal.v3 is null.
   console.log(`[V3] FOREX_V3_ENGINE_MODE=${process.env.FOREX_V3_ENGINE_MODE ?? '(unset)'} → resolved V3_MODE='${V3_MODE}' (${V3_MODE === 'off' ? 'V3 OFF — no v3 on signals' : 'V3 ON'})`);
-  // ICT engine is shadow-only analysis (never trades); 'off' disables the tab's data.
-  console.log(`[ICT] ICT_ENGINE_MODE=${process.env.ICT_ENGINE_MODE ?? '(unset)'} → resolved ICT_MODE='${ICT_MODE}' (analysis only — never trades)`);
+  // ICT engine: shadow = analysis only; live = analysis + (gated) execution.
+  console.log(`[ICT] ICT_ENGINE_MODE=${process.env.ICT_ENGINE_MODE ?? '(unset)'} → resolved ICT_MODE='${ICT_MODE}'`);
+  // ICT execution requires ALL THREE: mode=live, ICT_AUTO_TRADE_ENABLED, and the
+  // broker live-ack (FOREX_ALLOW_LIVE_EXECUTION). Log the resolved gate at boot.
+  {
+    const ic = ictExecConfig();
+    const liveAck = String(process.env.FOREX_ALLOW_LIVE_EXECUTION || 'false').toLowerCase() === 'true';
+    const armed = isIctExecutionEnabled() && liveAck;
+    console.log(
+      `[ICT_EXEC] ${armed ? '⚠ ARMED — manual ICT orders CAN execute' : 'DISABLED (manual ICT orders blocked)'} | ` +
+      `mode=${ic.mode} autoTrade=${ic.autoTradeEnabled} liveAck(FOREX_ALLOW_LIVE_EXECUTION)=${liveAck} | ` +
+      `minConfidence=${ic.minConfidence} minRR=${ic.minRR} maxRisk%=${ic.maxRiskPercent} signalTTLs=${ic.signalTtlSec}`,
+    );
+  }
   console.log(`Claude Advisor: ${process.env.ANTHROPIC_API_KEY ? 'Configured' : 'NOT CONFIGURED (set ANTHROPIC_API_KEY)'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
 
