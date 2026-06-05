@@ -149,7 +149,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
 
   // 3. Sweep (pool-aware, from analyzeLiquidity).
   const sweep = analyzed.liquiditySweep || null;
-  const sweepDir = sweep?.direction || null; // 'bullish' (swept sell-side) | 'bearish' (swept buy-side)
+  const sweepDir = sweep?.pending ? null : sweep?.direction || null;
+  const pendingSweepDir = sweep?.pending ? sweep.direction : null;
 
   // 4. Displacement.
   const displacement = detectDisplacement({ candles: m15, pair });
@@ -224,20 +225,38 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     if (!(sign(bias.dailyBias) === want || reversalConfirmed)) {
       rejectionReasons.push(`Daily bias (${bias.dailyBias}) does not support ${dir} and no valid reversal.`);
     }
+
     if (!(sweepDir === want)) {
-      rejectionReasons.push(want === 'bullish' ? 'Sell-side liquidity not swept.' : 'Buy-side liquidity not swept.');
+      if (pendingSweepDir === want) {
+        rejectionReasons.push(
+          want === 'bullish'
+            ? 'Sell-side liquidity pierced — waiting for reclaim close.'
+            : 'Buy-side liquidity pierced — waiting for reclaim close.'
+        );
+      } else {
+        rejectionReasons.push(
+          want === 'bullish'
+            ? 'Sell-side liquidity not swept.'
+            : 'Buy-side liquidity not swept.'
+        );
+      }
     }
+
     if (displacement.direction !== want) {
       rejectionReasons.push(`No ${want} displacement confirmed.`);
     }
+
     if (!reversalConfirmed && !(bos && bos.direction === want)) {
       rejectionReasons.push(`No ${want} MSS / CHoCH / BOS confirmation.`);
     }
+
     const hasArray = fvgs.some((f) => f.type === want && f.status !== 'filled')
       || (orderBlock.type === want && !orderBlock.mitigated);
+
     if (!hasArray) {
       rejectionReasons.push(`No ${want} FVG or OB available for entry.`);
     }
+    
     // Premium/discount location.
     const goodZone = want === 'bullish'
       ? (premiumDiscount.currentZone === 'discount' || ote.priceInOTE)

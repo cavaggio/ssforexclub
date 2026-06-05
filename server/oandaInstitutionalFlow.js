@@ -90,41 +90,74 @@ function lastN(arr, n) { return arr.slice(Math.max(0, arr.length - n)); }
 export function detectLiquiditySweep({ candles, pair }) {
   if (!Array.isArray(candles) || candles.length < 20) return null;
   const pipSize = getPipSize(pair);
+  const precision = pricePrecision(pair);
 
-  const recent = candles.slice(-6);
-  const lookback = candles.slice(-30, -6);
+  const recent = candles.slice(-8);
+  const lookback = candles.slice(-40, -8);
   if (lookback.length < 10) return null;
 
   const lookbackHigh = Math.max(...lookback.map(c => c.high));
   const lookbackLow  = Math.min(...lookback.map(c => c.low));
 
   const last = recent[recent.length - 1];
-  const last3 = recent.slice(-3);
+  const last5 = recent.slice(-5);
 
-  // Bearish sweep: stops above the high run, last candle closes back below it.
-  const piercedHigh = last3.some(c => c.high > lookbackHigh);
-  if (piercedHigh && last.close < lookbackHigh) {
-    const swept = Math.max(...last3.map(c => c.high)) - lookbackHigh;
+  const maxHigh = Math.max(...last5.map(c => c.high));
+  const minLow = Math.min(...last5.map(c => c.low));
+
+  // Bearish confirmed sweep: buy-side liquidity pierced, then closed back below.
+  if (maxHigh > lookbackHigh) {
+    const swept = maxHigh - lookbackHigh;
     const sweptPips = +(swept / pipSize).toFixed(1);
+
+    if (last.close < lookbackHigh) {
+      return {
+        type: 'liquidity_sweep',
+        subtype: 'confirmed_sweep',
+        direction: 'bearish',
+        sweptPriceLevel: +lookbackHigh.toFixed(precision),
+        sweptPips,
+        pending: false,
+        reason: `Wick ran ${sweptPips}p above recent high ${lookbackHigh.toFixed(precision)} then closed back inside — buy-side liquidity swept, bearish bias`,
+      };
+    }
+
     return {
       type: 'liquidity_sweep',
+      subtype: 'pending_sweep',
       direction: 'bearish',
-      sweptPriceLevel: +lookbackHigh.toFixed(pricePrecision(pair)),
+      sweptPriceLevel: +lookbackHigh.toFixed(precision),
       sweptPips,
-      reason: `Wick ran ${sweptPips}p above recent high ${lookbackHigh.toFixed(pricePrecision(pair))} then closed back inside — stops swept, bearish bias`,
+      pending: true,
+      reason: `Price pierced ${sweptPips}p above recent high ${lookbackHigh.toFixed(precision)} but has not closed back inside yet — pending bearish liquidity sweep`,
     };
   }
 
-  const piercedLow = last3.some(c => c.low < lookbackLow);
-  if (piercedLow && last.close > lookbackLow) {
-    const swept = lookbackLow - Math.min(...last3.map(c => c.low));
+  // Bullish confirmed sweep: sell-side liquidity pierced, then closed back above.
+  if (minLow < lookbackLow) {
+    const swept = lookbackLow - minLow;
     const sweptPips = +(swept / pipSize).toFixed(1);
+
+    if (last.close > lookbackLow) {
+      return {
+        type: 'liquidity_sweep',
+        subtype: 'confirmed_sweep',
+        direction: 'bullish',
+        sweptPriceLevel: +lookbackLow.toFixed(precision),
+        sweptPips,
+        pending: false,
+        reason: `Wick ran ${sweptPips}p below recent low ${lookbackLow.toFixed(precision)} then closed back inside — sell-side liquidity swept, bullish bias`,
+      };
+    }
+
     return {
       type: 'liquidity_sweep',
+      subtype: 'pending_sweep',
       direction: 'bullish',
-      sweptPriceLevel: +lookbackLow.toFixed(pricePrecision(pair)),
+      sweptPriceLevel: +lookbackLow.toFixed(precision),
       sweptPips,
-      reason: `Wick ran ${sweptPips}p below recent low ${lookbackLow.toFixed(pricePrecision(pair))} then closed back inside — stops swept, bullish bias`,
+      pending: true,
+      reason: `Price pierced ${sweptPips}p below recent low ${lookbackLow.toFixed(precision)} but has not closed back inside yet — pending bullish liquidity sweep`,
     };
   }
 
