@@ -92,6 +92,7 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
     });
 
     revalidatePath('/dashboard');
+    revalidatePath('/dashboard/settings');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -141,6 +142,7 @@ export async function setActiveTradingModeAction(formData: FormData): Promise<Ac
     });
 
     revalidatePath('/dashboard');
+    revalidatePath('/dashboard/settings');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -155,6 +157,7 @@ export async function acknowledgeLiveTradingAction(): Promise<ActionResult> {
     const userId = await requireUserId();
     await acknowledgeLiveTrading(userId);
     revalidatePath('/dashboard');
+    revalidatePath('/dashboard/settings');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -185,6 +188,7 @@ export async function removeBrokerConnectionAction(formData: FormData): Promise<
     }
 
     revalidatePath('/dashboard');
+    revalidatePath('/dashboard/settings');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

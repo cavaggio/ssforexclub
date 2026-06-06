@@ -14,6 +14,7 @@
 import { auth, currentUser } from '@clerk/nextjs/server';
 import { upsertUserFromClerk } from '@/lib/users';
 import { SignOutButton } from '@/components/sign-out-button';
+import { DashboardNav } from '@/components/dashboard-nav';
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   await auth.protect();
@@ -45,19 +46,22 @@ export default async function DashboardLayout({ children }: { children: React.Re
           background: 'var(--panel)',
         }}
       >
-        <a
-          href="/dashboard"
-          style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontWeight: 800,
-            fontSize: 18,
-            color: 'var(--text)',
-            textDecoration: 'none',
-            letterSpacing: '-0.3px',
-          }}
-        >
-          Signal Stack
-        </a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+          <a
+            href="/dashboard"
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontWeight: 800,
+              fontSize: 18,
+              color: 'var(--text)',
+              textDecoration: 'none',
+              letterSpacing: '-0.3px',
+            }}
+          >
+            Signal Stack
+          </a>
+          <DashboardNav />
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {user?.primaryEmailAddress?.emailAddress ? (
             <span style={{ color: 'var(--muted)', fontSize: 13 }}>
