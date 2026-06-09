@@ -78,3 +78,32 @@ test('engine: degrades safely on insufficient data', () => {
   assert.equal(r.confidence, 0);
   assert.ok(r.rejectionReasons.length > 0);
 });
+
+// Daily up, 4H down → directional disagreement.
+function mismatchedCandles() {
+  const start = Date.UTC(2026, 5, 1, 0, 0, 0);
+  const c = buildCandles();
+  c.daily = gen(60, 1.09, 0.0006, 0.0008, start);   // uptrend
+  c.h4 = gen(60, 1.13, -0.0004, 0.0006, start);      // downtrend
+  return c;
+}
+
+test('timeframe: Daily and 4H must agree directionally', () => {
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: mismatchedCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+  assert.equal(r.signal, 'none');
+  assert.ok(r.rejectionReasons.some((x) => /Daily and 4H directional bias are not aligned/.test(x)));
+});
+
+test('timeframe: 5M cannot override a Daily/4H mismatch', () => {
+  const c = mismatchedCandles();
+  c.m5 = gen(120, 1.10, 0.0008, 0.0006, Date.UTC(2026, 5, 1, 0, 0, 0)); // lively 5M activity
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+  assert.equal(r.signal, 'none', 'no qualification despite 5M activity');
+  assert.ok(r.rejectionReasons.some((x) => /not aligned/.test(x)));
+});
+
+test('candle strength is never a hard rejection in ICT', () => {
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: buildCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+  assert.ok(!r.rejectionReasons.some((x) => /candle strength|profile floor/i.test(x)), 'no candle-strength reject');
+  assert.ok(r.concepts && r.concepts.candle && r.concepts.candle.informationalOnly === true, 'candle context is informational');
+});

@@ -18,6 +18,7 @@ import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { ScannerStatusCard } from '@/components/scanner-status-card';
+import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 
 export default async function DashboardPage() {
   const { userId } = await auth();
@@ -138,6 +139,10 @@ export default async function DashboardPage() {
           </p>
         </section>
       )}
+
+      {/* Auto AI Trading toggle — per-user opt-in for AI auto-execution
+          (controls auto-trading, not manual). Shown once a broker is linked. */}
+      {hasAnyConnection && <AutoAiTradingToggle />}
 
       {/* Live scanner — rich panel renders qualified signals, rejected
           signals/scan details, open trades, and 30-min reassessment, all

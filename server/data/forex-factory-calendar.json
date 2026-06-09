@@ -1,0 +1,16 @@
+{
+  "_comment": "Local fallback economic calendar for server/news/forexFactoryNews.js. Replace/refresh from ForexFactory (or a live fetcher) on a schedule. Times are ISO-8601 UTC. impact: high | medium | low.",
+  "source": "local-fallback",
+  "updatedAt": null,
+  "events": [
+    { "currency": "USD", "impact": "high",   "event": "Non-Farm Payrolls",            "time": "2026-06-05T12:30:00Z" },
+    { "currency": "USD", "impact": "high",   "event": "FOMC Statement",               "time": "2026-06-17T18:00:00Z" },
+    { "currency": "USD", "impact": "high",   "event": "CPI m/m",                      "time": "2026-06-10T12:30:00Z" },
+    { "currency": "EUR", "impact": "high",   "event": "ECB Main Refinancing Rate",    "time": "2026-06-04T12:15:00Z" },
+    { "currency": "EUR", "impact": "medium", "event": "German ZEW Economic Sentiment","time": "2026-06-09T09:00:00Z" },
+    { "currency": "GBP", "impact": "high",   "event": "BOE Official Bank Rate",       "time": "2026-06-18T11:00:00Z" },
+    { "currency": "JPY", "impact": "high",   "event": "BOJ Policy Rate",              "time": "2026-06-16T03:00:00Z" },
+    { "currency": "CAD", "impact": "medium", "event": "BOC Business Outlook Survey",  "time": "2026-06-15T14:30:00Z" },
+    { "currency": "AUD", "impact": "high",   "event": "RBA Cash Rate",                "time": "2026-06-02T04:30:00Z" }
+  ]
+}

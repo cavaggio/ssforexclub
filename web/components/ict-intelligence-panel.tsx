@@ -234,13 +234,14 @@ function IctCard({ a, canExecute }: { a: IctAnalysis; canExecute: boolean }) {
         </div>
       )}
 
-      {/* V3 vs ICT */}
+      {/* V3 vs ICT — DISPLAY ONLY (never used for ICT qualification/execution). */}
       {a.v3Comparison && (
-        <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, fontFamily: 'var(--mono, monospace)', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, fontFamily: 'var(--mono, monospace)', borderTop: '1px solid var(--border)', paddingTop: 10, alignItems: 'baseline' }}>
           <span style={{ color: 'var(--muted)', fontWeight: 800 }}>V3 vs ICT:</span>
           <span>V3 <span style={{ color: dirColor(a.v3Comparison.v3Direction) }}>{a.v3Comparison.v3Direction ?? 'none'}</span> ({a.v3Comparison.v3Score}{a.v3Comparison.v3Qualified ? ', qualified' : ''})</span>
           <span>ICT <span style={{ color: dirColor(a.v3Comparison.ictDirection) }}>{a.v3Comparison.ictDirection ?? 'none'}</span></span>
           <span style={{ color: a.v3Comparison.agrees ? 'var(--good)' : 'var(--warn)' }}>{a.v3Comparison.agrees ? '✓ agree' : '≠ differ'}</span>
+          <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>Display only — not used for ICT qualification or execution</span>
         </div>
       )}
     </section>

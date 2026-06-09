@@ -23,14 +23,17 @@ import { atr } from './oandaIndicators.js';
 import { analyzeLiquidity } from './liquidityEngine.js';
 import { detectBreakOfStructure, detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
 import { detectFibSetup } from './oandaFibonacci.js';
-import { evaluateV3 } from './v3Engine.js';
+// NOTE: ICT is a fully independent engine. It must NOT import V3 (no evaluateV3,
+// no V3 scoring/confirmation/trend/shadow comparison). Any V3-vs-ICT comparison
+// is display-only and computed OUTSIDE this engine (see server/v3IctComparison.js).
 import { currentKillzone, activeMacro, inSilverBulletWindow } from './ictTime.js';
 import {
   detectFVGs, detectDisplacement, detectOrderBlock, detectMSS, detectInducement,
   detectTurtleSoup, detectJudasSwing, classifyPowerOf3, computePremiumDiscount,
-  computeOTE, buildLiquidityMap, irlErlDraw, computeDailyBias,
+  computeOTE, buildLiquidityMap, irlErlDraw, computeDailyBias, htfBias, candleContext,
 } from './ictConcepts.js';
 import { detectSMT, correlatedPeers } from './ictSMT.js';
+import { getNewsRisk } from './news/forexFactoryNews.js';
 
 // shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
@@ -139,53 +142,53 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     return blankAnalysis(pair, timestamp, 'Insufficient candle data for ICT analysis.');
   }
 
-  const atrPrice = atr(m15, 14) || null;
+  // Entry timing runs on 5M only (fall back to M15 if 5M is thin). 5M never
+  // sets or overrides direction — that comes from the Daily+4H agreement below.
+  const entryTf = m5.length >= 30 ? m5 : m15;
+  const atrPrice = atr(entryTf, 14) || null;
   const atrPips = atrPrice ? toPips(atrPrice, pair) : null;
 
-  // 1–2. HTF bias + liquidity map.
-  const analyzed = analyzeLiquidity({ pair, dailyCandles: daily, h4Candles: h4, h1Candles: h1, m15Candles: m15, currentPrice, atrPips });
-  const liquidityMap = buildLiquidityMap({ pair, currentPrice, analyzed, monthlyCandles: monthly });
-  const bias = computeDailyBias({ pair, currentPrice, dailyCandles: daily, h4Candles: h4, liquidityMap });
+  // 1. HTF directional bias — Daily and 4H must AGREE (this sets direction).
+  const dailyTfBias = htfBias(daily);
+  const h4TfBias = htfBias(h4);
+  const htfAligned = dailyTfBias !== 'neutral' && dailyTfBias === h4TfBias;
+  const dir = htfAligned ? toLS(dailyTfBias) : null;
 
-  // 3. Sweep (pool-aware, from analyzeLiquidity).
+  // 2. Liquidity map (pools from D/H4/H1/session); sweep + equal-levels on 5M.
+  const analyzed = analyzeLiquidity({ pair, dailyCandles: daily, h4Candles: h4, h1Candles: h1, m15Candles: entryTf, currentPrice, atrPips });
+  const liquidityMap = buildLiquidityMap({ pair, currentPrice, analyzed, monthlyCandles: monthly });
+  const bias = computeDailyBias({ pair, currentPrice, dailyCandles: daily, h4Candles: h4, liquidityMap }); // draw-on-liquidity display
+
+  // 3. Sweep (pool-aware, on the 5M entry timeframe).
   const sweep = analyzed.liquiditySweep || null;
   const sweepDir = sweep?.pending ? null : sweep?.direction || null;
   const pendingSweepDir = sweep?.pending ? sweep.direction : null;
 
-  // 4. Displacement.
-  const displacement = detectDisplacement({ candles: m15, pair });
+  // 4. Entry-timing concepts — 5M only.
+  const displacement = detectDisplacement({ candles: entryTf, pair });
+  const mss = detectMSS({ candles: entryTf, pair });
+  const bos = detectBreakOfStructure({ candles: entryTf, direction: dir || 'long', pair })
+    || detectBreakOfStructure({ candles: entryTf, direction: 'short', pair });
+  const choch = detectChangeOfCharacter({ candles: entryTf, priorTrend: dailyTfBias === 'bullish' ? 'bullish' : 'bearish', pair });
+  const fvgs = detectFVGs({ candles: entryTf, pair, timeframe: '5M' });
+  const orderBlock = detectOrderBlock({ candles: entryTf, pair });
+  const inducement = detectInducement({ candles: entryTf, pair, currentPrice, liquidityMap });
 
-  // 5. MSS / BOS / CHOCH.
-  const mss = detectMSS({ candles: m15, pair });
-  const biasLS = toLS(bias.dailyBias);
-  const bos = detectBreakOfStructure({ candles: m15, direction: biasLS || 'long', pair })
-    || detectBreakOfStructure({ candles: m15, direction: 'short', pair });
-  const choch = detectChangeOfCharacter({ candles: m15, priorTrend: bias.dailyBias === 'bullish' ? 'bullish' : 'bearish', pair });
-
-  // 6. PD arrays.
-  const fvgs = detectFVGs({ candles: m15, pair, timeframe: 'M15' });
-  const orderBlock = detectOrderBlock({ candles: m15, pair });
-  const inducement = detectInducement({ candles: m15, pair, currentPrice, liquidityMap });
-
-  // Candidate direction: daily bias, else a confirmed reversal (MSS/CHoCH), else displacement.
-  let dir = biasLS
-    || (mss.confirmed ? toLS(mss.direction) : null)
-    || (choch ? toLS(choch.direction) : null)
-    || (displacement.direction ? toLS(displacement.direction) : null);
-
-  // 7–8. Premium/Discount + OTE (fib swing in the candidate direction).
+  // 5. Premium/Discount + OTE (fib swing in the HTF direction).
   const fib = dir ? safeFib({ direction: dir, h1Candles: h1, h4Candles: h4, currentPrice, pair }) : null;
   const premiumDiscount = computePremiumDiscount({ pair, currentPrice, fib });
   const ote = computeOTE({ pair, currentPrice, fib, direction: dir });
 
-  // 9. Killzone / macro timing + session models.
+  // 6. Killzone / macro timing + session models + news + informational candle.
   const kz = currentKillzone(now);
   const macro = activeMacro(now);
   const silverBulletWindow = inSilverBulletWindow(now);
   const powerOf3 = classifyPowerOf3({ h1Candles: h1, pair, now });
   const judas = detectJudasSwing({ h1Candles: h1, pair });
-  const turtleSoup = detectTurtleSoup({ candles: m15, pair, liquidityMap });
+  const turtleSoup = detectTurtleSoup({ candles: entryTf, pair, liquidityMap });
   const smt = detectSMT({ pair, candles: m15, peers });
+  const news = getNewsRisk({ pair, now });
+  const candle = candleContext(entryTf);
 
   // IRL/ERL draw.
   const irlErl = irlErlDraw({ pair, currentPrice, liquidityMap, fvgs, orderBlock, bias: sign(dir) });
@@ -210,22 +213,27 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (turtleSoup.turtleSoupDetected) note('Turtle Soup');
   if (judas.judasSwingDetected) note('Judas Swing');
   if (smt.smtDetected) note(`SMT vs ${smt.comparisonAsset}`);
+  if (htfAligned) note(`Daily+4H aligned (${dailyTfBias})`);
+  if (news.caution) note('News caution');
 
   let signal = 'none';
   let setupType = null;
   let setup = null;
 
-  if (!dir) {
-    rejectionReasons.push('No directional basis (neutral bias, no MSS/CHoCH/displacement).');
-  } else {
+  // Direction comes ONLY from Daily+4H agreement. 5M cannot set or override it.
+  if (!htfAligned) {
+    rejectionReasons.push('Daily and 4H directional bias are not aligned.');
+  }
+  // ForexFactory high-impact news blocks; medium is caution-only (handled above).
+  if (news.blocked) {
+    rejectionReasons.push(news.blockReason);
+  }
+
+  if (htfAligned) {
     const want = sign(dir);
     const reversalConfirmed = (mss.confirmed && mss.direction === want) || (choch && choch.direction === want);
 
-    // Positive conditions (spec BUY/SELL rules).
-    if (!(sign(bias.dailyBias) === want || reversalConfirmed)) {
-      rejectionReasons.push(`Daily bias (${bias.dailyBias}) does not support ${dir} and no valid reversal.`);
-    }
-
+    // 5M entry timing only — never re-derives direction.
     if (!(sweepDir === want)) {
       if (pendingSweepDir === want) {
         rejectionReasons.push(
@@ -324,20 +332,19 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     + Math.min(5, conceptsDetected.length),
   ));
 
-  const ictBias = bias.dailyBias;
+  const ictBias = htfAligned ? dailyTfBias : 'neutral';
   const ictNarrative = buildNarrative({ pair, dir, bias, sweep, displacement, mss, choch, premiumDiscount, ote, kz, irlErl, signal, setupType });
 
-  // V3 vs ICT comparison — read-only call into the (unmodified) V3 engine.
-  let v3Comparison = null;
-  try {
-    const v3 = evaluateV3({ pair, legacyDirection: null, dailyCandles: daily, h4Candles: h4, h1Candles: h1, m15Candles: m15, currentPrice, atrPips, momentum: null, now });
-    const ictDir = signal === 'buy' ? 'long' : signal === 'sell' ? 'short' : null;
-    v3Comparison = {
-      v3Direction: v3.direction, v3Score: v3.score, v3Qualified: v3.qualified,
-      ictDirection: ictDir,
-      agrees: ictDir != null && v3.direction != null && ictDir === v3.direction,
-    };
-  } catch { /* V3 comparison is best-effort and never blocks ICT output */ }
+  // ICT is fully independent — V3 is never consulted here. Any V3-vs-ICT
+  // comparison is display-only and merged by the API route (see v3IctComparison.js).
+  const v3Comparison = null;
+
+  // Spec logging: ICT mode, auto-trade, independence, Daily/4H bias, 5M confirmation.
+  console.log(
+    `[ICT] ${pair} mode=${ICT_MODE} autoTrade=${ictExecConfig().autoTradeEnabled} independentFromV3=true | ` +
+    `dailyBias=${dailyTfBias} h4Bias=${h4TfBias} aligned=${htfAligned} | ` +
+    `5M=${signal !== 'none' ? 'confirmed' : 'none'} signal=${signal}${news.blocked ? ' [NEWS-BLOCK]' : news.caution ? ' [news-caution]' : ''}`,
+  );
 
   return {
     pair, timestamp, signalId, generatedAtMs,
@@ -358,6 +365,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
       liquidityMap, sweep, displacement, mss, bos, choch, fvgs, orderBlock,
       inducement, premiumDiscount, ote, powerOf3, killzone: kz, macro,
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
+      htf: { dailyBias: dailyTfBias, h4Bias: h4TfBias, aligned: htfAligned },
+      news, candle,
     },
     timing,
     v3Comparison,

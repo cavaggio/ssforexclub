@@ -18,6 +18,7 @@ import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
+import { computeV3Comparisons } from './v3IctComparison.js';
 import {
   executeTrade,
   closePosition,
@@ -1845,6 +1846,17 @@ app.post('/api/internal/oanda/ict', async (req, res) => {
       { accountId: client.accountId, environment: client.environment },
       () => analyzeICTPairs(req.body?.pairs || null, { client }),
     );
+    // DISPLAY-ONLY V3-vs-ICT comparison, merged outside the ICT engine and
+    // fail-safe (ICT analysis stands even if the comparison throws). Gated by
+    // ICT_V3_COMPARISON (default on).
+    if (String(process.env.ICT_V3_COMPARISON || 'on').toLowerCase() !== 'off') {
+      try {
+        const cmp = await computeV3Comparisons(result.analyses, { client });
+        for (const a of result.analyses) a.v3Comparison = cmp[a.pair] ?? null;
+      } catch (cmpErr) {
+        console.log(`[INTERNAL ICT] V3 comparison skipped: ${cmpErr?.message || cmpErr}`);
+      }
+    }
     console.log(
       `[INTERNAL ICT] complete accountId=${maskAccountId(client.accountId)} ` +
         `pairs=${result?.meta?.pairsAnalyzed ?? 0} signals=${result?.meta?.signals ?? 0}`,

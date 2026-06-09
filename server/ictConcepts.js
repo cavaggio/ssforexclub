@@ -495,3 +495,52 @@ export function computeDailyBias({ pair, currentPrice, dailyCandles, h4Candles, 
   const confidence = Math.round(clamp01(Math.abs(score) / 2.2) * 100);
   return { dailyBias, drawOnLiquidity, confidence, reason: reasons.join(' ') };
 }
+
+// ─── Per-timeframe directional bias (for Daily + 4H alignment gate) ──────────
+/**
+ * Pure ICT-structure read of a single timeframe's candles → 'bullish' |
+ * 'bearish' | 'neutral'. Combines swing structure (HH/HL vs LH/LL) with net
+ * directional travel. NO EMA/RSI/MACD. Used to require Daily and 4H to agree.
+ */
+export function htfBias(candles, lookback = 20) {
+  if (!Array.isArray(candles) || candles.length < 8) return 'neutral';
+  const seg = candles.slice(-lookback);
+  const { highs, lows } = findPivots(seg);
+  let structuralBull = false, structuralBear = false;
+  if (highs.length >= 2 && lows.length >= 2) {
+    const hh = highs[highs.length - 1].price > highs[highs.length - 2].price;
+    const hl = lows[lows.length - 1].price > lows[lows.length - 2].price;
+    const lh = highs[highs.length - 1].price < highs[highs.length - 2].price;
+    const ll = lows[lows.length - 1].price < lows[lows.length - 2].price;
+    structuralBull = hh && hl;
+    structuralBear = lh && ll;
+  }
+  const net = seg[seg.length - 1].close - seg[0].open;
+  const span = Math.max(...seg.map((c) => c.high)) - Math.min(...seg.map((c) => c.low));
+  const directional = span > 0 && Math.abs(net) / span >= 0.3;
+  if (structuralBull && net > 0) return 'bullish';
+  if (structuralBear && net < 0) return 'bearish';
+  if (directional) return net > 0 ? 'bullish' : 'bearish';
+  return 'neutral';
+}
+
+// ─── Informational candle descriptor (NEVER a rejection) ─────────────────────
+/**
+ * Lightweight, non-blocking candle context for display only. ICT evaluates
+ * expansion through displacement logic, not a generic candle-strength floor —
+ * so this is purely informational.
+ */
+export function candleContext(candles) {
+  if (!Array.isArray(candles) || !candles.length) return null;
+  const c = candles[candles.length - 1];
+  const range = Math.max(1e-9, c.high - c.low);
+  const body = Math.abs(c.close - c.open);
+  const prior = candles.slice(-21, -1);
+  const avg = prior.length ? prior.reduce((s, x) => s + Math.abs(x.close - x.open), 0) / prior.length : 0;
+  return {
+    bodyPctOfRange: Math.round((body / range) * 100),
+    expansionX: avg > 0 ? +(body / avg).toFixed(2) : null,
+    direction: c.close >= c.open ? 'bullish' : 'bearish',
+    informationalOnly: true,
+  };
+}

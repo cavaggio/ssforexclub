@@ -25,6 +25,7 @@ import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles } from './oandaMarketData.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
+import { getNewsRisk } from './news/forexFactoryNews.js';
 
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
@@ -53,6 +54,7 @@ export async function executeIctTrade(params = {}, {
   getAnalysis = null,
   getAccount = null,
   reconcile = null,
+  getNews = null,
 } = {}) {
   const config = cfg || ictExecConfig();
   const { pair, direction, entry, stopLoss, targetProfit, ictSignalId } = params;
@@ -86,10 +88,16 @@ export async function executeIctTrade(params = {}, {
     return blocked(`No current ICT ${wantSignal} signal for ${pair} (got "${analysis?.signal ?? 'none'}").`);
   }
   if (!(analysis.confidence >= config.minConfidence)) {
-    return blocked(`Confidence ${analysis.confidence} < ICT_MIN_CONFIDENCE ${config.minConfidence}.`);
+    return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
   }
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
+  }
+
+  // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
+  const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
+  if (news?.blocked) {
+    return blocked(news.blockReason || 'High-impact news window active.');
   }
 
   // ── 5. Staleness (signal id carries the generation timestamp) ──────────────

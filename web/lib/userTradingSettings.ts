@@ -26,6 +26,8 @@ export type UserTradingSettings = {
   activeBrokerConnectionId: string | null;
   liveTradingAcknowledged: boolean;
   liveTradingAcknowledgedAt: string | null;
+  /** Per-user opt-in for AI auto-trading. Default false. Phase 2 scheduler reads this. */
+  autoAiTradingEnabled: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 };
@@ -36,6 +38,7 @@ const DEFAULT_SETTINGS: Omit<UserTradingSettings, 'userId'> = {
   activeBrokerConnectionId: null,
   liveTradingAcknowledged: false,
   liveTradingAcknowledgedAt: null,
+  autoAiTradingEnabled: false,
   createdAt: null,
   updatedAt: null,
 };
@@ -49,6 +52,7 @@ function rowToSettings(row: Record<string, unknown> | null, userId: string): Use
     activeBrokerConnectionId: (row.active_broker_connection_id as string | null) ?? null,
     liveTradingAcknowledged:  Boolean(row.live_trading_acknowledged),
     liveTradingAcknowledgedAt:(row.live_trading_acknowledged_at as string | null) ?? null,
+    autoAiTradingEnabled:     Boolean(row.auto_ai_trading_enabled),
     createdAt:                (row.created_at as string | null) ?? null,
     updatedAt:                (row.updated_at as string | null) ?? null,
   };
@@ -63,7 +67,7 @@ export async function getUserTradingSettings(clerkUserId: string): Promise<UserT
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('user_trading_settings')
-    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, created_at, updated_at')
+    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, auto_ai_trading_enabled, created_at, updated_at')
     .eq('user_id', clerkUserId)
     .maybeSingle();
   if (error) throw new Error(`getUserTradingSettings: ${error.message}`);
@@ -97,7 +101,7 @@ export async function setActiveBroker(args: SetActiveBrokerArgs): Promise<UserTr
       },
       { onConflict: 'user_id' }
     )
-    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, created_at, updated_at')
+    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, auto_ai_trading_enabled, created_at, updated_at')
     .single();
   if (error || !data) throw new Error(`setActiveBroker: ${error?.message ?? 'no row returned'}`);
   return rowToSettings(data, args.clerkUserId);
@@ -122,8 +126,37 @@ export async function acknowledgeLiveTrading(clerkUserId: string): Promise<UserT
       },
       { onConflict: 'user_id' }
     )
-    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, created_at, updated_at')
+    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, auto_ai_trading_enabled, created_at, updated_at')
     .single();
   if (error || !data) throw new Error(`acknowledgeLiveTrading: ${error?.message ?? 'no row returned'}`);
   return rowToSettings(data, clerkUserId);
+}
+
+/**
+ * Toggle per-user AI auto-trading. Upserts the row. This is the source of truth
+ * for the dashboard "Auto AI Trading" toggle; the platform env flag is a
+ * separate upper-level gate enforced at execution time.
+ */
+export async function setAutoAiTrading(clerkUserId: string, enabled: boolean): Promise<UserTradingSettings> {
+  if (!clerkUserId) throw new Error('setAutoAiTrading: missing clerkUserId');
+  const supabase = getServerSupabase();
+  const { data, error } = await supabase
+    .from('user_trading_settings')
+    .upsert(
+      {
+        user_id: clerkUserId,
+        auto_ai_trading_enabled: Boolean(enabled),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    )
+    .select('active_broker, active_environment, active_broker_connection_id, live_trading_acknowledged, live_trading_acknowledged_at, auto_ai_trading_enabled, created_at, updated_at')
+    .single();
+  if (error || !data) throw new Error(`setAutoAiTrading: ${error?.message ?? 'no row returned'}`);
+  return rowToSettings(data, clerkUserId);
+}
+
+/** Platform-level upper gate for any live auto-trading (env, not per-user). */
+export function platformLiveTradingEnabled(): boolean {
+  return String(process.env.PLATFORM_LIVE_TRADING_ENABLED || 'false').toLowerCase() === 'true';
 }
