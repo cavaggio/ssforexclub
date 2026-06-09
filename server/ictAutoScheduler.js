@@ -55,9 +55,11 @@ async function tick(nextUrl, secret) {
   if (!inAutoAiWindow(new Date())) return; // silent no-op outside the NY window
   const runId = makeRunId();
   const tag = `[AUTO_AI][ICT][runId=${runId}]`;
+  const cronUrl = `${String(nextUrl).replace(/\/$/, '')}/api/cron/auto-ai-trading`;
   console.log(`${tag} scan started independentFromV3=true`);
+  console.log(`[AUTO_AI][ICT] cronUrl=${cronUrl}`);
   try {
-    const res = await fetch(`${String(nextUrl).replace(/\/$/, '')}/api/cron/auto-ai-trading`, {
+    const res = await fetch(cronUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cron-Secret': secret },
       body: JSON.stringify({ source: 'railway-scheduler', runId }),

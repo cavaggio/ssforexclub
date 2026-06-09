@@ -20,6 +20,7 @@ const isPublicRoute = createRouteMatcher([
   '/',
   '/api/health',          // unauthenticated health-check (for Vercel/Render probes)
   '/sso-callback(.*)',    // Clerk OAuth handshake
+  '/api/cron(.*)',        // system cron endpoints (no Clerk session) — gated by their own X-Cron-Secret
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
