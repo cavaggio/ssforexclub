@@ -1922,7 +1922,7 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoAiForUser({ client }),
+      () => runAutoAiForUser({ client, runId: req.body?.runId }),
     );
     res.json(result);
   } catch (err) {
@@ -1962,6 +1962,8 @@ app.post('/api/internal/oanda/ict/reassess', async (req, res) => {
         return out;
       },
     );
+    const dueCount = recommendations.filter((r) => r.reassessDue).length;
+    console.log(`[AUTO_AI][ICT][runId=${req.body?.runId ?? '-'}] account=${maskAccountId(client.accountId)} independentFromV3=true reassess trades=${trades.length} recommendations=${dueCount}`);
     res.json({ ok: true, recommendations, autoManage: String(process.env.ICT_AUTO_MANAGE || 'false').toLowerCase() === 'true' });
   } catch (err) {
     console.error('[INTERNAL_ICT_REASSESS] error:', err?.message || err);

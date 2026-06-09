@@ -46,20 +46,27 @@ export function startAutoAiScheduler({ intervalMs = INTERVAL_MS } = {}) {
   return { started: true, intervalMs };
 }
 
+/** Short correlation id for one scheduler tick, threaded through the whole path. */
+export function makeRunId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 async function tick(nextUrl, secret) {
   if (!inAutoAiWindow(new Date())) return; // silent no-op outside the NY window
-  console.log('[AUTO_AI] scan started');
+  const runId = makeRunId();
+  const tag = `[AUTO_AI][ICT][runId=${runId}]`;
+  console.log(`${tag} scan started independentFromV3=true`);
   try {
     const res = await fetch(`${String(nextUrl).replace(/\/$/, '')}/api/cron/auto-ai-trading`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cron-Secret': secret },
-      body: JSON.stringify({ source: 'railway-scheduler' }),
+      body: JSON.stringify({ source: 'railway-scheduler', runId }),
     });
     const text = await res.text();
-    if (!res.ok) console.log(`[AUTO_AI] cron call failed ${res.status}: ${text.slice(0, 200)}`);
-    else console.log(`[AUTO_AI] cron ok: ${text.slice(0, 200)}`);
+    if (!res.ok) console.log(`${tag} cron call failed ${res.status}: ${text.slice(0, 200)}`);
+    else console.log(`${tag} complete ${text.slice(0, 200)}`);
   } catch (err) {
-    console.log(`[AUTO_AI] cron unreachable: ${err?.message || err}`);
+    console.log(`${tag} cron unreachable: ${err?.message || err}`);
   }
 }
 
