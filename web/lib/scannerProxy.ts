@@ -34,7 +34,9 @@ type InternalCallResult =
   | { ok: true; data: unknown }
   | { ok: false; status: number; error: string };
 
-async function callInternalEndpoint(
+// Exported (additive) so the system cron route — which has no Clerk session —
+// can call the Railway internal endpoints with explicitly-resolved per-user creds.
+export async function callInternalEndpoint(
   path: string,
   body: Record<string, unknown>,
 ): Promise<InternalCallResult> {

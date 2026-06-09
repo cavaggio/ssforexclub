@@ -26,6 +26,7 @@ import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles } from './oandaMarketData.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
+import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
@@ -175,12 +176,15 @@ export async function executeIctTrade(params = {}, {
   registerTradeLock(pair, direction);
   const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;
   const fillPrice = parseFloat(fill.price ?? entry);
-  rec(`filled tradeId=${tradeId} price=${fillPrice} units=${units}`);
+  // Projected hold-time for the ICT lifecycle reassessment (recorded at open).
+  const holdMinutes = estimateHoldMinutes(analysis.setupType, analysis.concepts?.killzone);
+  rec(`filled tradeId=${tradeId} price=${fillPrice} units=${units} holdMinutes=${holdMinutes}`);
   return {
     success: true, blocked: false, executionState: 'FILLED',
     tradeId, fillPrice, units, pair, direction,
     stopLoss, takeProfit: targetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
+    holdMinutes,
     executionLog: log,
   };
 }

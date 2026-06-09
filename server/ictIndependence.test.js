@@ -9,7 +9,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 // The ICT engine + executor must be fully independent of V3 — no V3 import, no
 // evaluateV3 call, no V3 scoring module. (The display-only comparison lives in
 // v3IctComparison.js, which is deliberately NOT in this list.)
-const ICT_FILES = ['ictEngine.js', 'ictExecution.js', 'ictConcepts.js', 'ictSMT.js', 'ictTime.js'];
+const ICT_FILES = [
+  'ictEngine.js', 'ictExecution.js', 'ictConcepts.js', 'ictSMT.js', 'ictTime.js',
+  'ictLifecycleEngine.js', 'ictAutoTrade.js', 'ictAutoScheduler.js',
+];
 
 for (const f of ICT_FILES) {
   test(`ICT independence: ${f} does not depend on V3`, () => {

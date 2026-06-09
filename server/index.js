@@ -19,6 +19,9 @@ import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
 import { computeV3Comparisons } from './v3IctComparison.js';
+import { runAutoAiForUser } from './ictAutoTrade.js';
+import { startAutoAiScheduler } from './ictAutoScheduler.js';
+import { reassessIctTrade } from './ictLifecycleEngine.js';
 import {
   executeTrade,
   closePosition,
@@ -1902,6 +1905,70 @@ app.post('/api/internal/oanda/ict/trade', async (req, res) => {
   }
 });
 
+// POST /api/internal/oanda/ict/auto
+//   Autonomous ICT entry for ONE user. The Next cron resolves the user's creds
+//   and forwards them here; the executor enforces every gate (off by default).
+app.post('/api/internal/oanda/ict/auto', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  const env = String(req.body?.environment ?? '').toLowerCase();
+  if (env !== 'live') {
+    res.status(400).json({ ok: false, error: `ICT auto endpoint requires environment=live (got "${env || '<empty>'}")` });
+    return;
+  }
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('ICT_AUTO', req.body);
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => runAutoAiForUser({ client }),
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_ICT_AUTO] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/ict/reassess
+//   ICT lifecycle reassessment — RECOMMEND-ONLY (does not close/modify unless
+//   ICT_AUTO_MANAGE=true, which is out of scope here). Body carries the user's
+//   open ICT trades (from trade_logs) + creds; we fetch fresh candles per pair
+//   and return management recommendations for logging/surfacing.
+app.post('/api/internal/oanda/ict/reassess', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('ICT_REASSESS', req.body);
+  const trades = Array.isArray(req.body?.trades) ? req.body.trades : [];
+  try {
+    const recommendations = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      async () => {
+        const out = [];
+        for (const t of trades) {
+          const candles = await getCandles(t.pair, 'M5', 120, { client }).catch(() => []);
+          const currentPrice = candles.length ? candles[candles.length - 1].close : null;
+          const r = reassessIctTrade({
+            pair: t.pair, direction: t.direction, entryPrice: t.entryPrice, currentPrice,
+            target1: t.target1, candles, now: new Date(),
+            openedAtMs: t.openedAtMs, holdMinutes: t.holdMinutes, lastReassessMs: t.lastReassessMs ?? null,
+          });
+          if (r.reassessDue) console.log(`[ICT_LIFECYCLE] ${t.pair} ${t.direction} → ${r.action} (${r.reasons[0]})`);
+          out.push({ tradeId: t.tradeId, pair: t.pair, ...r });
+        }
+        return out;
+      },
+    );
+    res.json({ ok: true, recommendations, autoManage: String(process.env.ICT_AUTO_MANAGE || 'false').toLowerCase() === 'true' });
+  } catch (err) {
+    console.error('[INTERNAL_ICT_REASSESS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 // POST /api/internal/oanda/active-trades/analysis
 app.post('/api/internal/oanda/active-trades/analysis', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
@@ -2092,6 +2159,10 @@ app.listen(PORT, '0.0.0.0', () => {
   // Env-guarded active-trade reassessment scheduler — Part 10 of the
   // 2026-05-27 active-trade-management upgrade. Default OFF.
   startReassessmentScheduler();
+  // ICT Phase 2 — autonomous auto-AI scheduler (Railway 5-min loop → Next cron).
+  // Default OFF (ICT_AUTO_AI_SCHEDULER_ENABLED). Triggers per-user ICT auto-trading
+  // only on NY weekdays 02:00–11:00 ET; all execution gates still apply downstream.
+  startAutoAiScheduler();
   console.log(`OANDA env:    ${process.env.OANDA_ENV || 'practice'}`);
   console.log(`Auto-trade:   ${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}`);
   console.log(`Min score:    ${process.env.FOREX_MIN_SCORE || '15'}/20`);
