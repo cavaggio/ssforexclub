@@ -235,40 +235,103 @@ export type TradeLogRow = {
   macro_risk: string | null;
 };
 
+// Columns that actually exist on the production trade_logs table. We select ONLY
+// these — querying a non-existent column (PostgREST) fails the whole request.
+// Notably absent in production: entry_time/exit_time (and the other edge-snapshot
+// columns); production uses created_at + pair/direction + realized_pl/unrealized_pl.
+const TRADE_LOG_SELECT =
+  'id, user_id, created_at, event_type, status, pair, direction, ' +
+  'entry_price, exit_price, realized_pl, unrealized_pl, payload, raw_payload';
+
+const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+// Map a production row onto the full TradeLogRow shape consumers expect. Columns
+// that don't exist in production are filled with null (or bridged from existing
+// ones). entry_time is mapped to the canonical created_at; exit_time is null.
+function mapRow(r: Record<string, unknown>): TradeLogRow {
+  const created_at = String(r.created_at ?? '');
+  return {
+    id: String(r.id ?? ''),
+    created_at,
+    user_id: String(r.user_id ?? ''),
+    organization_id: null,
+    broker: '',
+    broker_account_id: null,
+    environment: '',
+    event_type: r.event_type as TradeEventType,
+    instrument: (r.pair as string | null) ?? null,      // production uses `pair`
+    trade_id: null,
+    broker_order_id: null,
+    side: (r.direction as 'long' | 'short' | null) ?? null, // production uses `direction`
+    units: null,
+    units_closed: null,
+    entry_price: numOrNull(r.entry_price),
+    exit_price: numOrNull(r.exit_price),
+    realized_pl: numOrNull(r.realized_pl),
+    unrealized_pl: numOrNull(r.unrealized_pl),
+    tp: null,
+    sl: null,
+    recommendation: null,
+    confidence: null,
+    reason: null,
+    raw_payload: r.raw_payload ?? r.payload ?? null,
+    pair: (r.pair as string | null) ?? null,
+    direction: (r.direction as 'long' | 'short' | null) ?? null,
+    entry_time: created_at,   // canonical timestamp (no entry_time column in prod)
+    exit_time: null,          // no exit_time column in prod
+    pnl: numOrNull(r.realized_pl), // bridge edge `pnl` from realized_pl
+    win_loss: null,
+    session: null,
+    spread: null,
+    signal_score: null,
+    trend: null,
+    volatility: null,
+    market_regime: null,
+    macro_bias: null,
+    macro_risk: null,
+  };
+}
+
 /**
  * Read the current user's trade logs. Always filters by user_id so a future
  * mistake (or a service-role query without an explicit user_id) can't return
  * another user's records.
+ *
+ * NON-FATAL: any failure (missing clerkUserId, Supabase/schema error) logs a
+ * warning and returns an empty result so the dashboard still loads.
  */
 export async function listTradeLogsForUser(
   clerkUserId: string,
   filters: TradeLogFilters = {},
 ): Promise<{ rows: TradeLogRow[]; nextCursor: string | null }> {
-  if (!clerkUserId) throw new Error('listTradeLogsForUser: missing clerkUserId');
-  const supabase = getServerSupabase();
+  if (!clerkUserId) {
+    console.warn('[TRADE_LOG] listTradeLogsForUser called without clerkUserId — returning empty.');
+    return { rows: [], nextCursor: null };
+  }
   const limit = Math.max(1, Math.min(200, filters.limit ?? 50));
-  let q = supabase
-    .from('trade_logs')
-    .select(
-      'id, created_at, user_id, organization_id, broker, broker_account_id, environment, ' +
-        'event_type, instrument, trade_id, broker_order_id, side, units, units_closed, ' +
-        'entry_price, exit_price, realized_pl, unrealized_pl, tp, sl, recommendation, ' +
-        'confidence, reason, raw_payload, ' +
-        'pair, direction, entry_time, exit_time, pnl, win_loss, session, spread, ' +
-        'signal_score, trend, volatility, market_regime, macro_bias, macro_risk',
-    )
-    .eq('user_id', clerkUserId);
-  if (filters.instrument) q = q.eq('instrument', normalizeInstrument(filters.instrument));
-  if (filters.eventType)  q = q.eq('event_type', filters.eventType);
-  if (filters.tradeId)    q = q.eq('trade_id',   filters.tradeId);
-  if (filters.startDate)  q = q.gte('created_at', filters.startDate);
-  if (filters.endDate)    q = q.lte('created_at', filters.endDate);
-  if (filters.cursor)     q = q.lt('created_at',  filters.cursor);
-  q = q.order('created_at', { ascending: false }).limit(limit + 1);
-  const { data, error } = await q;
-  if (error) throw new Error(`listTradeLogsForUser: ${error.message}`);
-  const all = (data ?? []) as unknown as TradeLogRow[];
-  const rows = all.slice(0, limit);
-  const nextCursor = all.length > limit ? rows[rows.length - 1]?.created_at ?? null : null;
-  return { rows, nextCursor };
+  try {
+    const supabase = getServerSupabase();
+    let q = supabase
+      .from('trade_logs')
+      .select(TRADE_LOG_SELECT)
+      .eq('user_id', clerkUserId);
+    if (filters.instrument) q = q.eq('pair', normalizeInstrument(filters.instrument)); // prod column is `pair`
+    if (filters.eventType)  q = q.eq('event_type', filters.eventType);
+    if (filters.startDate)  q = q.gte('created_at', filters.startDate);
+    if (filters.endDate)    q = q.lte('created_at', filters.endDate);
+    if (filters.cursor)     q = q.lt('created_at',  filters.cursor);
+    q = q.order('created_at', { ascending: false }).limit(limit + 1);
+    const { data, error } = await q;
+    if (error) {
+      console.warn(`[TRADE_LOG] listTradeLogsForUser query failed (non-fatal): ${error.message}`);
+      return { rows: [], nextCursor: null };
+    }
+    const all = ((data ?? []) as unknown as Record<string, unknown>[]).map(mapRow);
+    const rows = all.slice(0, limit);
+    const nextCursor = all.length > limit ? rows[rows.length - 1]?.created_at ?? null : null;
+    return { rows, nextCursor };
+  } catch (err) {
+    console.warn(`[TRADE_LOG] listTradeLogsForUser error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    return { rows: [], nextCursor: null };
+  }
 }
