@@ -69,6 +69,16 @@ const ENTRY_TIMING_STRICT = String(process.env.FOREX_ENTRY_TIMING_STRICT || 'fal
 // is computed dynamically per signal, never taken from this constant.
 const DEFAULT_DISPLAY_LOT_SIZE = parseFloat(process.env.FOREX_FIXED_LOT_SIZE || '0.01');
 
+// Legacy-scanner log verbosity (does NOT affect scoring, qualification, or any
+// trading logic — only which console lines print). silent < warn < info < debug.
+// Default 'info' hides the verbose per-pair WATERFALL/scoring/reject spam; set
+// SCANNER_LOG_LEVEL=debug to restore full per-pair detail.
+const SCANNER_LOG_LEVEL = String(process.env.SCANNER_LOG_LEVEL || 'info').toLowerCase();
+const _SLOG_RANK = { silent: 0, warn: 1, info: 2, debug: 3 };
+const _SLOG_CUR = _SLOG_RANK[SCANNER_LOG_LEVEL] ?? 2;
+const scannerLogEnabled = (level) => (_SLOG_RANK[level] ?? 2) <= _SLOG_CUR;
+function slog(level, ...args) { if (scannerLogEnabled(level)) console.log(...args); }
+
 const DEFAULT_PAIRS = [
   'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD', 'XAU_USD', 'XAG_USD',
 ];
@@ -301,7 +311,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
   const v3ByPair = {};
 
   for (const pair of rankedPairs) {
-    console.log(`[SCANNER] Analyzing ${pair} (${getInstrumentName(pair)})...`);
+    slog('debug', `[SCANNER] Analyzing ${pair} (${getInstrumentName(pair)})...`);
 
     try {
       const pricing = pricingMap[pair];
@@ -332,7 +342,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           reason: `Spread too wide: ${pricing.spreadPips.toFixed(1)} pips > ${maxSpread} pips (${pair}, ${session})`,
           spreadPips: pricing.spreadPips,
         });
-        console.log(`[SCANNER] ✗ ${pair} — spread ${pricing.spreadPips.toFixed(1)} pips (limit: ${maxSpread})`);
+        slog('debug', `[SCANNER] ✗ ${pair} —spread ${pricing.spreadPips.toFixed(1)} pips (limit: ${maxSpread})`);
         continue;
       }
 
@@ -566,20 +576,22 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       // One line per pair covering: candle counts, latest candle times, trend
       // per timeframe, the three layer confidences, the alignment score, and
       // the rejection reasons. Designed to be greppable in the backend logs.
-      const lastTs = (arr) => arr.length ? new Date(arr[arr.length - 1].time * 1000 || arr[arr.length - 1].time).toISOString() : '—';
-      console.log(`[DEBUG] ${pair}`);
-      console.log(`  candles  D=${dailyCandles.length} H4=${h4Candles.length} H1=${h1Candles.length} M30=${m30Candles.length} M15=${m15Candles.length} M5=${m5Candles.length}`);
-      console.log(`  latest   D=${lastTs(dailyCandles)} H4=${lastTs(h4Candles)} H1=${lastTs(h1Candles)} M30=${lastTs(m30Candles)} M15=${lastTs(m15Candles)} M5=${lastTs(m5Candles)}`);
-      console.log(`  trends   D=${macro.dailyTrend} H4=${macro.h4Trend} H1=${structure.h1Trend} M30=${structure.m30Trend} M15=${momentum.m15Trend} M5=${momentum.m5Trend}`);
-      console.log(`  conf     macro=${macro.macroConfidence} struct=${structure.structuralConfidence} exec=${momentum.executionConfidence} (m15Confirm=${momentum.executionConfirmation})`);
-      console.log(`  align    score=${alignment.timeframeAlignmentScore} status=${alignment.alignmentStatus} conflicts=[${alignment.conflictingTimeframes.join(',')}]`);
-      console.log(
-        `[WATERFALL] ${pair} — macro=${macro.macroBias}(${macro.macroConfidence}) ` +
-        `struct=${structure.structureAligned ? 'aligned' : 'misaligned'}(${structure.structuralConfidence}, rev=${structure.reversalRisk}) ` +
-        `momentum=${direction ?? '—'}(${momentum.executionConfidence}) ` +
-        `align=${alignment.timeframeAlignmentScore}/${alignment.alignmentStatus} ` +
-        `conflicts=[${alignment.conflictingTimeframes.join(',')}]`
-      );
+      if (scannerLogEnabled('debug')) {
+        const lastTs = (arr) => arr.length ? new Date(arr[arr.length - 1].time * 1000 || arr[arr.length - 1].time).toISOString() : '—';
+        console.log(`[DEBUG] ${pair}`);
+        console.log(`  candles  D=${dailyCandles.length} H4=${h4Candles.length} H1=${h1Candles.length} M30=${m30Candles.length} M15=${m15Candles.length} M5=${m5Candles.length}`);
+        console.log(`  latest   D=${lastTs(dailyCandles)} H4=${lastTs(h4Candles)} H1=${lastTs(h1Candles)} M30=${lastTs(m30Candles)} M15=${lastTs(m15Candles)} M5=${lastTs(m5Candles)}`);
+        console.log(`  trends   D=${macro.dailyTrend} H4=${macro.h4Trend} H1=${structure.h1Trend} M30=${structure.m30Trend} M15=${momentum.m15Trend} M5=${momentum.m5Trend}`);
+        console.log(`  conf     macro=${macro.macroConfidence} struct=${structure.structuralConfidence} exec=${momentum.executionConfidence} (m15Confirm=${momentum.executionConfirmation})`);
+        console.log(`  align    score=${alignment.timeframeAlignmentScore} status=${alignment.alignmentStatus} conflicts=[${alignment.conflictingTimeframes.join(',')}]`);
+        console.log(
+          `[WATERFALL] ${pair} — macro=${macro.macroBias}(${macro.macroConfidence}) ` +
+          `struct=${structure.structureAligned ? 'aligned' : 'misaligned'}(${structure.structuralConfidence}, rev=${structure.reversalRisk}) ` +
+          `momentum=${direction ?? '—'}(${momentum.executionConfidence}) ` +
+          `align=${alignment.timeframeAlignmentScore}/${alignment.alignmentStatus} ` +
+          `conflicts=[${alignment.conflictingTimeframes.join(',')}]`
+        );
+      }
 
       // ── Categorize the rejection so the dashboard can distinguish each
       //    failure mode. Extended 2026-05-27 with market_state, htf_conflict,
@@ -622,7 +634,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           candleStrength, marketState, mtfAuthority, overextension, profile,
           spreadPips: pricing.spreadPips, session,
         });
-        console.log(`[SCANNER] ✗ ${pair} — [${rejectionCategory}] ${alignment.rejectionReasons.length} reason(s)`);
+        slog('debug', `[SCANNER] ✗ ${pair} —[${rejectionCategory}] ${alignment.rejectionReasons.length} reason(s)`);
         continue;
       }
 
@@ -655,7 +667,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           candleStrength, marketState, mtfAuthority, overextension, profile,
           spreadPips: pricing.spreadPips, session,
         });
-        console.log(`[SCANNER] ✗ ${pair} — [weak_setup] aggregate confidence ${confidence}% below threshold`);
+        slog('debug', `[SCANNER] ✗ ${pair} —[weak_setup] aggregate confidence ${confidence}% below threshold`);
         continue;
       }
 
@@ -696,7 +708,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           spreadPips: pricing.spreadPips, session,
           lifecycle,
         });
-        console.log(`[SCANNER] ✗ ${pair} — [${category}] lifecycle reject: ${lifecycle.rejectionReason}`);
+        slog('debug', `[SCANNER] ✗ ${pair} —[${category}] lifecycle reject: ${lifecycle.rejectionReason}`);
         continue;
       }
 
@@ -786,7 +798,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           rrTier: rrQual.rrTier,
           finalQualifiedStatus: 'rejected_expected_rr',
         });
-        console.log(`[SCANNER] ✗ ${pair} — [low_expected_rr] ${rrQual.rejectionReason}`);
+        slog('debug', `[SCANNER] ✗ ${pair} —[low_expected_rr] ${rrQual.rejectionReason}`);
         continue;
       }
 
@@ -815,7 +827,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           candleStrength, marketState, mtfAuthority, overextension, profile,
           spreadPips: pricing.spreadPips, session,
         });
-        console.log(`[SCANNER] ✗ ${pair} — ${reason}`);
+        slog('debug', `[SCANNER] ✗ ${pair} —${reason}`);
         continue;
       }
 
@@ -849,7 +861,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       console.log(`  TP    pips=${takeProfitPips} price=${takeProfit} R:R=1:${riskReward} reason="${lifecycle.tp.targetReason}"`);
       console.log(`  caps  cappedByKeyLevel=${lifecycle.tp.cappedByKeyLevel} keyLevelDistance=${lifecycle.tp.keyLevelDistance}p cappedByAtr=${lifecycle.tp.cappedByAtr}`);
       console.log(`  hold  ${lifecycle.hold.minMinutes}-${lifecycle.hold.maxMinutes}m (conf ${lifecycle.hold.holdConfidence}) velocity=${lifecycle.hold.pipsPerMinute}p/min reason="${lifecycle.hold.timeToTPReason}"`);
-      console.log(`  prob  TP=${lifecycle.probs.tpProbability} SL=${lifecycle.probs.slProbability} | session=${session} vol=${macro.volatilityRegime} atrPips=${momentum.atrPips}`);
+      slog('debug', `  prob  TP=${lifecycle.probs.tpProbability} SL=${lifecycle.probs.slProbability} | session=${session} vol=${macro.volatilityRegime} atrPips=${momentum.atrPips}`);
 
       const modifierTag = dynamicRisk.factors.modifiers.length
         ? ` [${dynamicRisk.factors.modifiers.join(', ')}]`
@@ -886,7 +898,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           recommendation: macroRisk.recommendation,
         };
       } catch (macroErr) {
-        console.log(`[SCANNER] macro layer skipped for ${pair}: ${macroErr.message}`);
+        slog('debug', `[SCANNER] macro layer skipped for ${pair}: ${macroErr.message}`);
       }
       try {
         marketRegime = detectMarketRegime({
@@ -903,7 +915,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           },
         });
       } catch (regimeErr) {
-        console.log(`[SCANNER] regime layer skipped for ${pair}: ${regimeErr.message}`);
+        slog('debug', `[SCANNER] regime layer skipped for ${pair}: ${regimeErr.message}`);
       }
 
       // ── V3 'active' mode — conservative gate ────────────────────────────
@@ -919,7 +931,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
           rejectionReasons: v3Eval.rejectionReasons,
           v3: v3Eval,
         });
-        console.log(`[SCANNER] ✗ ${pair} — [v3_gate] ${v3Eval.rejectionReasons?.[0] || 'V3 rejected'}`);
+        slog('debug', `[SCANNER] ✗ ${pair} —[v3_gate] ${v3Eval.rejectionReasons?.[0] || 'V3 rejected'}`);
         continue;
       }
 
