@@ -78,16 +78,23 @@ function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote
   // Entry zone: prefer an unfilled FVG in-direction, then an unmitigated OB, then OTE.
   const fvg = (fvgs || []).find((f) => f.type === (bull ? 'bullish' : 'bearish') && f.status !== 'filled');
   let zoneMid = null, zoneLow = null, zoneHigh = null, entrySource = null;
+  const sweptLevel = Number.isFinite(sweep?.sweptPriceLevel) ? sweep.sweptPriceLevel : null;
   if (fvg) { zoneMid = fvg.midpoint; zoneLow = fvg.low; zoneHigh = fvg.high; entrySource = 'FVG'; }
   else if (orderBlock && orderBlock.type === (bull ? 'bullish' : 'bearish') && !orderBlock.mitigated) {
     zoneMid = orderBlock.midpoint; zoneLow = orderBlock.low; zoneHigh = orderBlock.high; entrySource = 'OB';
   } else if (ote && ote.priceInOTE) {
     zoneMid = (ote.oteLow + ote.oteHigh) / 2; zoneLow = ote.oteLow; zoneHigh = ote.oteHigh; entrySource = 'OTE';
+  } else {
+    // No PD array — a PD array is CONFLUENCE, not required. Enter at market with a
+    // structure/ATR stop (beyond the swept level when present).
+    const buf = atrPrice ? atrPrice * 1.5 : (sweptLevel != null ? Math.abs(currentPrice - sweptLevel) : currentPrice * 0.002);
+    zoneMid = currentPrice;
+    zoneLow = bull ? currentPrice - buf : currentPrice;
+    zoneHigh = bull ? currentPrice : currentPrice + buf;
+    entrySource = 'MARKET';
   }
-  if (zoneMid == null) return { ok: false, reason: 'No PD array (FVG/OB/OTE) available for entry.' };
 
   const entry = roundPrice(zoneMid, pair);
-  const sweptLevel = Number.isFinite(sweep?.sweptPriceLevel) ? sweep.sweptPriceLevel : null;
 
   // Target = nearest opposing liquidity in-direction (ERL).
   const targetPool = bull
@@ -121,6 +128,28 @@ function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote
     riskPips: toPips(risk, pair),
     rewardPips: toPips(reward, pair),
   };
+}
+
+// ─── Confidence scoring (soft confluence) ────────────────────────────────────
+// PURE. Base from the required Daily+4H alignment + killzone, then additive
+// bonuses for every confluence factor. Nothing here rejects — the hard gates do
+// that. Display qualifies at >=70; auto-execution is separately gated at >=80.
+export function computeIctConfidence(p = {}) {
+  if (!p.htfAligned) return 0;
+  let c = 40;                                          // Daily+4H aligned (hard-gated base)
+  c += Math.round((p.killzoneQuality || 0) * 0.15);    // active killzone quality (~8–14)
+  c += p.sweepAligned ? 12 : (p.drawPresent ? 6 : 0);  // liquidity sweep / draw on liquidity
+  c += p.entryTrigger ? 8 : 0;                         // 5M entry-timing confirmation
+  if (p.displacementAligned) c += 8;
+  if (p.mssOrChoch) c += 6;
+  if (p.fvgInDir) c += 5;
+  if (p.obInDir) c += 5;
+  if (p.inOteZone) c += 8;
+  if (p.smt) c += 4;
+  if (p.inducementSwept) c += 3;
+  c += Math.min(6, (p.labels || 0) * 3);               // Power3 / SilverBullet / TurtleSoup / Judas labels
+  if (Number.isFinite(p.rr) && p.rr >= 2) c += 4;
+  return Math.max(0, Math.min(100, Math.round(c)));
 }
 
 // ─── One pair ────────────────────────────────────────────────────────────────
@@ -220,94 +249,86 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   let setupType = null;
   let setup = null;
 
-  // Direction comes ONLY from Daily+4H agreement. 5M cannot set or override it.
-  if (!htfAligned) {
-    rejectionReasons.push('Daily and 4H directional bias are not aligned.');
+  const want = sign(dir); // null when Daily/4H not aligned
+  const reversalConfirmed = !!want && ((mss.confirmed && mss.direction === want) || (choch && choch.direction === want));
+  const bosAligned = !!(want && bos && bos.direction === want);
+  const sweepAligned = !!want && sweepDir === want;
+
+  // Draw on liquidity: a target pool sits in the trade direction (price is drawn to it).
+  const drawTarget = want === 'bullish'
+    ? (liquidityMap.buySideLiquidity || []).find((p) => p.price > currentPrice)
+    : want === 'bearish' ? (liquidityMap.sellSideLiquidity || []).find((p) => p.price < currentPrice) : null;
+  const drawPresent = !!drawTarget;
+
+  // PD arrays / OTE in-direction (soft confluence — not required).
+  const fvgInDir = !!(want && fvgs.some((f) => f.type === want && f.status !== 'filled'));
+  const obInDir = !!(want && orderBlock.type === want && !orderBlock.mitigated);
+  const inOteZone = want === 'bullish' ? (premiumDiscount.currentZone === 'discount' || ote.priceInOTE)
+    : want === 'bearish' ? (premiumDiscount.currentZone === 'premium' || ote.priceInOTE) : false;
+  const displacementAligned = !!want && displacement.direction === want;
+
+  // 5M entry-timing confirmation — at least ONE actionable 5M trigger (no single
+  // concept is individually required).
+  const entryTrigger = sweepAligned || displacementAligned || reversalConfirmed || bosAligned || fvgInDir || obInDir || inOteZone;
+
+  // Trade levels (market-fallback when no PD array — see computeSetup).
+  if (want) setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep });
+
+  // ── HARD GATES — the ONLY rejecters ──────────────────────────────────────────
+  const hardFails = [];
+  if (!htfAligned) hardFails.push('Hard gate: Daily and 4H directional bias are not aligned.');
+  if (htfAligned && !kz.inKillzone) hardFails.push('Hard gate: no active killzone/session.');
+  if (htfAligned && !(sweepAligned || drawPresent)) hardFails.push('Hard gate: no liquidity sweep or clear draw on liquidity in direction.');
+  if (htfAligned && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
+  if (news.blocked) hardFails.push(`Hard gate: ${news.blockReason}`);
+  if (htfAligned && want && (!setup || !setup.ok)) hardFails.push(`Hard gate: ${setup?.reason || 'no executable 5M entry/target.'}`);
+
+  // ── SOFT CONFLUENCE — scoring only; never rejects ────────────────────────────
+  const confluence = [];
+  const missingConfluence = [];
+  const track = (present, label) => { (present ? confluence : missingConfluence).push(label); };
+  track(sweepAligned, 'liquidity sweep');
+  track(displacementAligned, 'displacement');
+  track(reversalConfirmed || bosAligned, 'MSS/BOS/CHoCH');
+  track(fvgInDir, 'FVG');
+  track(obInDir, 'order block');
+  track(inOteZone, 'OTE / discount-premium');
+  track(smt.smtDetected, 'SMT divergence');
+  track(inducement.inducementSwept, 'inducement swept');
+  track(powerOf3?.phase === 'Distribution', 'Power of 3 (distribution)');
+  track(silverBulletWindow, 'Silver Bullet window');
+  track(turtleSoup.turtleSoupDetected, 'Turtle Soup');
+  track(judas.judasSwingDetected, 'Judas Swing');
+
+  const labelCount = [powerOf3?.phase === 'Distribution', silverBulletWindow, turtleSoup.turtleSoupDetected, judas.judasSwingDetected].filter(Boolean).length;
+  const confidence = computeIctConfidence({
+    htfAligned,
+    killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
+    sweepAligned, drawPresent, entryTrigger,
+    displacementAligned, mssOrChoch: reversalConfirmed || bosAligned,
+    fvgInDir, obInDir, inOteZone, smt: smt.smtDetected,
+    inducementSwept: inducement.inducementSwept, labels: labelCount,
+    rr: setup?.ok ? setup.rr : null,
+  });
+
+  // ── DECISION — display qualifies at >=70 with all hard gates clear ──────────
+  const DISPLAY_MIN = 70;
+  if (hardFails.length === 0 && want && setup?.ok && confidence >= DISPLAY_MIN) {
+    signal = want === 'bullish' ? 'buy' : 'sell';
+    setupType = silverBulletWindow ? 'Silver Bullet'
+      : turtleSoup.turtleSoupDetected ? 'Turtle Soup'
+      : judas.judasSwingDetected ? 'Judas Reversal'
+      : reversalConfirmed ? 'MSS Reversal'
+      : (fvgInDir || obInDir || inOteZone) ? 'PD Array Entry'
+      : 'Liquidity Draw';
   }
-  // ForexFactory high-impact news blocks; medium is caution-only (handled above).
-  if (news.blocked) {
-    rejectionReasons.push(news.blockReason);
+
+  // Rejection reasons — clearly separated: HARD gates vs soft-confluence threshold.
+  rejectionReasons.push(...hardFails);
+  if (signal === 'none' && hardFails.length === 0) {
+    rejectionReasons.push(`Confluence below display threshold: confidence ${confidence} < ${DISPLAY_MIN}. Missing confluence: ${missingConfluence.join(', ') || 'none'}.`);
   }
-
-  if (htfAligned) {
-    const want = sign(dir);
-    const reversalConfirmed = (mss.confirmed && mss.direction === want) || (choch && choch.direction === want);
-
-    // 5M entry timing only — never re-derives direction.
-    if (!(sweepDir === want)) {
-      if (pendingSweepDir === want) {
-        rejectionReasons.push(
-          want === 'bullish'
-            ? 'Sell-side liquidity pierced — waiting for reclaim close.'
-            : 'Buy-side liquidity pierced — waiting for reclaim close.'
-        );
-      } else {
-        rejectionReasons.push(
-          want === 'bullish'
-            ? 'Sell-side liquidity not swept.'
-            : 'Buy-side liquidity not swept.'
-        );
-      }
-    }
-
-    if (displacement.direction !== want) {
-      rejectionReasons.push(`No ${want} displacement confirmed.`);
-    }
-
-    if (!reversalConfirmed && !(bos && bos.direction === want)) {
-      rejectionReasons.push(`No ${want} MSS / CHoCH / BOS confirmation.`);
-    }
-
-    const hasArray = fvgs.some((f) => f.type === want && f.status !== 'filled')
-      || (orderBlock.type === want && !orderBlock.mitigated);
-
-    if (!hasArray) {
-      rejectionReasons.push(`No ${want} FVG or OB available for entry.`);
-    }
-    
-    // Premium/discount location.
-    const goodZone = want === 'bullish'
-      ? (premiumDiscount.currentZone === 'discount' || ote.priceInOTE)
-      : (premiumDiscount.currentZone === 'premium' || ote.priceInOTE);
-    if (!goodZone && premiumDiscount.currentZone !== 'unknown') {
-      rejectionReasons.push(want === 'bullish'
-        ? 'Long in premium without OTE / strong continuation.'
-        : 'Short in discount without OTE / strong continuation.');
-    }
-    // Inducement must be swept first.
-    if (inducement.inducementPresent && !inducement.inducementSwept) {
-      rejectionReasons.push('Inducement not yet swept — premature entry.');
-    }
-    // Session timing (killzone) unless a strong HTF reversal narrative.
-    const strongNarrative = reversalConfirmed && bias.confidence >= 60;
-    if (!kz.inKillzone && !strongNarrative) {
-      rejectionReasons.push('Setup formed outside a killzone with weak narrative.');
-    }
-
-    // Compute levels even if some soft checks failed, to surface timing/RR data.
-    setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep });
-    if (!setup.ok) {
-      rejectionReasons.push(setup.reason);
-    } else {
-      if (setup.rr < MIN_RR) rejectionReasons.push(`RR ${setup.rr} below minimum ${MIN_RR}.`);
-      // Chasing displacement: price already left the entry zone toward target.
-      const dist = want === 'bullish' ? setup.target1 - currentPrice : currentPrice - setup.target1;
-      const entryDist = Math.abs(currentPrice - setup.entry);
-      if (atrPrice && entryDist > atrPrice * 2) {
-        rejectionReasons.push('Price has run from the PD array — chasing displacement, not retracing.');
-      }
-      void dist;
-    }
-
-    if (rejectionReasons.length === 0 && setup.ok) {
-      signal = want === 'bullish' ? 'buy' : 'sell';
-      setupType = silverBulletWindow ? 'Silver Bullet'
-        : turtleSoup.turtleSoupDetected ? 'Turtle Soup'
-        : judas.judasSwingDetected ? 'Judas Reversal'
-        : reversalConfirmed ? 'MSS Reversal'
-        : 'OTE Continuation';
-    }
-  }
+  void MIN_RR; void pendingSweepDir; // RR is enforced for auto-execution (executor), not display
 
   // Silver Bullet detail object (spec shape).
   const silverBullet = {
@@ -316,21 +337,11 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     fvgEntry: silverBulletWindow && setup?.ok && setup.entrySource === 'FVG' ? setup.entry : null,
     stopLoss: silverBulletWindow && setup?.ok ? setup.stopLoss : null,
     liquidityTarget: silverBulletWindow && setup?.ok ? setup.target1 : null,
-    confidence: silverBulletWindow && signal !== 'none' ? 80 : 0,
+    confidence: silverBulletWindow && signal !== 'none' ? confidence : 0,
   };
 
   // Timing grade.
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
-
-  // Confidence (only meaningful when a signal forms).
-  const confidence = signal === 'none' ? 0 : Math.round(Math.min(100,
-    40
-    + (kz.killzoneQuality / 100) * 20
-    + (displacement.displacementScore / 100) * 15
-    + (ote.oteQuality / 100) * 10
-    + (bias.confidence / 100) * 10
-    + Math.min(5, conceptsDetected.length),
-  ));
 
   const ictBias = htfAligned ? dailyTfBias : 'neutral';
   const ictNarrative = buildNarrative({ pair, dir, bias, sweep, displacement, mss, choch, premiumDiscount, ote, kz, irlErl, signal, setupType });
@@ -367,6 +378,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
       htf: { dailyBias: dailyTfBias, h4Bias: h4TfBias, aligned: htfAligned },
       news, candle,
+      confluence, missingConfluence,
     },
     timing,
     v3Comparison,

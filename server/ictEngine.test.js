@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { currentKillzone, activeMacro, inSilverBulletWindow } from './ictTime.js';
-import { analyzeICTPair } from './ictEngine.js';
+import { analyzeICTPair, computeIctConfidence } from './ictEngine.js';
 
 // June 2026 is EDT (UTC-4): UTC hour − 4 = ET hour.
 
@@ -54,14 +54,27 @@ test('engine: returns the exact response object shape', () => {
   assert.ok(Array.isArray(r.rejectionReasons));
 });
 
-test('engine is ICT-first: a plain drift with no sweep/MSS produces NO signal', () => {
+test('refactor: only hard gates reject — soft concepts never appear as hard rejections', () => {
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: buildCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
-  assert.equal(r.signal, 'none');
-  assert.ok(r.rejectionReasons.length > 0, 'has rejection reasons');
-  assert.ok(
-    r.rejectionReasons.some((x) => /not swept|MSS|displacement|FVG|OB/i.test(x)),
-    'rejects for a missing ICT condition, not an indicator',
-  );
+  for (const rr of r.rejectionReasons) {
+    // FVG/OB/displacement/MSS/CHoCH are confluence now — never a hard "No X" rejection.
+    assert.ok(!/No .*(displacement|FVG|OB|MSS|CHoCH|order block)/i.test(rr), `soft concept leaked into rejection: "${rr}"`);
+    // Every rejection is clearly labeled: hard gate, or below the display threshold.
+    assert.ok(/^Hard gate:/.test(rr) || /^Confluence below display threshold/.test(rr), `unlabeled rejection: "${rr}"`);
+  }
+});
+
+test('refactor: confidence scoring — hard-gate base clears 70, full confluence clears 80', () => {
+  // Aligned + active killzone + sweep + 5M trigger alone clears the display threshold.
+  const base = computeIctConfidence({ htfAligned: true, killzoneQuality: 95, sweepAligned: true, drawPresent: true, entryTrigger: true });
+  assert.ok(base >= 70, `base confidence ${base} should be >= 70`);
+  // Full confluence clears the auto-execute threshold.
+  const full = computeIctConfidence({ htfAligned: true, killzoneQuality: 90, sweepAligned: true, drawPresent: true, entryTrigger: true, displacementAligned: true, mssOrChoch: true, fvgInDir: true, obInDir: true, inOteZone: true, smt: true, inducementSwept: true, labels: 2, rr: 3 });
+  assert.ok(full >= 80, `full confidence ${full} should be >= 80`);
+  // Daily/4H not aligned → zero (alignment is the hard-gated base).
+  assert.equal(computeIctConfidence({ htfAligned: false, killzoneQuality: 95, sweepAligned: true, entryTrigger: true }), 0);
+  // Draw-only (no sweep, no extra confluence) sits below the threshold.
+  assert.ok(computeIctConfidence({ htfAligned: true, killzoneQuality: 90, drawPresent: true, entryTrigger: true }) < 70);
 });
 
 test('engine: silver-bullet window flag is reflected in concepts', () => {
