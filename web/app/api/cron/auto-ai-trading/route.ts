@@ -77,7 +77,7 @@ export async function POST(req: Request) {
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('user_trading_settings')
-    .select('user_id')
+    .select('user_id, auto_ai_engine')
     .eq('auto_ai_trading_enabled', true);
   if (error) {
     console.log(`${tag} enumerate failed: ${error.message}`);
@@ -86,8 +86,9 @@ export async function POST(req: Request) {
 
   const results: Record<string, unknown>[] = [];
   let totalQualified = 0, totalExecuted = 0, totalSkipped = 0, totalRecs = 0;
-  for (const row of (data ?? []) as Array<{ user_id: string }>) {
+  for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const userId = row.user_id;
+    const engine = row.auto_ai_engine === 'v3' ? 'v3' : 'ict'; // exactly one engine
     try {
       const resolved = await resolveActiveBrokerForUser(userId);
       if (resolved.brokerCredentialStatus !== 'ready' || resolved.activeEnvironment !== 'live' || !resolved.getCredentials || !resolved.baseUrl) {
@@ -100,24 +101,27 @@ export async function POST(req: Request) {
       const acct = creds.accountId ? `${creds.accountId.slice(0, 3)}…${creds.accountId.slice(-3)}` : '***';
       const credBody = { apiKey: creds.token, accountId: creds.accountId, baseUrl: resolved.baseUrl, environment: 'live', runId };
 
-      const auto = await callInternalEndpoint('/api/internal/oanda/ict/auto', credBody);
+      // Route to EXACTLY one engine for this user (ICT or V3 — never both).
+      const auto = await callInternalEndpoint('/api/internal/oanda/auto', { ...credBody, engine });
       const autoData = (auto.ok ? auto.data : null) as { scanned?: number; qualified?: number; executed?: unknown[]; skipped?: unknown[] } | null;
 
-      // Recommend-only lifecycle reassessment (best-effort).
+      // Recommend-only lifecycle reassessment (ICT engine only).
       let reassess: unknown = null;
       let recs = 0;
-      const trades = await ictOpenTradesContext(userId);
-      if (trades.length) {
-        const r = await callInternalEndpoint('/api/internal/oanda/ict/reassess', { ...credBody, trades });
-        reassess = r.ok ? r.data : { error: r.error };
-        const recList = (r.ok ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations : null) ?? [];
-        recs = recList.filter((x) => x?.reassessDue).length;
+      if (engine === 'ict') {
+        const trades = await ictOpenTradesContext(userId);
+        if (trades.length) {
+          const r = await callInternalEndpoint('/api/internal/oanda/ict/reassess', { ...credBody, trades });
+          reassess = r.ok ? r.data : { error: r.error };
+          const recList = (r.ok ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations : null) ?? [];
+          recs = recList.filter((x) => x?.reassessDue).length;
+        }
       }
 
       const q = autoData?.qualified ?? 0, e = autoData?.executed?.length ?? 0, s = autoData?.skipped?.length ?? 0;
       totalQualified += q; totalExecuted += e; totalSkipped += s; totalRecs += recs;
-      console.log(`${tag} user=${mask(userId)} account=${acct} independentFromV3=true pairs=${autoData?.scanned ?? 0} qualified=${q} executed=${e} skipped=${s} recommendations=${recs}`);
-      results.push({ user: mask(userId), auto: auto.ok ? auto.data : { error: auto.error }, reassess });
+      console.log(`${tag} user=${mask(userId)} account=${acct} engine=${engine} pairs=${autoData?.scanned ?? 0} qualified=${q} executed=${e} skipped=${s} recommendations=${recs}`);
+      results.push({ user: mask(userId), engine, auto: auto.ok ? auto.data : { error: auto.error }, reassess });
     } catch (err) {
       console.log(`${tag} user=${mask(userId)} error=${err instanceof Error ? err.message : String(err)}`);
       results.push({ user: mask(userId), error: err instanceof Error ? err.message : String(err) });

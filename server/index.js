@@ -22,6 +22,7 @@ import { computeV3Comparisons } from './v3IctComparison.js';
 import { runAutoAiForUser } from './ictAutoTrade.js';
 import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
+import { runAutoForUser } from './autoAiRouter.js';
 import {
   executeTrade,
   closePosition,
@@ -1927,6 +1928,34 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_ICT_AUTO] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/auto
+//   Engine-routed autonomous entry for ONE user. Body.engine selects EXACTLY one
+//   path (ICT or V3) — never both. Requires environment=live (per-user creds).
+//   Each engine's own execution gates are enforced downstream (unchanged).
+app.post('/api/internal/oanda/auto', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  const env = String(req.body?.environment ?? '').toLowerCase();
+  if (env !== 'live') {
+    res.status(400).json({ ok: false, error: `auto endpoint requires environment=live (got "${env || '<empty>'}")` });
+    return;
+  }
+  assertClientMatchesRequest(client, req.body);
+  const engine = String(req.body?.engine || 'ict').toLowerCase() === 'v3' ? 'v3' : 'ict';
+  logInternalCall(`AUTO_${engine.toUpperCase()}`, req.body);
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => runAutoForUser({ client, engine, runId: req.body?.runId }),
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_AUTO] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

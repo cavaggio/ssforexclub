@@ -23,6 +23,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       autoAiTradingEnabled: s.autoAiTradingEnabled,
+      autoAiEngine: s.autoAiEngine,
       platformLiveTradingEnabled: platformLiveTradingEnabled(),
       liveTradingAcknowledged: s.liveTradingAcknowledged,
       activeEnvironment: s.activeEnvironment,
@@ -35,20 +36,28 @@ export async function GET() {
 export async function POST(req: Request) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
-  let body: { enabled?: unknown } = {};
+  let body: { enabled?: unknown; engine?: unknown } = {};
   try {
-    body = (await req.json()) as { enabled?: unknown };
+    body = (await req.json()) as { enabled?: unknown; engine?: unknown };
   } catch {
     return NextResponse.json({ ok: false, error: 'Body must be JSON' }, { status: 400 });
   }
   if (typeof body.enabled !== 'boolean') {
     return NextResponse.json({ ok: false, error: 'enabled must be a boolean' }, { status: 400 });
   }
+  let engine: 'ict' | 'v3' | undefined;
+  if (body.engine !== undefined) {
+    if (body.engine !== 'ict' && body.engine !== 'v3') {
+      return NextResponse.json({ ok: false, error: "engine must be 'ict' or 'v3'" }, { status: 400 });
+    }
+    engine = body.engine;
+  }
   try {
-    const s = await setAutoAiTrading(userId, body.enabled);
+    const s = await setAutoAiTrading(userId, body.enabled, engine);
     return NextResponse.json({
       ok: true,
       autoAiTradingEnabled: s.autoAiTradingEnabled,
+      autoAiEngine: s.autoAiEngine,
       platformLiveTradingEnabled: platformLiveTradingEnabled(),
     });
   } catch (err) {
