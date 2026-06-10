@@ -14,7 +14,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
-import { platformLiveTradingEnabled } from '@/lib/userTradingSettings';
 import { listTradeLogsForUser } from '@/lib/tradeLogs';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
 
@@ -61,9 +60,10 @@ export async function POST(req: Request) {
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
-  if (!platformLiveTradingEnabled()) {
-    return NextResponse.json({ ok: true, skipped: 'platform_live_trading_disabled', users: 0 });
-  }
+  // No blanket platform gate here: practice/paper Auto AI runs without the
+  // platform live flag or the live-trading acknowledgement. Live users are still
+  // gated — resolveActiveBrokerForUser only returns status='ready' for live when
+  // PLATFORM_LIVE_TRADING_ENABLED=true AND the live-ack is accepted.
   if (!inWindow(new Date())) {
     return NextResponse.json({ ok: true, skipped: 'outside_ny_window', users: 0 });
   }
@@ -91,7 +91,9 @@ export async function POST(req: Request) {
     const engine = row.auto_ai_engine === 'v3' ? 'v3' : 'ict'; // exactly one engine
     try {
       const resolved = await resolveActiveBrokerForUser(userId);
-      if (resolved.brokerCredentialStatus !== 'ready' || resolved.activeEnvironment !== 'live' || !resolved.getCredentials || !resolved.baseUrl) {
+      // 'ready' already encodes the per-environment gates: practice/paper need
+      // only valid creds; live additionally requires platform flag + live-ack.
+      if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
         console.log(`${tag} user=${mask(userId)} skipped=${resolved.brokerCredentialStatus}`);
         results.push({ user: mask(userId), skipped: resolved.brokerCredentialStatus });
         continue;
@@ -99,7 +101,7 @@ export async function POST(req: Request) {
       const creds = await resolved.getCredentials();
       if (!creds) { console.log(`${tag} user=${mask(userId)} skipped=decrypt_failed`); results.push({ user: mask(userId), skipped: 'decrypt_failed' }); continue; }
       const acct = creds.accountId ? `${creds.accountId.slice(0, 3)}…${creds.accountId.slice(-3)}` : '***';
-      const credBody = { apiKey: creds.token, accountId: creds.accountId, baseUrl: resolved.baseUrl, environment: 'live', runId };
+      const credBody = { apiKey: creds.token, accountId: creds.accountId, baseUrl: resolved.baseUrl, environment: resolved.activeEnvironment, runId };
 
       // Route to EXACTLY one engine for this user (ICT or V3 — never both).
       const auto = await callInternalEndpoint('/api/internal/oanda/auto', { ...credBody, engine });

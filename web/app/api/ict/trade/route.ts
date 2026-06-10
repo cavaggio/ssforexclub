@@ -57,7 +57,9 @@ export async function POST(req: Request) {
     internalPath: '/api/internal/oanda/ict/trade',
     logTag: 'ICT_TRADE',
     payloadKey: 'ict',
-    requireLive: true,
+    // Paper/practice may execute too — the resolver only returns ready creds for
+    // live when the platform flag + live-ack are satisfied, so live stays gated.
+    requireLive: false,
     extraBody: v.payload,
     afterCall: async (ctx, result) => {
       const trade = (result.data ?? {}) as Record<string, unknown>;

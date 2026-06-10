@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; enabled: boolean; engine: 'ict' | 'v3'; platformEnabled: boolean; liveAck: boolean; saving: boolean };
+  | { kind: 'ready'; enabled: boolean; engine: 'ict' | 'v3'; platformEnabled: boolean; liveAck: boolean; environment: string; saving: boolean };
 
 type Engine = 'ict' | 'v3';
 
@@ -28,7 +28,7 @@ export function AutoAiTradingToggle() {
       const res = await fetch('/api/user/auto-ai-trading', { cache: 'no-store' });
       const json = await res.json();
       if (!res.ok || !json?.ok) { setState({ kind: 'error', message: json?.error || `HTTP ${res.status}` }); return; }
-      setState({ kind: 'ready', enabled: !!json.autoAiTradingEnabled, engine: json.autoAiEngine === 'v3' ? 'v3' : 'ict', platformEnabled: !!json.platformLiveTradingEnabled, liveAck: !!json.liveTradingAcknowledged, saving: false });
+      setState({ kind: 'ready', enabled: !!json.autoAiTradingEnabled, engine: json.autoAiEngine === 'v3' ? 'v3' : 'ict', platformEnabled: !!json.platformLiveTradingEnabled, liveAck: !!json.liveTradingAcknowledged, environment: typeof json.activeEnvironment === 'string' ? json.activeEnvironment : 'practice', saving: false });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -39,7 +39,10 @@ export function AutoAiTradingToggle() {
   // Single POST for both the on/off toggle and the engine selection — they share
   // one row, so only one engine can ever be active (mutual exclusivity).
   const save = async (next: { enabled: boolean; engine: Engine }) => {
-    if (state.kind !== 'ready' || !state.platformEnabled || state.saving) return;
+    if (state.kind !== 'ready' || state.saving) return;
+    // Paper/practice can opt in without the platform flag; live needs it.
+    const paper = state.environment === 'practice' || state.environment === 'paper';
+    if (!paper && !state.platformEnabled) return;
     setState({ ...state, saving: true });
     try {
       const res = await fetch('/api/user/auto-ai-trading', {
@@ -58,8 +61,11 @@ export function AutoAiTradingToggle() {
   if (state.kind === 'loading') return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto AI Trading…</span></Box>;
   if (state.kind === 'error') return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto AI Trading: {state.message}</span></Box>;
 
-  const on = state.enabled && state.platformEnabled;
-  const disabled = !state.platformEnabled;
+  const isPaper = state.environment === 'practice' || state.environment === 'paper';
+  // Paper/practice never needs the platform flag; live does.
+  const platformOk = isPaper || state.platformEnabled;
+  const on = state.enabled && platformOk;
+  const disabled = !platformOk;
 
   return (
     <Box>
@@ -128,7 +134,12 @@ export function AutoAiTradingToggle() {
           Disabled by platform — live auto-trading is turned off (PLATFORM_LIVE_TRADING_ENABLED). Your preference is saved but won’t run until the platform enables it.
         </div>
       )}
-      {!disabled && state.enabled && !state.liveAck && (
+      {isPaper && state.enabled && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+          Paper mode — runs on your practice account. No live-trading acknowledgement or platform flag required.
+        </div>
+      )}
+      {!disabled && !isPaper && state.enabled && !state.liveAck && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warn)' }}>
           Note: live trading isn’t acknowledged yet — auto-trading also requires your live-trading acknowledgement and an active live broker connection.
         </div>

@@ -56,7 +56,9 @@ export async function POST(req: Request) {
     internalPath: '/api/internal/oanda/trade',
     logTag: 'SCANNER_TRADE',
     payloadKey: 'trade',
-    requireLive: true,
+    // Paper/practice may execute too — the resolver only returns ready creds for
+    // live when the platform flag + live-ack are satisfied, so live stays gated.
+    requireLive: false,
     extraBody: { signal: validated.signal },
     afterCall: async (ctx, result) => {
       const signal = validated.signal;

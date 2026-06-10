@@ -39,7 +39,7 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null 
     // executeTrade reads signal.environment for its live-execution guard; align it
     // with the per-request client (the /auto endpoint requires environment=live).
     sig.environment = client?.environment || sig.environment;
-    const res = await executeTrade(sig, { client });
+    const res = await executeTrade(sig, { client, autoAi: true });
     if (res?.success) {
       executed.push({ pair: sig.pair, direction: sig.direction, tradeId: res.tradeId });
       log(`trade executed pair=${sig.pair} dir=${sig.direction} id=${res.tradeId}`);

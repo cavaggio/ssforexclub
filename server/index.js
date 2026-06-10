@@ -23,6 +23,7 @@ import { runAutoAiForUser } from './ictAutoTrade.js';
 import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
+import { isExecutableEnvironment } from './autoAiGating.js';
 import {
   executeTrade,
   closePosition,
@@ -1883,8 +1884,8 @@ app.post('/api/internal/oanda/ict/trade', async (req, res) => {
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
   const env = String(req.body?.environment ?? '').toLowerCase();
-  if (env !== 'live') {
-    res.status(400).json({ ok: false, error: `ICT trade endpoint requires environment=live (got "${env || '<empty>'}")` });
+  if (!isExecutableEnvironment(env)) {
+    res.status(400).json({ ok: false, error: `ICT trade endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")` });
     return;
   }
   assertClientMatchesRequest(client, req.body);
@@ -1914,8 +1915,8 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
   const env = String(req.body?.environment ?? '').toLowerCase();
-  if (env !== 'live') {
-    res.status(400).json({ ok: false, error: `ICT auto endpoint requires environment=live (got "${env || '<empty>'}")` });
+  if (!isExecutableEnvironment(env)) {
+    res.status(400).json({ ok: false, error: `ICT auto endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")` });
     return;
   }
   assertClientMatchesRequest(client, req.body);
@@ -1941,8 +1942,8 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
   const env = String(req.body?.environment ?? '').toLowerCase();
-  if (env !== 'live') {
-    res.status(400).json({ ok: false, error: `auto endpoint requires environment=live (got "${env || '<empty>'}")` });
+  if (!isExecutableEnvironment(env)) {
+    res.status(400).json({ ok: false, error: `auto endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")` });
     return;
   }
   assertClientMatchesRequest(client, req.body);
@@ -2126,21 +2127,22 @@ app.post('/api/internal/oanda/trade', async (req, res) => {
     return;
   }
   const env = String(req.body?.environment ?? '').toLowerCase();
-  if (env !== 'live') {
+  if (!isExecutableEnvironment(env)) {
     res.status(400).json({
       ok: false,
-      error: `Internal trade endpoint requires environment=live (got "${env || '<empty>'}")`,
+      error: `Internal trade endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")`,
     });
     return;
   }
   assertClientMatchesRequest(client, req.body);
   logInternalCall('TRADE', req.body);
   console.log(
-    `[INTERNAL TRADE] pair=${signal.pair} direction=${signal.direction} ` +
+    `[INTERNAL TRADE] pair=${signal.pair} direction=${signal.direction} env=${env} ` +
       `confidence=${signal.confidence ?? '?'} score=${signal.score ?? '?'}`,
   );
-  // Force environment on the signal so executeTrade's internal guard sees live.
-  signal.environment = 'live';
+  // Align the signal's environment with the resolved per-user environment so
+  // executeTrade's guard treats live as live and practice/paper as paper.
+  signal.environment = env;
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },

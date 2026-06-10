@@ -39,7 +39,7 @@ export async function runAutoAiForUser({ client, now = new Date(), runId = null 
     const direction = a.signal === 'buy' ? 'long' : 'short';
     const res = await executeIctTrade(
       { pair: a.pair, direction, units: 0, entry: a.entry, stopLoss: a.stopLoss, targetProfit: a.target1, ictSignalId: a.signalId },
-      { client, now },
+      { client, now, autoAi: true },
     );
     if (res.success) {
       executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });

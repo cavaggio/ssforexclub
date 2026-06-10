@@ -1044,12 +1044,14 @@ type TradeOutcome =
 
 function SignalCard({
   signal,
-  liveExecutionEnabled,
-  liveBlockerReason,
+  executionEnabled,
+  executionBlockerReason,
+  isPaper,
 }: {
   signal: ForexSignal;
-  liveExecutionEnabled: boolean;
-  liveBlockerReason: string | null;
+  executionEnabled: boolean;
+  executionBlockerReason: string | null;
+  isPaper: boolean;
 }) {
   const isLong = signal.direction === 'long';
   const isMetal = signal.assetClass === 'Metal';
@@ -1421,7 +1423,7 @@ function SignalCard({
           passing. In any other state the button is replaced by an inline
           blocker that explains why so the user can act on it. */}
       <div style={{ marginTop: 18 }}>
-        {liveExecutionEnabled ? (
+        {executionEnabled ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button
               type="button"
@@ -1450,7 +1452,9 @@ function SignalCard({
                 ? 'Executing…'
                 : outcome.state === 'success'
                   ? '✓ Trade executed'
-                  : `Execute ${isLong ? 'BUY' : 'SELL'} (LIVE)`}
+                  : isPaper
+                    ? 'Execute Paper Trade'
+                    : `Execute ${isLong ? 'BUY' : 'SELL'} (LIVE)`}
             </button>
             {outcome.state === 'success' && (
               <div style={tradeBoxStyle('good')}>
@@ -1471,8 +1475,8 @@ function SignalCard({
           </div>
         ) : (
           <div style={tradeBoxStyle('warn')}>
-            <strong>Live execution unavailable.</strong>{' '}
-            {liveBlockerReason || 'Switch to OANDA Live in Settings to execute trades.'}
+            <strong>Execution unavailable.</strong>{' '}
+            {executionBlockerReason || 'Connect a broker for this mode to execute trades.'}
           </div>
         )}
       </div>
@@ -2748,11 +2752,17 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
   // Trade execution is only offered when the scanner response confirms live
   // mode AND the call succeeded (state.ok). Anything less surfaces an inline
   // blocker on each signal card so the user knows what to fix.
+  const isPaperEnv = state?.activeEnvironment === 'practice' || state?.activeEnvironment === 'paper';
   const liveExecutionEnabled = !!(state?.ok && state?.isLiveTrading);
-  const liveBlockerReason: string | null = !state?.ok
+  // Paper/practice can execute too — a successful scan means creds resolved for
+  // that environment (the proxy 409s otherwise). Live still requires the live
+  // gates (platform flag + live-ack), enforced upstream by the broker resolver.
+  const paperExecutionEnabled = !!(state?.ok && !state?.isLiveTrading && isPaperEnv);
+  const executionEnabled = liveExecutionEnabled || paperExecutionEnabled;
+  const executionBlockerReason: string | null = !state?.ok
     ? 'Run a scan first to verify your broker resolution.'
-    : !state.isLiveTrading
-      ? `Active environment is "${state.activeEnvironment ?? 'practice'}" — switch to OANDA Live in Settings to execute trades.`
+    : !executionEnabled
+      ? `Active environment is "${state.activeEnvironment ?? 'practice'}" — connect a broker for this mode (or switch to OANDA Live) to execute trades.`
       : null;
   const rejected = scan?.rejected ?? [];
   const meta = scan?.meta;
@@ -2913,8 +2923,9 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
             <SignalCard
               key={`${sig.pair}_${sig.direction}`}
               signal={sig}
-              liveExecutionEnabled={liveExecutionEnabled}
-              liveBlockerReason={liveBlockerReason}
+              executionEnabled={executionEnabled}
+              executionBlockerReason={executionBlockerReason}
+              isPaper={paperExecutionEnabled}
             />
           ))
         )}

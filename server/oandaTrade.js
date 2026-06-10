@@ -29,6 +29,12 @@ import {
 } from './oandaRiskSizing.js';
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
+import {
+  autoAiRiskConfig,
+  checkMargin,
+  checkTotalOpenRisk,
+  computeOpenRiskPercent,
+} from './autoAiRiskLimits.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
@@ -341,7 +347,7 @@ function extractCancelTx(tx) {
  * @param {Object} [options.client]
  */
 export async function executeTrade(signal, options = {}) {
-  const { client } = options;
+  const { client, autoAi = false } = options;
   const { pair, direction, score, confidence, entry, stopLoss, takeProfit, spreadPips } = signal;
   const tradeKey = `${pair}_${direction}`;
   const metals   = isMetalsPair(pair);
@@ -563,6 +569,20 @@ export async function executeTrade(signal, options = {}) {
     );
   }
 
+  // Auto AI per-trade cap: never risk more than AUTO_AI_MAX_RISK_PER_TRADE_PERCENT.
+  if (autoAi) {
+    const cap = autoAiRiskConfig().maxRiskPerTradePercent;
+    if (dynamicRisk.riskPercent > cap) {
+      const cappedRiskUSD = +(balanceUSD * (cap / 100)).toFixed(2);
+      console.log(
+        `[AUTO_AI_RISK_CAP] ${pair} ${direction} — capping risk ${dynamicRisk.riskPercent}% → ${cap}% ` +
+        `($${dynamicRisk.riskUSD} → $${cappedRiskUSD})`
+      );
+      dynamicRisk.riskPercent = cap;
+      dynamicRisk.riskUSD = cappedRiskUSD;
+    }
+  }
+
   // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.
   let slPips, slPriceFromLifecycle, tpPips, tpPriceFromLifecycle;
   if (signal.lifecycle?.sl && signal.lifecycle?.tp && signal.lifecycle.tp.allowed !== false) {
@@ -647,6 +667,28 @@ export async function executeTrade(signal, options = {}) {
 
   if (sizing.warnings.length > 0) {
     for (const w of sizing.warnings) console.warn(`[TRADE]   ⚠ ${w}`);
+  }
+
+  // ── Auto AI guards: hard margin check + total-open-risk cap ────────────────
+  if (autoAi) {
+    const marginCheck = checkMargin({ marginAvailable, estimatedMargin });
+    if (!marginCheck.allowed) {
+      console.warn(`[AUTO_AI_MARGIN] ${pair} avail=$${marginAvailable.toFixed(2)} required=$${estimatedMargin.toFixed(2)}`);
+      return blocked(marginCheck.reason);
+    }
+    let openTrades = [];
+    try {
+      openTrades = (await getOpenTrades({ client })) || [];
+    } catch (err) {
+      console.warn(`[AUTO_AI_OPEN_RISK] open-risk check skipped — ${err.message}`);
+    }
+    const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
+    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
+    if (!totalCheck.allowed) {
+      console.warn(`[AUTO_AI_OPEN_RISK] ${pair} ${totalCheck.reason}`);
+      return blocked(totalCheck.reason);
+    }
   }
 
   if (projectedFreeMargin < minFreeMarginUSD) {

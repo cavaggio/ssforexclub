@@ -23,7 +23,13 @@ import { getPipSize } from './pipMath.js';
 import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js';
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
-import { getAccountSummary, getCandles } from './oandaMarketData.js';
+import { getAccountSummary, getCandles, getOpenTrades } from './oandaMarketData.js';
+import {
+  capPerTradeRiskPercent,
+  checkMargin,
+  checkTotalOpenRisk,
+  computeOpenRiskPercent,
+} from './autoAiRiskLimits.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
@@ -56,19 +62,24 @@ export async function executeIctTrade(params = {}, {
   getAccount = null,
   reconcile = null,
   getNews = null,
+  autoAi = false,
+  getOpen = null,
 } = {}) {
   const config = cfg || ictExecConfig();
   const { pair, direction, entry, stopLoss, targetProfit, ictSignalId } = params;
+  // Resolve the trading environment: signal override → per-request client → live.
+  const tradingEnv = String(params.environment || client?.environment || 'live').toLowerCase();
+  const isPaperEnv = tradingEnv === 'practice' || tradingEnv === 'paper';
   const log = [];
   const rec = (m) => { log.push(m); console.log(`[ICT_TRADE] ${m}`); };
-  rec(`requested pair=${pair} dir=${direction} entry=${entry} sl=${stopLoss} tp=${targetProfit} id=${ictSignalId}`);
+  rec(`requested pair=${pair} dir=${direction} entry=${entry} sl=${stopLoss} tp=${targetProfit} id=${ictSignalId} env=${tradingEnv}`);
 
   // ── 1. Execution enabled (mode=live AND auto-trade) — the default-off gate ──
   if (!(config.mode === 'live' && config.autoTradeEnabled === true)) {
     return blocked(`ICT execution disabled (ICT_ENGINE_MODE=${config.mode}, ICT_AUTO_TRADE_ENABLED=${config.autoTradeEnabled}).`);
   }
-  // ── 2. Broker-level live acknowledgement (not bypassed) ────────────────────
-  if (!isLiveExecutionExplicitlyAllowed()) {
+  // ── 2. Live acknowledgement (LIVE only — paper/practice never requires it) ──
+  if (!isPaperEnv && !isLiveExecutionExplicitlyAllowed()) {
     return blocked('Live execution not acknowledged (FOREX_ALLOW_LIVE_EXECUTION != true).');
   }
   // ── 3. Input sanity ────────────────────────────────────────────────────────
@@ -127,7 +138,9 @@ export async function executeIctTrade(params = {}, {
   const pipSize = getPipSize(pair);
   const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
   const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
-  const targetRiskUSD = +(balanceUSD * (config.maxRiskPercent / 100)).toFixed(2);
+  // Auto AI caps per-trade risk at AUTO_AI_MAX_RISK_PER_TRADE_PERCENT (never above).
+  const effectiveRiskPercent = autoAi ? capPerTradeRiskPercent(config.maxRiskPercent) : config.maxRiskPercent;
+  const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
     stopLossPips: slPips, stopLossPrice: stopLoss,
@@ -138,6 +151,32 @@ export async function executeIctTrade(params = {}, {
   const units = sizing.signedUnits;
   if (!units || Math.abs(units) < 1) {
     return blocked(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
+  }
+
+  // ── 8b. Margin guard — never place a trade we cannot afford the margin for ──
+  const marginAvailable = parseFloat(account?.marginAvailable ?? 0);
+  const marginCheck = checkMargin({ marginAvailable, estimatedMargin: sizing.estimatedMarginRequired });
+  if (!marginCheck.allowed) {
+    rec(`blocked: margin avail=$${marginAvailable} required=$${sizing.estimatedMarginRequired}`);
+    return blocked(marginCheck.reason);
+  }
+
+  // ── 8c. Auto AI total-open-risk cap (AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT) ──
+  if (autoAi) {
+    let openTrades = [];
+    try {
+      const openFn = getOpen || (() => getOpenTrades({ client }));
+      openTrades = (await openFn()) || [];
+    } catch (err) {
+      rec(`open-risk check skipped — could not fetch open trades (${err.message})`);
+    }
+    const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
+    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
+    if (!totalCheck.allowed) {
+      rec(`blocked: ${totalCheck.reason}`);
+      return blocked(totalCheck.reason);
+    }
   }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────

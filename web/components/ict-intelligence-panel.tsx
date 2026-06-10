@@ -18,7 +18,7 @@ import type { IctAnalysis, IctApiResponse, IctTradeApiResponse, IctTradeResult }
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; analyses: IctAnalysis[]; mode: string; generatedAt: string; signals: number; executionEnabled: boolean; liveAck: boolean };
+  | { kind: 'ready'; analyses: IctAnalysis[]; mode: string; generatedAt: string; signals: number; executionEnabled: boolean; environment: string };
 
 export function IctIntelligencePanel() {
   const [state, setState] = useState<State>({ kind: 'loading' });
@@ -39,9 +39,10 @@ export function IctIntelligencePanel() {
         generatedAt: json.ict.meta.generatedAt,
         signals: json.ict.meta.signals,
         executionEnabled: json.ict.meta.executionEnabled === true,
-        // Live acknowledged = the per-user broker resolved to live (the proxy
-        // already hard-fails otherwise, so reaching here means creds are ready).
-        liveAck: json.activeEnvironment === 'live' || json.isLiveTrading === true,
+        // Active environment from the proxy envelope. Reaching here means creds
+        // are ready for that environment (the proxy 409s otherwise). Live is only
+        // 'ready' when the platform flag + live-ack pass; paper needs neither.
+        environment: typeof json.activeEnvironment === 'string' ? json.activeEnvironment : 'practice',
       });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -62,6 +63,14 @@ export function IctIntelligencePanel() {
     );
   }
 
+  const isLive = state.environment === 'live';
+  const isPaper = state.environment === 'practice' || state.environment === 'paper';
+  // Execution is offered when the ICT engine is execution-enabled and the active
+  // environment is usable. Paper/practice does NOT require the live-ack or the
+  // platform flag; live does (already enforced upstream — reaching here means ok).
+  const canExecute = state.executionEnabled && (isLive || isPaper);
+  const executionLabel = state.executionEnabled ? (isPaper ? 'paper' : isLive ? 'live' : 'disabled') : 'disabled';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
@@ -75,8 +84,8 @@ export function IctIntelligencePanel() {
           <Chip label="ICT engine" value={state.mode} tone={state.mode === 'live' ? 'good' : 'muted'} />
           <Chip
             label="Execution"
-            value={state.executionEnabled ? (state.liveAck ? 'enabled' : 'no live-ack') : 'disabled'}
-            tone={state.executionEnabled && state.liveAck ? 'good' : 'muted'}
+            value={executionLabel}
+            tone={canExecute ? 'good' : 'muted'}
           />
           <Chip label="Signals" value={String(state.signals)} tone={state.signals > 0 ? 'good' : 'muted'} />
           <button onClick={() => void load()} style={btn}>Refresh</button>
@@ -85,7 +94,7 @@ export function IctIntelligencePanel() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {state.analyses.map((a) => (
-          <IctCard key={a.pair} a={a} canExecute={state.executionEnabled && state.liveAck} />
+          <IctCard key={a.pair} a={a} canExecute={canExecute} isPaper={isPaper} />
         ))}
       </div>
     </div>
@@ -112,7 +121,7 @@ type TradeState =
   | { kind: 'done'; result: IctTradeResult }
   | { kind: 'error'; message: string };
 
-function IctCard({ a, canExecute }: { a: IctAnalysis; canExecute: boolean }) {
+function IctCard({ a, canExecute, isPaper }: { a: IctAnalysis; canExecute: boolean; isPaper: boolean }) {
   const c = a.concepts;
   const dp = a.pair.includes('JPY') ? 3 : a.pair.startsWith('XA') ? 2 : 5;
   const signalTone = a.signal === 'buy' ? 'good' : a.signal === 'sell' ? 'bad' : 'muted';
@@ -130,7 +139,7 @@ function IctCard({ a, canExecute }: { a: IctAnalysis; canExecute: boolean }) {
       return;
     }
     const ok = window.confirm(
-      `Execute LIVE ICT ${dir.toUpperCase()} on ${a.pair}?\n` +
+      `Execute ${isPaper ? 'PAPER' : 'LIVE'} ICT ${dir.toUpperCase()} on ${a.pair}?\n` +
       `Entry ${a.entry} · Stop ${a.stopLoss} · Target ${a.target1} · RR ${a.rr ?? '?'}\n` +
       `Position is sized server-side from ICT_MAX_RISK_PERCENT.`,
     );
@@ -190,7 +199,11 @@ function IctCard({ a, canExecute }: { a: IctAnalysis; canExecute: boolean }) {
             disabled={trade.kind === 'pending'}
             style={{ ...btn, background: a.signal === 'buy' ? '#0d3320' : '#320d0d', color: a.signal === 'buy' ? 'var(--good)' : 'var(--bad)', border: '1px solid var(--border)', cursor: trade.kind === 'pending' ? 'wait' : 'pointer' }}
           >
-            {trade.kind === 'pending' ? 'Submitting…' : `Execute ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`}
+            {trade.kind === 'pending'
+              ? 'Submitting…'
+              : isPaper
+                ? `Execute Paper ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`
+                : `Execute ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`}
           </button>
           {trade.kind === 'done' && (
             <span style={{ fontSize: 12, fontFamily: 'var(--mono, monospace)', color: trade.result.success ? 'var(--good)' : 'var(--warn)' }}>
