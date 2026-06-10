@@ -78,7 +78,13 @@ const alpacaClients = new Map();
 const alpacaProfiles = new Map();
 const orderTimestamps = new Map();
 
-const RISK_CONFIG = {
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY ALPACA OPTIONS RISK CONFIG — scoped to the /api/alpaca/live/* options
+// trading subsystem only. This is NOT the Signal Stack forex risk layer: the
+// per-trade cap, daily drawdown lock, and auto-execution confidence floor for
+// OANDA execution live in server/riskManager.js. Do not conflate the two.
+// ─────────────────────────────────────────────────────────────────────────────
+const ALPACA_OPTIONS_RISK_CONFIG = {
   MAX_TRADES_PER_DAY: 3,
   MAX_CONTRACTS: 1,
   MAX_OPEN_POSITIONS: 3,
@@ -89,7 +95,7 @@ const RISK_CONFIG = {
   ORDER_CANCEL_TIMEOUT_MS: 5 * 60 * 1000,
 };
 
-const riskStateStore = {
+const alpacaOptionsRiskState = {
   live: {
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -106,7 +112,7 @@ function getTodayET() {
 
 function resetDailyStateIfNeeded() {
   const today = getTodayET();
-  const state = riskStateStore.live;
+  const state = alpacaOptionsRiskState.live;
 
   if (state.lastReset !== today) {
     state.tradesToday = 0;
@@ -1086,7 +1092,7 @@ app.get('/api/alpaca/live/orders', async (_req, res) => {
 app.get('/api/alpaca/live/risk-state', (_req, res) => {
   resetDailyStateIfNeeded();
 
-  const s = riskStateStore.live;
+  const s = alpacaOptionsRiskState.live;
 
   res.json({
     tradesToday: s.tradesToday,
@@ -1118,7 +1124,7 @@ app.post('/api/alpaca/live/trade', async (req, res) => {
 
     resetDailyStateIfNeeded();
 
-    const state = riskStateStore.live;
+    const state = alpacaOptionsRiskState.live;
 
     const isShadow = SHADOW_MODE || clientShadow;
 
@@ -1132,16 +1138,16 @@ app.post('/api/alpaca/live/trade', async (req, res) => {
       return res.json({ action: 'block', reason: state.disableReason || 'Trading disabled' });
     }
 
-    if (state.tradesToday >= RISK_CONFIG.MAX_TRADES_PER_DAY) {
+    if (state.tradesToday >= ALPACA_OPTIONS_RISK_CONFIG.MAX_TRADES_PER_DAY) {
       return res.json({
         action: 'block',
-        reason: `Max trades per day reached (${RISK_CONFIG.MAX_TRADES_PER_DAY})`,
+        reason: `Max trades per day reached (${ALPACA_OPTIONS_RISK_CONFIG.MAX_TRADES_PER_DAY})`,
       });
     }
 
-    if (state.consecutiveLosses >= RISK_CONFIG.MAX_CONSECUTIVE_LOSSES) {
+    if (state.consecutiveLosses >= ALPACA_OPTIONS_RISK_CONFIG.MAX_CONSECUTIVE_LOSSES) {
       state.tradingDisabled = true;
-      state.disableReason = `${RISK_CONFIG.MAX_CONSECUTIVE_LOSSES} consecutive losses`;
+      state.disableReason = `${ALPACA_OPTIONS_RISK_CONFIG.MAX_CONSECUTIVE_LOSSES} consecutive losses`;
       return res.json({ action: 'block', reason: state.disableReason });
     }
 
@@ -1198,7 +1204,7 @@ app.post('/api/alpaca/live/trade', async (req, res) => {
       return res.json({ action: 'block', reason: 'Account trading blocked' });
     }
 
-    const safeQty = Math.max(1, Math.min(parseInt(qty, 10) || 1, RISK_CONFIG.MAX_CONTRACTS));
+    const safeQty = Math.max(1, Math.min(parseInt(qty, 10) || 1, ALPACA_OPTIONS_RISK_CONFIG.MAX_CONTRACTS));
 
     const orderResp = await fetch('https://api.alpaca.markets/v2/orders', {
       method: 'POST',
@@ -1263,8 +1269,8 @@ app.post('/api/alpaca/live/disable', (req, res) => {
 
   resetDailyStateIfNeeded();
 
-  riskStateStore.live.tradingDisabled = true;
-  riskStateStore.live.disableReason = reason;
+  alpacaOptionsRiskState.live.tradingDisabled = true;
+  alpacaOptionsRiskState.live.disableReason = reason;
 
   console.warn(`[AUTO-TRADE DISABLED] env=live reason="${reason}"`);
 
@@ -1282,7 +1288,7 @@ app.post('/api/alpaca/live/cancel-stale', async (_req, res) => {
     const canceled = [];
 
     for (const [orderId, submittedAt] of orderTimestamps.entries()) {
-      if (now - submittedAt.getTime() > RISK_CONFIG.ORDER_CANCEL_TIMEOUT_MS) {
+      if (now - submittedAt.getTime() > ALPACA_OPTIONS_RISK_CONFIG.ORDER_CANCEL_TIMEOUT_MS) {
         try {
           await client.cancelOrder(orderId);
           canceled.push(orderId);
