@@ -24,6 +24,7 @@ import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
+import { getRiskStatus } from './riskManager.js';
 import {
   executeTrade,
   closePosition,
@@ -1813,6 +1814,30 @@ function logInternalCall(tag, body) {
     `[INTERNAL ${tag}] broker=oanda env=${env} accountId=${maskAccountId(accountId)} usingDefaultClient=false`,
   );
 }
+
+// POST /api/internal/oanda/risk-status
+//   Read-only risk snapshot for the dashboard Risk Management panel: account
+//   balance + central risk-manager state (per-trade cap, daily drawdown lock,
+//   auto-execution confidence threshold). Does NOT place or change anything.
+app.post('/api/internal/oanda/risk-status', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('RISK_STATUS', req.body);
+  try {
+    const account = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => getAccountSummary({ client }),
+    );
+    const balanceUSD = parseFloat(account?.balance ?? 0);
+    const status = getRiskStatus({ accountId: client.accountId, balanceUSD });
+    res.json({ ok: true, ...status });
+  } catch (err) {
+    console.error('[INTERNAL_RISK_STATUS] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
 
 // POST /api/internal/oanda/scan
 app.post('/api/internal/oanda/scan', async (req, res) => {

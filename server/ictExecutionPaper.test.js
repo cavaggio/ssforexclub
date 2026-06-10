@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Crucially: do NOT set FOREX_ALLOW_LIVE_EXECUTION here — paper must execute
-// without the live-trading acknowledgement. Pin the Auto AI caps to defaults.
+// without the live-trading acknowledgement. Pin the risk caps to defaults.
 delete process.env.FOREX_ALLOW_LIVE_EXECUTION;
-delete process.env.AUTO_AI_MAX_RISK_PER_TRADE_PERCENT;
+delete process.env.RISK_MAX_PER_TRADE_PERCENT;
+delete process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT;
+delete process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE;
 delete process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT;
 
 const { executeIctTrade } = await import('./ictExecution.js');
@@ -19,7 +21,9 @@ const validParams = (over = {}) => ({
   ...over,
 });
 
-const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 85, rr: 2.5, signalId: freshId(), ...over });
+// Confidence ≥ 90 so the central auto-execution floor passes; tests that need a
+// rejection override it explicitly.
+const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 92, rr: 2.5, signalId: freshId(), ...over });
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });
 
 function paperClient() {
@@ -48,6 +52,12 @@ test('paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION', async ()
   assert.equal(r.success, true, r.reason);
   assert.equal(r.executionState, 'FILLED');
   assert.equal(client.calls.length, 1);
+});
+
+test('auto execution rejects confidence below the 90 floor', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 85 }) }));
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /floor 90%/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {

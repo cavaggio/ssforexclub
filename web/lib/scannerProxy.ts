@@ -104,7 +104,7 @@ export type AfterCallContext = {
 export async function callScannerForCurrentUser(args: {
   internalPath: string;
   logTag: string;
-  payloadKey: 'scan' | 'analysis' | 'reassessment' | 'trade' | 'calibration' | 'close' | 'ict';
+  payloadKey: 'scan' | 'analysis' | 'reassessment' | 'trade' | 'calibration' | 'close' | 'ict' | 'risk';
   extraBody?: Record<string, unknown>;
   requireLive?: boolean;
   skipCredentials?: boolean;

@@ -24,12 +24,14 @@ import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles, getOpenTrades } from './oandaMarketData.js';
+import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
-  checkTotalOpenRisk,
-  computeOpenRiskPercent,
-} from './autoAiRiskLimits.js';
+  checkRiskPerTrade,
+  checkDailyRiskLock,
+  checkAutoExecutionConfidence,
+} from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
@@ -105,6 +107,11 @@ export async function executeIctTrade(params = {}, {
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
   }
+  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
+  if (autoAi) {
+    const confCheck = checkAutoExecutionConfidence(analysis.confidence);
+    if (!confCheck.passed) return blocked(confCheck.reason);
+  }
 
   // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
   const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
@@ -135,11 +142,18 @@ export async function executeIctTrade(params = {}, {
   const balanceUSD = parseFloat(account?.balance ?? 0);
   if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');
 
+  // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
+  const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
+  if (dailyLock.tradingLocked) {
+    rec(`blocked: ${dailyLock.reason}`);
+    return blocked(dailyLock.reason);
+  }
+
   const pipSize = getPipSize(pair);
   const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
   const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
-  // Auto AI caps per-trade risk at AUTO_AI_MAX_RISK_PER_TRADE_PERCENT (never above).
-  const effectiveRiskPercent = autoAi ? capPerTradeRiskPercent(config.maxRiskPercent) : config.maxRiskPercent;
+  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
+  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
   const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
@@ -159,6 +173,15 @@ export async function executeIctTrade(params = {}, {
   if (!marginCheck.allowed) {
     rec(`blocked: margin avail=$${marginAvailable} required=$${sizing.estimatedMarginRequired}`);
     return blocked(marginCheck.reason);
+  }
+
+  // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.4%) ───────
+  const riskCheck = checkRiskPerTrade({
+    balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slPips, positionSize: Math.abs(units),
+  });
+  if (!riskCheck.passed) {
+    rec(`blocked: ${riskCheck.reason}`);
+    return blocked(riskCheck.reason);
   }
 
   // ── 8c. Auto AI total-open-risk cap (AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT) ──

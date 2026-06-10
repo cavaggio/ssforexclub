@@ -1,61 +1,28 @@
 /**
  * server/autoAiRiskLimits.js
  *
- * Auto AI risk protection — the single source of truth for the hard risk caps
- * that bound autonomous (Auto AI) execution. These are SEPARATE from the
- * advisory-only portfolioRiskEngine (which never gates a trade): the functions
- * here are consulted in the Auto AI execution path and can block an order.
+ * Auto AI portfolio-level risk: the TOTAL open-risk cap that bounds how much
+ * concurrent risk the autonomous path may carry across all open positions.
  *
- *   - Max risk per trade        AUTO_AI_MAX_RISK_PER_TRADE_PERCENT   (default 1.5%)
- *   - Max total open Auto AI risk AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT (default 4.5%)
- *   - Margin: never place a trade whose required margin exceeds available margin
- *     (do not bypass the broker's own margin restrictions).
+ *   - Max total open Auto AI risk  AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT (4.5%)
  *
- * Config is read at call time (via autoAiRiskConfig) so tests can override env
- * per-case and there is one source of truth for both engines (ICT and V3).
+ * Per-trade risk, margin, the daily drawdown lock, and the auto-confidence floor
+ * are NOT defined here — they live in the central server/riskManager.js so every
+ * engine shares one implementation (hardening requirement #6). checkMargin and
+ * MARGIN_RESTRICTION_MESSAGE are re-exported from riskManager for back-compat.
  */
 
-// Exact operator-facing message required when a margin restriction would be hit.
-export const MARGIN_RESTRICTION_MESSAGE = 'Account margin restriction would be exceeded.';
+import { checkMargin, MARGIN_RESTRICTION_MESSAGE } from './riskManager.js';
 
-// Small epsilon so floating-point sizing (e.g. exactly 1.5%) is not rejected.
+export { checkMargin, MARGIN_RESTRICTION_MESSAGE };
+
+// Small epsilon so floating-point sizing is not rejected at the exact cap.
 const EPS = 1e-9;
 
 export function autoAiRiskConfig() {
   return {
-    maxRiskPerTradePercent: parseFloat(process.env.AUTO_AI_MAX_RISK_PER_TRADE_PERCENT || '1.5'),
     maxTotalOpenRiskPercent: parseFloat(process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT || '4.5'),
   };
-}
-
-/**
- * Validate (and report) a single trade's intended risk against the per-trade cap.
- * Returns { allowed, riskPercent, maxRiskPercent, reason? }.
- */
-export function checkPerTradeRisk(requestedRiskPercent, cfg = autoAiRiskConfig()) {
-  const max = cfg.maxRiskPerTradePercent;
-  if (!Number.isFinite(requestedRiskPercent) || requestedRiskPercent <= 0) {
-    return { allowed: false, maxRiskPercent: max, reason: 'Invalid risk-per-trade percent' };
-  }
-  if (requestedRiskPercent > max + EPS) {
-    return {
-      allowed: false,
-      riskPercent: requestedRiskPercent,
-      maxRiskPercent: max,
-      reason: `Risk per trade ${requestedRiskPercent}% exceeds Auto AI max ${max}%`,
-    };
-  }
-  return { allowed: true, riskPercent: requestedRiskPercent, maxRiskPercent: max };
-}
-
-/**
- * Clamp a requested per-trade risk percent down to the Auto AI cap. Used when
- * sizing so the engine never sends an order risking more than the cap.
- */
-export function capPerTradeRiskPercent(requestedRiskPercent, cfg = autoAiRiskConfig()) {
-  const max = cfg.maxRiskPerTradePercent;
-  if (!Number.isFinite(requestedRiskPercent) || requestedRiskPercent <= 0) return max;
-  return Math.min(requestedRiskPercent, max);
 }
 
 /**
@@ -79,34 +46,11 @@ export function checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent, 
 }
 
 /**
- * Margin guard. A trade is blocked when its estimated required margin exceeds
- * the broker-reported available margin (or either figure is unusable). This is
- * additive to the broker's own INSUFFICIENT_MARGIN rejection — it never bypasses
- * a broker restriction, it refuses earlier.
- * Returns { allowed, reason? } where reason is MARGIN_RESTRICTION_MESSAGE.
- */
-export function checkMargin({ marginAvailable, estimatedMargin } = {}) {
-  const avail = Number(marginAvailable);
-  const req = Number(estimatedMargin);
-  if (!Number.isFinite(avail) || !Number.isFinite(req) || req < 0) {
-    return { allowed: false, reason: MARGIN_RESTRICTION_MESSAGE };
-  }
-  if (req > avail + EPS) {
-    return { allowed: false, reason: MARGIN_RESTRICTION_MESSAGE };
-  }
-  return { allowed: true };
-}
-
-/**
  * Estimate the total open risk (USD) across the broker's currently-open trades.
  *
  * For each open trade we approximate risk as |units| × |entryPrice − stopLoss|.
  * This is exact for USD-quoted pairs (EUR_USD, GBP_USD, …) and a reasonable
- * proxy otherwise — consistent with the tolerant model used elsewhere. Trades
- * with no protective stop contribute 0 (their risk is unbounded but not
- * quantifiable here; the per-trade margin/sizing gates still apply on entry).
- *
- * Accepts raw OANDA open-trade objects (price, currentUnits, stopLossOrder.price).
+ * proxy otherwise. Trades with no protective stop contribute 0.
  */
 export function computeOpenRiskUSD(openTrades = []) {
   let total = 0;

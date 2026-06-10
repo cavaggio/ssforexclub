@@ -29,12 +29,14 @@ import {
 } from './oandaRiskSizing.js';
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
+import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
-  autoAiRiskConfig,
+  capPerTradeRiskPercent,
   checkMargin,
-  checkTotalOpenRisk,
-  computeOpenRiskPercent,
-} from './autoAiRiskLimits.js';
+  checkRiskPerTrade,
+  checkDailyRiskLock,
+  checkAutoExecutionConfidence,
+} from './riskManager.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
@@ -399,6 +401,11 @@ export async function executeTrade(signal, options = {}) {
   if (confidence < MIN_CONFIDENCE) {
     return blocked(`Confidence ${confidence}% < minimum ${MIN_CONFIDENCE}%`);
   }
+  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
+  if (autoAi) {
+    const confCheck = checkAutoExecutionConfidence(confidence);
+    if (!confCheck.passed) return blocked(confCheck.reason);
+  }
 
   // ── Guard 3.5: Multi-timeframe trend alignment ────────────────────────────
   // Defensive check — scanner already validates these, but signals can arrive
@@ -535,6 +542,12 @@ export async function executeTrade(signal, options = {}) {
     return blocked('Account balance is 0. Fund account before live trading.');
   }
 
+  // ── Daily drawdown circuit breaker (central, blocks NEW entries only) ──────
+  const dailyLock = checkDailyRiskLock({ accountId: client?.accountId, balanceUSD });
+  if (dailyLock.tradingLocked) {
+    return blocked(dailyLock.reason);
+  }
+
   if (dailyStartBalance === null) dailyStartBalance = balanceUSD;
   const maxAllowedLossUSD = dailyStartBalance * (MAX_DAILY_LOSS_PERCENT / 100);
   if (dailyLossUSD >= maxAllowedLossUSD) {
@@ -569,13 +582,14 @@ export async function executeTrade(signal, options = {}) {
     );
   }
 
-  // Auto AI per-trade cap: never risk more than AUTO_AI_MAX_RISK_PER_TRADE_PERCENT.
-  if (autoAi) {
-    const cap = autoAiRiskConfig().maxRiskPerTradePercent;
+  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to EVERY trade
+  // (manual + auto). No confidence/quality score may override it.
+  {
+    const cap = capPerTradeRiskPercent(dynamicRisk.riskPercent);
     if (dynamicRisk.riskPercent > cap) {
       const cappedRiskUSD = +(balanceUSD * (cap / 100)).toFixed(2);
       console.log(
-        `[AUTO_AI_RISK_CAP] ${pair} ${direction} — capping risk ${dynamicRisk.riskPercent}% → ${cap}% ` +
+        `[RISK CAP] ${pair} ${direction} — capping risk ${dynamicRisk.riskPercent}% → ${cap}% ` +
         `($${dynamicRisk.riskUSD} → $${cappedRiskUSD})`
       );
       dynamicRisk.riskPercent = cap;
@@ -669,13 +683,25 @@ export async function executeTrade(signal, options = {}) {
     for (const w of sizing.warnings) console.warn(`[TRADE]   ⚠ ${w}`);
   }
 
-  // ── Auto AI guards: hard margin check + total-open-risk cap ────────────────
-  if (autoAi) {
+  // ── Central margin guard — never submit an order we cannot afford margin for ─
+  {
     const marginCheck = checkMargin({ marginAvailable, estimatedMargin });
     if (!marginCheck.allowed) {
-      console.warn(`[AUTO_AI_MARGIN] ${pair} avail=$${marginAvailable.toFixed(2)} required=$${estimatedMargin.toFixed(2)}`);
+      console.warn(`[MARGIN] ${pair} avail=$${marginAvailable.toFixed(2)} required=$${estimatedMargin.toFixed(2)}`);
       return blocked(marginCheck.reason);
     }
+  }
+
+  // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.4%) ──────
+  {
+    const riskCheck = checkRiskPerTrade({
+      balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slDistancePips, positionSize: absUnits,
+    });
+    if (!riskCheck.passed) return blocked(riskCheck.reason);
+  }
+
+  // ── Auto AI portfolio guard: total-open-risk cap ──────────────────────────
+  if (autoAi) {
     let openTrades = [];
     try {
       openTrades = (await getOpenTrades({ client })) || [];

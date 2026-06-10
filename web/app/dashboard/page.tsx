@@ -19,6 +19,7 @@ import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { ScannerStatusCard } from '@/components/scanner-status-card';
 import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
+import { RiskManagementPanel } from '@/components/risk-management-panel';
 
 export default async function DashboardPage() {
   const { userId } = await auth();
@@ -139,6 +140,10 @@ export default async function DashboardPage() {
           </p>
         </section>
       )}
+
+      {/* Risk Management — central risk-manager snapshot (per-trade cap, daily
+          drawdown lock, auto-execution threshold). Shown once a broker is linked. */}
+      {hasAnyConnection && <RiskManagementPanel />}
 
       {/* Auto AI Trading toggle — per-user opt-in for AI auto-execution
           (controls auto-trading, not manual). Shown once a broker is linked. */}
