@@ -29,7 +29,6 @@ import {
 } from './oandaRiskSizing.js';
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
-import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
@@ -43,6 +42,9 @@ import {
   recordRejection,
   hydrateDailyBaseline,
   persistDailyState,
+  computeOpenRiskUSD,
+  evaluateNewTradeBudget,
+  checkTpProbability,
 } from './riskManager.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -523,13 +525,13 @@ export async function executeTrade(signal, options = {}) {
     return blocked(`Duplicate trade already active: ${tradeKey}`);
   }
 
-  // ── Guard 8: Daily cap ────────────────────────────────────────────────────
+  // ── Daily trade count: tracked for telemetry only — NO max-count cap ───────
+  // Per the account-protection spec, the limiter is QUALITY + RISK (95% conf,
+  // per-trade 1.4%, daily 2.8% projected cap, TP/quality gates), never an
+  // arbitrary trade count. The day's timestamps are kept for getTradeState.
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   dailyTradeTimestamps = dailyTradeTimestamps.filter((t) => t > todayStart.getTime());
-  if (dailyTradeTimestamps.length >= MAX_DAILY_TRADES) {
-    return blocked(`Daily trade cap reached: ${dailyTradeTimestamps.length}/${MAX_DAILY_TRADES}`);
-  }
 
   // ── Guard 9: Account + balance + daily loss cap ───────────────────────────
   let account;
@@ -562,11 +564,19 @@ export async function executeTrade(signal, options = {}) {
     return denyRisk(dailyLock.reason);
   }
 
-  // ── Auto-execution confidence floor (90 normally, 95 in conservative mode) ──
+  // ── Auto-execution confidence floor (95% across all auto engines) ──────────
   if (autoAi) {
     const confCheck = checkAutoExecutionConfidence(confidence, { accountId: client?.accountId, balanceUSD });
     if (!confCheck.passed) return denyRisk(confCheck.reason);
   }
+
+  // ── Account-as-one-risk-system: existing open risk counts toward the cap ───
+  let openTrades = [];
+  try { openTrades = (await getOpenTrades({ client })) || []; }
+  catch (err) { console.warn(`[ACCOUNT RISK] open-trades fetch failed — ${err.message}`); }
+  const openTradeRiskUSD = computeOpenRiskUSD(openTrades);
+  const budget = evaluateNewTradeBudget({ accountId: client?.accountId, balanceUSD, openTradeRiskUSD });
+  if (!budget.passed) return denyRisk(budget.reason);
 
   if (dailyStartBalance === null) dailyStartBalance = balanceUSD;
   const maxAllowedLossUSD = dailyStartBalance * (MAX_DAILY_LOSS_PERCENT / 100);
@@ -615,6 +625,13 @@ export async function executeTrade(signal, options = {}) {
       dynamicRisk.riskPercent = cap;
       dynamicRisk.riskUSD = cappedRiskUSD;
     }
+  }
+
+  // Account-level cap: never size above the remaining daily budget (may be <1.4%).
+  if (dynamicRisk.riskUSD > budget.allowedNewTradeRisk) {
+    console.log(`[ACCOUNT RISK] ${pair} ${direction} — sizing capped to daily budget $${budget.allowedNewTradeRisk.toFixed(2)} (was $${dynamicRisk.riskUSD}).`);
+    dynamicRisk.riskUSD = budget.allowedNewTradeRisk;
+    dynamicRisk.riskPercent = balanceUSD > 0 ? +((budget.allowedNewTradeRisk / balanceUSD) * 100).toFixed(3) : dynamicRisk.riskPercent;
   }
 
   // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.
@@ -745,22 +762,33 @@ export async function executeTrade(signal, options = {}) {
     if (!riskCheck.passed) return denyRisk(riskCheck.reason);
   }
 
-  // ── Auto AI portfolio guards: total-open-risk cap + conservative correlation ─
+  // ── Projected daily risk must stay under the 2.8% cap (realized + open + new) ─
+  {
+    const realizedLoss = Math.abs(Math.min(budget.realizedPnL, 0));
+    const projectedDailyRisk = +(realizedLoss + budget.openTradeRisk + actualRiskUSD).toFixed(2);
+    if (projectedDailyRisk > budget.dailyLossLimit + 1e-9) {
+      return denyRisk(
+        `Projected daily risk $${projectedDailyRisk.toFixed(2)} would exceed the daily cap ` +
+        `$${budget.dailyLossLimit.toFixed(2)} (realizedLoss $${realizedLoss.toFixed(2)} + openRisk ` +
+        `$${budget.openTradeRisk.toFixed(2)} + newRisk $${actualRiskUSD.toFixed(2)}) — trade rejected.`,
+      );
+    }
+  }
+
+  // ── Auto quality gates: TP probability + conservative correlated exposure ──
   if (autoAi) {
-    let openTrades = [];
-    try {
-      openTrades = (await getOpenTrades({ client })) || [];
-    } catch (err) {
-      console.warn(`[AUTO_AI_OPEN_RISK] open-risk check skipped — ${err.message}`);
-    }
-    const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
-    const newTradeRiskPercent = +((actualRiskUSD / balanceUSD) * 100).toFixed(4);
-    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
-    if (!totalCheck.allowed) {
-      console.warn(`[AUTO_AI_OPEN_RISK] ${pair} ${totalCheck.reason}`);
-      return denyRisk(totalCheck.reason);
-    }
-    // Conservative mode: refuse new trades that increase correlated exposure.
+    const tp = checkTpProbability({
+      stopLossPips: slDistancePips, takeProfitPips: sizing.takeProfitPips,
+      atrPips: signal.momentum?.atrPips ?? signal.atrPips ?? null, spreadPips: signal.spreadPips ?? null,
+    });
+    console.log(
+      `[TRADE QUALITY CHECK]\nengine=V3/V3.5\npair=${pair}\ndirection=${direction}\n` +
+      `confidence=${confidence}\nentryTiming=${signal.entryTiming?.status ?? 'n/a'}\n` +
+      `tpProbability=${tp.passed ? 'ok' : 'low'}\nlateEntry=${signal.entryTiming?.status === 'too_early' ? 'n/a' : (signal.entryTiming?.late ?? 'n/a')}\n` +
+      `passed=${tp.passed}\nrejectionReason=${tp.passed ? '' : tp.reason}`,
+    );
+    if (!tp.passed) return denyRisk(tp.reason);
+
     const corr = checkConservativeCorrelatedExposure({
       conservativeMode: dailyLock.conservativeMode, pair, direction, openTrades,
     });

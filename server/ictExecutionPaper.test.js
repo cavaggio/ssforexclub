@@ -25,9 +25,9 @@ const validParams = (over = {}) => ({
   ...over,
 });
 
-// Confidence ≥ 90 so the central auto-execution floor passes; tests that need a
+// Confidence ≥ 95 so the central auto-execution floor passes; tests that need a
 // rejection override it explicitly.
-const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 92, rr: 2.5, signalId: freshId(), ...over });
+const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 96, rr: 2.5, signalId: freshId(), ...over });
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });
 
 function paperClient() {
@@ -58,10 +58,10 @@ test('paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION', async ()
   assert.equal(client.calls.length, 1);
 });
 
-test('auto execution rejects confidence below the 90 floor', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 85 }) }));
+test('auto execution rejects confidence below the 95 floor', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 92 }) }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /floor 90%/);
+  assert.match(r.reason, /floor 95%/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {
@@ -71,9 +71,9 @@ test('insufficient margin blocks the paper trade with the exact message', async 
   assert.equal(r.reason, 'Account margin restriction would be exceeded.');
 });
 
-test('total open Auto AI risk above 4.5% blocks a new trade', async () => {
-  // Existing open trade: 250,000 EUR_USD, entry 1.10, stop 1.08 → $5,000 risk
-  // on a $10,000 account = 50% open risk, well above the 4.5% cap.
+test('existing open-trade risk blocks a new trade that would breach the daily cap', async () => {
+  // Existing open trade already risks $5,000 on a $10k account — far beyond the
+  // 2.8% ($280) daily cap, so there is no budget for any new trade.
   const heavyOpen = async () => [
     { instrument: 'EUR_USD', currentUnits: '250000', price: '1.10', stopLossOrder: { price: '1.08' } },
   ];
@@ -81,7 +81,7 @@ test('total open Auto AI risk above 4.5% blocks a new trade', async () => {
     getAnalysis: goodAnalysis(), getOpen: heavyOpen,
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /exceed max 4\.5%/);
+  assert.match(r.reason, /budget|daily cap|rejected/i);
 });
 
 test('ICT (auto) cannot exceed 1.4% risk even when the engine asks for 5%', async () => {

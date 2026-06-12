@@ -35,16 +35,26 @@ export function riskConfig() {
   return {
     maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
     dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),
-    autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || '90'),
+    // Auto-execution confidence floor — 95% across ALL auto engines.
+    autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || '95'),
+    // Daily realized-profit objective (capital-protection mode trigger).
+    dailyProfitTargetPercent: parseFloat(process.env.RISK_DAILY_PROFIT_TARGET_PERCENT || '2.0'),
     // Progressive tightening: once realized daily loss reaches this % of the
-    // day's starting balance, the account enters conservative mode and the
-    // auto-execution confidence floor rises to conservativeMinConfidence.
+    // day's starting balance, the account enters conservative mode (correlated
+    // adds blocked). The confidence floor is already 95 platform-wide.
     conservativeTriggerPercent: parseFloat(process.env.RISK_CONSERVATIVE_TRIGGER_PERCENT || '1.4'),
     conservativeMinConfidence: parseFloat(process.env.RISK_CONSERVATIVE_MIN_CONFIDENCE || '95'),
     // Optional absolute stop-loss-distance ceiling (pips). 0 = disabled; the
     // binding "too wide" guard is always the per-trade risk budget (a stop so
     // wide it can't size ≥1 unit at the cap is rejected).
     maxStopLossPips: parseFloat(process.env.RISK_MAX_STOP_LOSS_PIPS || '0'),
+    // TP-probability gate knobs (lenient defaults — reject only egregious cases).
+    tpMaxAtrMultiple: parseFloat(process.env.RISK_TP_MAX_ATR_MULTIPLE || '6'),
+    tpMaxSpreadFracOfStop: parseFloat(process.env.RISK_TP_MAX_SPREAD_FRAC_OF_STOP || '0.33'),
+    // Autonomous defensive closing of open trades when the daily cap is
+    // threatened. OFF by default — closing live positions from the 5-min cron is
+    // opt-in. The reduction PLAN is always computed and logged regardless.
+    autoDefensiveClose: String(process.env.RISK_AUTO_DEFENSIVE_CLOSE || 'false').toLowerCase() === 'true',
   };
 }
 
@@ -266,6 +276,20 @@ export function getLastRejection(accountId) {
   return lastRejection.get(accountKey(accountId)) || null;
 }
 
+// Last account-level risk action + last trade-reassessment action (dashboard).
+const lastAccountRiskAction = new Map();
+const lastReassessAction = new Map();
+export function recordAccountRiskAction({ accountId, action, now = new Date() } = {}) {
+  if (!action) return;
+  lastAccountRiskAction.set(accountKey(accountId), { action, at: now.toISOString() });
+}
+export function getLastAccountRiskAction(accountId) { return lastAccountRiskAction.get(accountKey(accountId)) || null; }
+export function recordReassessmentAction({ accountId, action, now = new Date() } = {}) {
+  if (!action) return;
+  lastReassessAction.set(accountKey(accountId), { action, at: now.toISOString() });
+}
+export function getLastReassessmentAction(accountId) { return lastReassessAction.get(accountKey(accountId)) || null; }
+
 /** Manual/admin reset of all daily baselines (e.g. broker daily reset hook). */
 export function resetDailyRisk() {
   const cleared = dailyState.size;
@@ -341,6 +365,200 @@ export async function persistDailyState({ accountId, status, now = new Date() } 
     console.warn(`[DAILY RISK LOCK] persist failed ${accountKey(accountId)}: ${err?.message || err}`);
     return { persisted: false, error: String(err?.message || err) };
   }
+}
+
+// ─── Account-level risk: open-trade risk, budget, cycle, TP gate ────────────
+
+/**
+ * Estimated dollar loss if every open trade hit its current stop — the open
+ * risk that must count against the daily cap BEFORE any loss is realized.
+ * risk ≈ |units| × |entryPrice − stopLossPrice| (exact for USD-quoted pairs).
+ */
+export function computeOpenRiskUSD(openTrades = []) {
+  let total = 0;
+  for (const t of Array.isArray(openTrades) ? openTrades : []) {
+    if (!t || typeof t !== 'object') continue;
+    const units = Math.abs(Number(t.currentUnits ?? t.units ?? t.tradeUnits ?? 0));
+    const entry = Number(t.price ?? t.entryPrice ?? 0);
+    const slPrice = Number(t.stopLossOrder?.price ?? t.stopLoss ?? t.slPrice ?? NaN);
+    const explicitRisk = Number(t.riskUSD ?? t.actualRiskUSD ?? t.riskAmount ?? NaN);
+    if (Number.isFinite(explicitRisk) && explicitRisk > 0) { total += explicitRisk; continue; }
+    if (!units || !Number.isFinite(entry) || !Number.isFinite(slPrice)) continue;
+    total += units * Math.abs(entry - slPrice);
+  }
+  return +total.toFixed(2);
+}
+
+/** Open risk as a percent of balance (null when balance unusable). */
+export function computeOpenRiskPercent(openTrades, balanceUSD) {
+  const balance = Number(balanceUSD);
+  if (!Number.isFinite(balance) || balance <= 0) return null;
+  return +((computeOpenRiskUSD(openTrades) / balance) * 100).toFixed(4);
+}
+
+/**
+ * Account-as-one-risk-system budget for a NEW trade. Combines:
+ *   - per-trade hard cap (1.4% of balance)
+ *   - remaining daily loss budget (dailyLossLimit + realizedDailyPnL)
+ *   - headroom under the daily cap after realized loss + open-trade risk
+ * The smallest of these is the allowed risk for the next trade. Reject when ≤0.
+ * Logs [DAILY BUDGET CHECK]. `newTradeRiskUSD` is optional (omit pre-sizing to
+ * just get allowedNewTradeRisk; pass it post-sizing for the projected check).
+ */
+export function evaluateNewTradeBudget({ accountId, balanceUSD, openTradeRiskUSD = 0, newTradeRiskUSD = null, now = new Date() } = {}, cfg = riskConfig()) {
+  const state = ensureDailyBaseline({ accountId, balanceUSD, now });
+  const startingBalance = Number(state.startingBalance) || 0;
+  const balance = Number.isFinite(Number(balanceUSD)) ? Number(balanceUSD) : startingBalance;
+  const dailyLossLimit = +(startingBalance * (cfg.dailyMaxDrawdownPercent / 100)).toFixed(2);
+  const realizedPnL = +(balance - startingBalance).toFixed(2);
+  const realizedLoss = Math.abs(Math.min(realizedPnL, 0));
+  const openRisk = Math.max(0, Number(openTradeRiskUSD) || 0);
+  const maxTradeRisk = +(balance * (cfg.maxRiskPerTradePercent / 100)).toFixed(2);
+  const remainingDailyLossBudget = +(dailyLossLimit + realizedPnL).toFixed(2);
+  const headroomUnderCap = +(dailyLossLimit - realizedLoss - openRisk).toFixed(2);
+  const allowedNewTradeRisk = +Math.max(0, Math.min(maxTradeRisk, remainingDailyLossBudget, headroomUnderCap)).toFixed(2);
+
+  const newRisk = newTradeRiskUSD == null ? null : Math.max(0, Number(newTradeRiskUSD) || 0);
+  const projectedDailyRisk = newRisk == null
+    ? +(realizedLoss + openRisk).toFixed(2)
+    : +(realizedLoss + openRisk + newRisk).toFixed(2);
+
+  let passed = allowedNewTradeRisk > 0;
+  let reason = null;
+  if (allowedNewTradeRisk <= 0) {
+    passed = false;
+    reason = `No daily loss budget remaining (remaining=$${remainingDailyLossBudget.toFixed(2)}, ` +
+      `realizedLoss=$${realizedLoss.toFixed(2)}, openRisk=$${openRisk.toFixed(2)}, cap=$${dailyLossLimit.toFixed(2)}) — trade rejected.`;
+  } else if (newRisk != null && newRisk > allowedNewTradeRisk + 1e-9) {
+    passed = false;
+    reason = `New-trade risk $${newRisk.toFixed(2)} exceeds allowed $${allowedNewTradeRisk.toFixed(2)} — trade rejected.`;
+  } else if (newRisk != null && projectedDailyRisk > dailyLossLimit + 1e-9) {
+    passed = false;
+    reason = `Projected daily risk $${projectedDailyRisk.toFixed(2)} would exceed the ${cfg.dailyMaxDrawdownPercent}% cap ` +
+      `$${dailyLossLimit.toFixed(2)} — trade rejected.`;
+  }
+
+  console.log(
+    `[DAILY BUDGET CHECK]\n` +
+    `remainingDailyLossBudget=${remainingDailyLossBudget.toFixed(2)}\n` +
+    `openTradeRisk=${openRisk.toFixed(2)}\n` +
+    `newTradeRisk=${newRisk == null ? 'n/a' : newRisk.toFixed(2)}\n` +
+    `projectedDailyRisk=${projectedDailyRisk.toFixed(2)}\n` +
+    `allowedNewTradeRisk=${allowedNewTradeRisk.toFixed(2)}\n` +
+    `passed=${passed}`
+  );
+
+  return {
+    passed,
+    reason,
+    allowedNewTradeRisk,
+    remainingDailyLossBudget,
+    dailyLossLimit,
+    realizedPnL,
+    openTradeRisk: openRisk,
+    projectedDailyRisk,
+    maxTradeRisk,
+    // Lock the day once there is no budget left at all.
+    shouldLock: remainingDailyLossBudget <= 0,
+  };
+}
+
+/**
+ * Full account risk snapshot for the 5-minute cycle. Logs [ACCOUNT RISK CYCLE].
+ * Includes the +2% profit objective and capital-protection mode.
+ */
+export function getAccountRiskCycle({ accountId, balanceUSD, openTradeRiskUSD = 0, now = new Date() } = {}, cfg = riskConfig()) {
+  const lock = checkDailyRiskLock({ accountId, balanceUSD, now }, cfg);
+  const openRisk = Math.max(0, Number(openTradeRiskUSD) || 0);
+  const realizedLoss = Math.abs(Math.min(lock.realizedPnL, 0));
+  const projectedDailyRisk = +(realizedLoss + openRisk).toFixed(2);
+  const profitTarget = +(lock.startingBalance * (cfg.dailyProfitTargetPercent / 100)).toFixed(2);
+  const profitTargetReached = lock.realizedPnL >= profitTarget && profitTarget > 0;
+  const balance = Number.isFinite(Number(balanceUSD)) ? Number(balanceUSD) : lock.startingBalance;
+  console.log(
+    `[ACCOUNT RISK CYCLE]\n` +
+    `accountId=${accountId ?? 'n/a'}\n` +
+    `dailyStartingBalance=${lock.startingBalance.toFixed(2)}\n` +
+    `currentBalance=${balance.toFixed(2)}\n` +
+    `realizedDailyPnL=${lock.realizedPnL.toFixed(2)}\n` +
+    `dailyLossLimit=${lock.lossLimit.toFixed(2)}\n` +
+    `remainingDailyLossBudget=${lock.remainingLossBudget.toFixed(2)}\n` +
+    `openTradeRisk=${openRisk.toFixed(2)}\n` +
+    `projectedDailyRisk=${projectedDailyRisk.toFixed(2)}\n` +
+    `tradingLocked=${lock.tradingLocked}\n` +
+    `profitTarget=${profitTarget.toFixed(2)}\n` +
+    `profitTargetReached=${profitTargetReached}`
+  );
+  return {
+    ...lock,
+    currentBalance: +balance.toFixed(2),
+    openTradeRisk: openRisk,
+    projectedDailyRisk,
+    projectedRiskExceedsCap: projectedDailyRisk > lock.lossLimit + 1e-9,
+    dailyProfitTarget: profitTarget,
+    profitTargetReached,
+    capitalProtectionMode: profitTargetReached,
+  };
+}
+
+/**
+ * TP-probability gate (rule 10). Tractable, lenient-by-default heuristics that
+ * reject only clearly-unrealistic targets: a take-profit that needs an
+ * implausible multiple of recent volatility, or a spread that eats too much of
+ * the stop. Engine-specific liquidity/structure targeting stays in the engines.
+ * Logs nothing itself; callers fold the result into [TRADE QUALITY CHECK].
+ */
+export function checkTpProbability({ stopLossPips, takeProfitPips, atrPips = null, spreadPips = null } = {}, cfg = riskConfig()) {
+  const slPips = Number(stopLossPips);
+  const tpPips = Number(takeProfitPips);
+  if (!Number.isFinite(tpPips) || tpPips <= 0) return { passed: false, reason: 'Take-profit distance is invalid.' };
+  if (!Number.isFinite(slPips) || slPips <= 0) return { passed: false, reason: 'Stop-loss distance is invalid.' };
+  const rr = +(tpPips / slPips).toFixed(2);
+  const atr = Number(atrPips);
+  if (Number.isFinite(atr) && atr > 0 && tpPips > cfg.tpMaxAtrMultiple * atr) {
+    return { passed: false, rr, reason: `TP ${tpPips}p needs > ${cfg.tpMaxAtrMultiple}× ATR (${atr}p) this session — unrealistic.` };
+  }
+  const spread = Number(spreadPips);
+  if (Number.isFinite(spread) && spread > 0 && spread > cfg.tpMaxSpreadFracOfStop * slPips) {
+    return { passed: false, rr, reason: `Spread ${spread}p > ${Math.round(cfg.tpMaxSpreadFracOfStop * 100)}% of the ${slPips}p stop — setup inefficient.` };
+  }
+  return { passed: true, rr, tpPips, slPips };
+}
+
+/**
+ * Defensive-reduction plan (rule 5). When realized loss + open risk would breach
+ * the daily cap, returns the ordered list of open trades to reduce/close —
+ * worst unrealized P&L first — until projected risk fits under the cap. Pure;
+ * the caller decides whether to execute the closes.
+ */
+export function planDefensiveReduction({ openTrades = [], realizedPnL = 0, dailyLossLimit = 0 } = {}) {
+  const realizedLoss = Math.abs(Math.min(Number(realizedPnL) || 0, 0));
+  const limit = Number(dailyLossLimit) || 0;
+  const trades = (Array.isArray(openTrades) ? openTrades : [])
+    .map((t) => ({
+      tradeId: t.id ?? t.tradeId ?? null,
+      instrument: t.instrument ?? t.pair ?? null,
+      riskUSD: computeOpenRiskUSD([t]),
+      unrealizedPL: Number(t.unrealizedPL ?? t.unrealized_pl ?? t.pnl ?? 0) || 0,
+    }))
+    .filter((t) => t.tradeId);
+  let openRisk = +trades.reduce((s, t) => s + t.riskUSD, 0).toFixed(2);
+  const exceeds = realizedLoss + openRisk > limit + 1e-9;
+  if (!exceeds) return { reductionNeeded: false, projectedDailyRisk: +(realizedLoss + openRisk).toFixed(2), dailyLossLimit: limit, toClose: [] };
+  // Close the worst-performing (most-negative unrealized) trades first.
+  const ranked = [...trades].sort((a, b) => a.unrealizedPL - b.unrealizedPL);
+  const toClose = [];
+  for (const t of ranked) {
+    if (realizedLoss + openRisk <= limit + 1e-9) break;
+    toClose.push(t);
+    openRisk = +(openRisk - t.riskUSD).toFixed(2);
+  }
+  return {
+    reductionNeeded: true,
+    dailyLossLimit: limit,
+    projectedAfter: +(realizedLoss + Math.max(0, openRisk)).toFixed(2),
+    toClose,
+  };
 }
 
 // ─── 3. Auto-execution confidence floor (progressive tightening) ────────────
@@ -476,11 +694,18 @@ export function checkMargin({ marginAvailable, estimatedMargin } = {}) {
 // ─── 5. Dashboard status ────────────────────────────────────────────────────
 
 /** Read-only risk snapshot for the dashboard Risk Management panel. */
-export function getRiskStatus({ accountId, balanceUSD, now = new Date() } = {}) {
+export function getRiskStatus({ accountId, balanceUSD, openTradeRiskUSD = 0, now = new Date() } = {}) {
   const cfg = riskConfig();
   const lock = checkDailyRiskLock({ accountId, balanceUSD, now }, cfg);
   const balance = Number(balanceUSD);
-  const last = getLastRejection(accountId);
+  const openRisk = Math.max(0, Number(openTradeRiskUSD) || 0);
+  const realizedLoss = Math.abs(Math.min(lock.realizedPnL, 0));
+  const projectedDailyRisk = +(realizedLoss + openRisk).toFixed(2);
+  const dailyProfitTarget = +(lock.startingBalance * (cfg.dailyProfitTargetPercent / 100)).toFixed(2);
+  const capitalProtectionMode = dailyProfitTarget > 0 && lock.realizedPnL >= dailyProfitTarget;
+  const lastRej = getLastRejection(accountId);
+  const lastAct = getLastAccountRiskAction(accountId);
+  const lastReassess = getLastReassessmentAction(accountId);
   return {
     accountBalance: Number.isFinite(balance) ? +balance.toFixed(2) : null,
     currentBalance: Number.isFinite(balance) ? +balance.toFixed(2) : null,
@@ -488,14 +713,21 @@ export function getRiskStatus({ accountId, balanceUSD, now = new Date() } = {}) 
     riskAmountUSD: computeRiskBudgetUSD(balance, cfg),
     dailyStartingBalance: lock.startingBalance,
     dailyRealizedPnL: lock.realizedPnL,
+    dailyProfitTargetPercent: cfg.dailyProfitTargetPercent,
+    dailyProfitTargetUSD: dailyProfitTarget,
     dailyLossLimitPercent: cfg.dailyMaxDrawdownPercent,
     dailyLossLimitUSD: lock.lossLimit,
     remainingLossBudgetUSD: lock.remainingLossBudget,
+    openTradeRiskUSD: openRisk,
+    projectedDailyRiskUSD: projectedDailyRisk,
     tradingLocked: lock.tradingLocked,
     conservativeMode: lock.conservativeMode,
+    capitalProtectionMode,
     autoExecutionConfidenceThreshold: cfg.autoExecutionMinConfidence,
     currentAutoConfidenceThreshold: lock.activeConfidenceThreshold,
-    lastRejectedReason: last?.reason ?? null,
-    lastRejectedAt: last?.at ?? null,
+    lastRejectedReason: lastRej?.reason ?? null,
+    lastRejectedAt: lastRej?.at ?? null,
+    lastAccountRiskAction: lastAct?.action ?? null,
+    lastReassessmentAction: lastReassess?.action ?? null,
   };
 }

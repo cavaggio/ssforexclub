@@ -24,7 +24,6 @@ import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles, getOpenTrades } from './oandaMarketData.js';
-import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
@@ -34,6 +33,9 @@ import {
   clampUnitsToRiskBudget,
   validateStopLoss,
   checkConservativeCorrelatedExposure,
+  computeOpenRiskUSD,
+  evaluateNewTradeBudget,
+  checkTpProbability,
   logPreSubmit,
   recordRejection,
   hydrateDailyBaseline,
@@ -163,11 +165,23 @@ export async function executeIctTrade(params = {}, {
     return denyRisk(dailyLock.reason);
   }
 
-  // ── 8a-ii. Auto-execution confidence floor (90, or 95 in conservative mode) ─
+  // ── 8a-ii. Auto-execution confidence floor (95% across all auto engines) ────
   if (autoAi) {
     const confCheck = checkAutoExecutionConfidence(analysis.confidence, { accountId: client.accountId, balanceUSD, now });
     if (!confCheck.passed) return denyRisk(confCheck.reason);
   }
+
+  // ── 8a-iii. Account-as-one-risk-system: open risk + daily budget gate ──────
+  let openTrades = [];
+  try {
+    const openFn = getOpen || (() => getOpenTrades({ client }));
+    openTrades = (await openFn()) || [];
+  } catch (err) {
+    rec(`open-trades fetch failed — ${err.message}`);
+  }
+  const openTradeRiskUSD = computeOpenRiskUSD(openTrades);
+  const budget = evaluateNewTradeBudget({ accountId: client.accountId, balanceUSD, openTradeRiskUSD, now });
+  if (!budget.passed) return denyRisk(budget.reason);
 
   const pipSize = getPipSize(pair);
   const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
@@ -179,9 +193,9 @@ export async function executeIctTrade(params = {}, {
     if (!slCheck.valid) return denyRisk(slCheck.reason);
   }
 
-  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
+  // Per-trade cap (1.4%) AND the remaining daily budget — whichever is smaller.
   const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
-  const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
+  const targetRiskUSD = +Math.min(balanceUSD * (effectiveRiskPercent / 100), budget.allowedNewTradeRisk).toFixed(2);
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
     stopLossPips: slPips, stopLossPrice: stopLoss,
@@ -228,21 +242,31 @@ export async function executeIctTrade(params = {}, {
     return denyRisk(riskCheck.reason);
   }
 
-  // ── 8c. Auto AI portfolio guards: total-open-risk + conservative correlation ─
+  // ── 8c. Projected daily risk must stay under the 2.8% cap (realized+open+new) ─
+  {
+    const realizedLoss = Math.abs(Math.min(budget.realizedPnL, 0));
+    const projectedDailyRisk = +(realizedLoss + budget.openTradeRisk + actualRiskUSD).toFixed(2);
+    if (projectedDailyRisk > budget.dailyLossLimit + 1e-9) {
+      return denyRisk(
+        `Projected daily risk $${projectedDailyRisk.toFixed(2)} would exceed the daily cap ` +
+        `$${budget.dailyLossLimit.toFixed(2)} — trade rejected.`,
+      );
+    }
+  }
+
+  // ── 8d. Auto quality gates: TP probability + conservative correlated exposure ─
   if (autoAi) {
-    let openTrades = [];
-    try {
-      const openFn = getOpen || (() => getOpenTrades({ client }));
-      openTrades = (await openFn()) || [];
-    } catch (err) {
-      rec(`open-risk check skipped — could not fetch open trades (${err.message})`);
-    }
-    const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
-    const newTradeRiskPercent = +((actualRiskUSD / balanceUSD) * 100).toFixed(4);
-    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
-    if (!totalCheck.allowed) {
-      return denyRisk(totalCheck.reason);
-    }
+    const tp = checkTpProbability({
+      stopLossPips: slPips, takeProfitPips: tpPips,
+      atrPips: analysis.atrPips ?? analysis.concepts?.atrPips ?? null, spreadPips: analysis.spreadPips ?? null,
+    });
+    rec(
+      `[TRADE QUALITY CHECK] engine=ICT pair=${pair} direction=${direction} confidence=${analysis.confidence} ` +
+      `setup=${analysis.setupType ?? 'n/a'} tpProbability=${tp.passed ? 'ok' : 'low'} passed=${tp.passed}` +
+      `${tp.passed ? '' : ` rejectionReason=${tp.reason}`}`,
+    );
+    if (!tp.passed) return denyRisk(tp.reason);
+
     const corr = checkConservativeCorrelatedExposure({
       conservativeMode: dailyLock.conservativeMode, pair, direction, openTrades,
     });

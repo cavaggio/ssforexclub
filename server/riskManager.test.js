@@ -23,16 +23,22 @@ const {
   validateStopLoss,
   resolveActiveConfidenceThreshold,
   checkConservativeCorrelatedExposure,
+  computeOpenRiskUSD,
+  evaluateNewTradeBudget,
+  getAccountRiskCycle,
+  checkTpProbability,
+  planDefensiveReduction,
   MARGIN_RESTRICTION_MESSAGE,
 } = await import('./riskManager.js');
 
 const NOW = new Date('2026-06-10T15:00:00Z');
 
-test('defaults are 1.4% per trade, 2.8% daily drawdown, 90 confidence', () => {
+test('defaults are 1.4% per trade, 2.8% daily drawdown, 95 confidence, 2% profit target', () => {
   const cfg = riskConfig();
   assert.equal(cfg.maxRiskPerTradePercent, 1.4);
   assert.equal(cfg.dailyMaxDrawdownPercent, 2.8);
-  assert.equal(cfg.autoExecutionMinConfidence, 90);
+  assert.equal(cfg.autoExecutionMinConfidence, 95);
+  assert.equal(cfg.dailyProfitTargetPercent, 2.0);
 });
 
 // ── 1. Risk per trade (1.4% hard cap) ───────────────────────────────────────
@@ -166,12 +172,12 @@ test('after 1.4% realized daily loss the auto threshold becomes 95%', () => {
   assert.equal(s.activeConfidenceThreshold, 95);
 });
 
-test('below the 1.4% trigger the threshold stays 90 (standard mode)', () => {
+test('below the 1.4% trigger conservative mode is off (threshold stays 95)', () => {
   resetDailyRisk();
   checkDailyRiskLock({ accountId: 'ACC-STD', balanceUSD: 10000, now: NOW });
   const s = checkDailyRiskLock({ accountId: 'ACC-STD', balanceUSD: 9900, now: NOW }); // -1.0%
   assert.equal(s.conservativeMode, false);
-  assert.equal(s.activeConfidenceThreshold, 90);
+  assert.equal(s.activeConfidenceThreshold, 95);
 });
 
 test('resolveActiveConfidenceThreshold reflects conservative mode per account', () => {
@@ -185,14 +191,14 @@ test('resolveActiveConfidenceThreshold reflects conservative mode per account', 
 
 // ── 3. Auto execution confidence floor (90 / dynamic 95) ─────────────────────
 
-test('confidence at 90 passes the auto-execution floor', () => {
-  assert.equal(checkAutoExecutionConfidence(90).passed, true);
+test('confidence at 95 passes the auto-execution floor', () => {
+  assert.equal(checkAutoExecutionConfidence(95).passed, true);
 });
 
-test('confidence below 90 fails the auto-execution floor', () => {
-  const r = checkAutoExecutionConfidence(89);
+test('confidence below 95 fails the auto-execution floor', () => {
+  const r = checkAutoExecutionConfidence(94);
   assert.equal(r.passed, false);
-  assert.match(r.reason, /floor 90%/);
+  assert.match(r.reason, /floor 95%/);
 });
 
 test('in conservative mode a 92% confidence trade is rejected (needs 95%)', () => {
@@ -230,6 +236,113 @@ test('insufficient margin is blocked with the exact message', () => {
 
 // ── 5. Dashboard status ──────────────────────────────────────────────────────
 
+// ── Account-as-one-risk-system: daily budget, open-risk projection ──────────
+
+test('open trade risk = units × stop distance (counts before realizing loss)', () => {
+  // 100k EUR_USD long, entry 1.10, stop 1.0972 → 28 pips → $280.
+  const trades = [{ instrument: 'EUR_USD', currentUnits: '100000', price: '1.10', stopLossOrder: { price: '1.0972' } }];
+  assert.equal(computeOpenRiskUSD(trades), 280);
+});
+
+test('new trade rejected when remaining daily loss budget is zero', () => {
+  resetDailyRisk();
+  // Starting 10k, down $280 (at the 2.8% limit) → remaining budget 0 → reject.
+  evaluateNewTradeBudget({ accountId: 'BUD0', balanceUSD: 10000, now: NOW });
+  // anchor baseline at 10k
+  checkDailyRiskLock({ accountId: 'BUD0', balanceUSD: 10000, now: NOW });
+  const r = evaluateNewTradeBudget({ accountId: 'BUD0', balanceUSD: 9720, openTradeRiskUSD: 0, now: NOW });
+  assert.equal(r.allowedNewTradeRisk, 0);
+  assert.equal(r.passed, false);
+  assert.equal(r.shouldLock, true);
+});
+
+test('new trade size is reduced when remaining budget is below the 1.4% cap', () => {
+  resetDailyRisk();
+  // Starting 10k → 1.4% cap = $140, daily limit $280. Down $200 → remaining $80.
+  checkDailyRiskLock({ accountId: 'BUD1', balanceUSD: 10000, now: NOW });
+  const r = evaluateNewTradeBudget({ accountId: 'BUD1', balanceUSD: 9800, openTradeRiskUSD: 0, now: NOW });
+  assert.equal(r.maxTradeRisk, 137.2);            // 1.4% of 9,800
+  assert.equal(r.remainingDailyLossBudget, 80);   // 280 - 200
+  assert.equal(r.allowedNewTradeRisk, 80);        // budget binds, below the 1.4% cap
+});
+
+test('open trade risk is included so projected risk cannot exceed 2.8%', () => {
+  resetDailyRisk();
+  // Starting 10k, flat realized, but $250 of open risk already → only $30 headroom.
+  checkDailyRiskLock({ accountId: 'BUD2', balanceUSD: 10000, now: NOW });
+  const r = evaluateNewTradeBudget({ accountId: 'BUD2', balanceUSD: 10000, openTradeRiskUSD: 250, now: NOW });
+  assert.equal(r.allowedNewTradeRisk, 30);        // 280 cap - 250 open
+  // A trade risking $40 would push projected risk over the cap → rejected.
+  const over = evaluateNewTradeBudget({ accountId: 'BUD2', balanceUSD: 10000, openTradeRiskUSD: 250, newTradeRiskUSD: 40, now: NOW });
+  assert.equal(over.passed, false);
+  assert.ok(over.projectedDailyRisk > over.dailyLossLimit);
+});
+
+test('multiple trades are allowed while budget remains — risk, not a count, is the limiter', () => {
+  resetDailyRisk();
+  checkDailyRiskLock({ accountId: 'MULTI', balanceUSD: 10000, now: NOW }); // limit $280
+  // Several small trades ($40 open risk each) keep passing — no trade-count cap.
+  const a = evaluateNewTradeBudget({ accountId: 'MULTI', balanceUSD: 10000, openTradeRiskUSD: 0, newTradeRiskUSD: 40, now: NOW });
+  const b = evaluateNewTradeBudget({ accountId: 'MULTI', balanceUSD: 10000, openTradeRiskUSD: 120, newTradeRiskUSD: 40, now: NOW });
+  const c = evaluateNewTradeBudget({ accountId: 'MULTI', balanceUSD: 10000, openTradeRiskUSD: 240, newTradeRiskUSD: 40, now: NOW });
+  assert.equal(a.passed, true);
+  assert.equal(b.passed, true);
+  // The 7th trade would push open+new to $280 = the cap → still allowed at the edge.
+  assert.equal(c.passed, true);
+  // But once open risk leaves < the new trade's room, risk (not count) stops it.
+  const d = evaluateNewTradeBudget({ accountId: 'MULTI', balanceUSD: 10000, openTradeRiskUSD: 260, newTradeRiskUSD: 40, now: NOW });
+  assert.equal(d.passed, false);
+  assert.ok(d.projectedDailyRisk > d.dailyLossLimit);
+});
+
+test('getAccountRiskCycle flags capital-protection mode at +2% realized', () => {
+  resetDailyRisk();
+  checkDailyRiskLock({ accountId: 'CYC', balanceUSD: 10000, now: NOW });
+  const c = getAccountRiskCycle({ accountId: 'CYC', balanceUSD: 10200, openTradeRiskUSD: 50, now: NOW });
+  assert.equal(c.dailyProfitTarget, 200);
+  assert.equal(c.profitTargetReached, true);
+  assert.equal(c.capitalProtectionMode, true);
+  assert.equal(c.openTradeRisk, 50);
+});
+
+// ── TP probability gate (rule 10) ───────────────────────────────────────────
+
+test('TP gate rejects a target needing an unrealistic multiple of ATR', () => {
+  const r = checkTpProbability({ stopLossPips: 20, takeProfitPips: 400, atrPips: 10 }); // 400 > 6×10
+  assert.equal(r.passed, false);
+  assert.match(r.reason, /unrealistic|ATR/i);
+});
+
+test('TP gate rejects when spread eats too much of the stop', () => {
+  const r = checkTpProbability({ stopLossPips: 10, takeProfitPips: 30, spreadPips: 5 }); // 5 > 0.33×10
+  assert.equal(r.passed, false);
+});
+
+test('TP gate passes a realistic target', () => {
+  const r = checkTpProbability({ stopLossPips: 20, takeProfitPips: 60, atrPips: 25, spreadPips: 1.5 });
+  assert.equal(r.passed, true);
+  assert.equal(r.rr, 3);
+});
+
+// ── Defensive reduction plan (rule 5) ───────────────────────────────────────
+
+test('planDefensiveReduction closes the worst trade first when the cap is threatened', () => {
+  const openTrades = [
+    { id: 'T1', instrument: 'EUR_USD', currentUnits: '100000', price: '1.10', stopLossOrder: { price: '1.0980' }, unrealizedPL: -30 }, // $200 risk
+    { id: 'T2', instrument: 'GBP_USD', currentUnits: '100000', price: '1.25', stopLossOrder: { price: '1.2480' }, unrealizedPL: -5 },  // $200 risk
+  ];
+  // realized loss $0, two trades = $400 open risk, cap $280 → reduction needed.
+  const plan = planDefensiveReduction({ openTrades, realizedPnL: 0, dailyLossLimit: 280 });
+  assert.equal(plan.reductionNeeded, true);
+  assert.equal(plan.toClose[0].tradeId, 'T1'); // worst unrealized PnL closed first
+});
+
+test('planDefensiveReduction is a no-op when projected risk is within the cap', () => {
+  const openTrades = [{ id: 'T1', instrument: 'EUR_USD', currentUnits: '50000', price: '1.10', stopLossOrder: { price: '1.0980' }, unrealizedPL: 5 }];
+  const plan = planDefensiveReduction({ openTrades, realizedPnL: 0, dailyLossLimit: 280 });
+  assert.equal(plan.reductionNeeded, false);
+});
+
 test('getRiskStatus surfaces the documented panel fields', () => {
   resetDailyRisk();
   const s = getRiskStatus({ accountId: 'ACC-S', balanceUSD: 10000, now: NOW });
@@ -239,11 +352,16 @@ test('getRiskStatus surfaces the documented panel fields', () => {
   assert.equal(s.riskAmountUSD, 140);
   assert.equal(s.dailyLossLimitPercent, 2.8);
   assert.equal(s.dailyLossLimitUSD, 280);
-  assert.equal(s.autoExecutionConfidenceThreshold, 90);
-  assert.equal(s.currentAutoConfidenceThreshold, 90);
+  assert.equal(s.autoExecutionConfidenceThreshold, 95);
+  assert.equal(s.currentAutoConfidenceThreshold, 95);
   assert.equal(s.conservativeMode, false);
+  assert.equal(s.capitalProtectionMode, false);
   assert.equal(s.tradingLocked, false);
   assert.equal(s.lastRejectedReason, null);
+  // Account-level fields present.
+  assert.equal(s.dailyProfitTargetUSD, 200); // 2% of 10k
+  assert.equal(s.openTradeRiskUSD, 0);
+  assert.equal(s.projectedDailyRiskUSD, 0);
 });
 
 test('getRiskStatus reflects conservative mode + the active 95% threshold', () => {
