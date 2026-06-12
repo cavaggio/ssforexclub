@@ -274,6 +274,75 @@ export function resetDailyRisk() {
   return { ok: true, cleared };
 }
 
+// ─── Durable persistence — survives server/Railway restarts ─────────────────
+// The in-memory `dailyState` Map is a per-process cache; the injected store is
+// the durable backing (Supabase). Without a store, behaviour is unchanged
+// (in-memory only). Injected at server startup via setRiskStore().
+let _store = null;
+
+/** Inject the durable store ({ load, upsert }) or null for in-memory only. */
+export function setRiskStore(store) { _store = store; }
+
+/**
+ * Seed this process's in-memory baseline for an account from durable storage
+ * when it doesn't already hold today's baseline (cache miss / fresh restart).
+ * This is what stops a mid-day restart from re-anchoring the day's starting
+ * balance to the current (lower) balance. Best-effort: on any store error it
+ * logs and lets the in-memory path create a fresh baseline.
+ *
+ * MUST be awaited before the first daily-state check of a request so the sync
+ * checks (checkDailyRiskLock / checkAutoExecutionConfidence) read the durable
+ * baseline rather than minting a new one.
+ */
+export async function hydrateDailyBaseline({ accountId, balanceUSD, now = new Date() } = {}) {
+  void balanceUSD; // current balance is intentionally NOT used to seed — never re-anchor.
+  if (!_store) return { hydrated: false, reason: 'no_store' };
+  const key = accountKey(accountId);
+  const dayKey = nyDateKey(now);
+  const cached = dailyState.get(key);
+  if (cached && cached.dayKey === dayKey && Number.isFinite(cached.startingBalance) && cached.startingBalance > 0) {
+    return { hydrated: false, reason: 'cache_fresh' };
+  }
+  try {
+    const row = await _store.load({ accountId, tradingDateKey: dayKey });
+    const startingBalance = Number(row?.startingBalance);
+    if (Number.isFinite(startingBalance) && startingBalance > 0) {
+      dailyState.set(key, { dayKey, startingBalance });
+      console.log(`[DAILY RISK LOCK] hydrated baseline ${key} (${dayKey}) startingBalance=${startingBalance.toFixed(2)}`);
+      return { hydrated: true, startingBalance };
+    }
+    return { hydrated: false, reason: 'no_row_today' };
+  } catch (err) {
+    console.warn(`[DAILY RISK LOCK] hydrate failed ${key}: ${err?.message || err} — using in-memory baseline.`);
+    return { hydrated: false, error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Persist the current daily risk snapshot (the object returned by
+ * checkDailyRiskLock) for an account. Best-effort: store errors are logged,
+ * never thrown — a DB hiccup must never block or unblock trading.
+ */
+export async function persistDailyState({ accountId, status, now = new Date() } = {}) {
+  if (!_store || !status) return { persisted: false };
+  try {
+    await _store.upsert({
+      accountId,
+      tradingDateKey: nyDateKey(now),
+      startingBalance: status.startingBalance,
+      realizedDailyPnL: status.realizedPnL,
+      dailyLossLimit: status.lossLimit,
+      conservativeMode: status.conservativeMode,
+      tradingLocked: status.tradingLocked,
+      lastUpdatedAt: now.toISOString(),
+    });
+    return { persisted: true };
+  } catch (err) {
+    console.warn(`[DAILY RISK LOCK] persist failed ${accountKey(accountId)}: ${err?.message || err}`);
+    return { persisted: false, error: String(err?.message || err) };
+  }
+}
+
 // ─── 3. Auto-execution confidence floor (progressive tightening) ────────────
 
 /**

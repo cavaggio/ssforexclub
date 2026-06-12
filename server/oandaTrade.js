@@ -41,6 +41,8 @@ import {
   checkConservativeCorrelatedExposure,
   logPreSubmit,
   recordRejection,
+  hydrateDailyBaseline,
+  persistDailyState,
 } from './riskManager.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -551,7 +553,11 @@ export async function executeTrade(signal, options = {}) {
   };
 
   // ── Daily drawdown circuit breaker (central, blocks NEW entries only) ──────
+  // Hydrate the durable baseline first so a mid-day restart never re-anchors the
+  // day's starting balance to the current (lower) balance.
+  await hydrateDailyBaseline({ accountId: client?.accountId, balanceUSD });
   const dailyLock = checkDailyRiskLock({ accountId: client?.accountId, balanceUSD });
+  await persistDailyState({ accountId: client?.accountId, status: dailyLock });
   if (dailyLock.tradingLocked) {
     return denyRisk(dailyLock.reason);
   }

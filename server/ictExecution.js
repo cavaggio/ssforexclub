@@ -36,6 +36,8 @@ import {
   checkConservativeCorrelatedExposure,
   logPreSubmit,
   recordRejection,
+  hydrateDailyBaseline,
+  persistDailyState,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
@@ -152,7 +154,11 @@ export async function executeIctTrade(params = {}, {
   };
 
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
+  // Hydrate the durable baseline first so a mid-day restart never re-anchors the
+  // day's starting balance to the current (lower) balance.
+  await hydrateDailyBaseline({ accountId: client.accountId, balanceUSD, now });
   const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
+  await persistDailyState({ accountId: client.accountId, status: dailyLock, now });
   if (dailyLock.tradingLocked) {
     return denyRisk(dailyLock.reason);
   }

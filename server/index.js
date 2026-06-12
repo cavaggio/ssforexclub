@@ -24,7 +24,12 @@ import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
-import { getRiskStatus } from './riskManager.js';
+import { getRiskStatus, hydrateDailyBaseline, setRiskStore } from './riskManager.js';
+import { createSupabaseRiskStore } from './riskStore.js';
+
+// Wire durable daily-risk persistence (Supabase service-role). Returns null and
+// stays in-memory-only when Supabase env vars are absent.
+setRiskStore(createSupabaseRiskStore());
 import {
   executeTrade,
   closePosition,
@@ -1837,6 +1842,9 @@ app.post('/api/internal/oanda/risk-status', async (req, res) => {
       () => getAccountSummary({ client }),
     );
     const balanceUSD = parseFloat(account?.balance ?? 0);
+    // Hydrate the durable baseline so the panel reflects the true start-of-day
+    // balance even right after a restart.
+    await hydrateDailyBaseline({ accountId: client.accountId, balanceUSD });
     const status = getRiskStatus({ accountId: client.accountId, balanceUSD });
     res.json({ ok: true, ...status });
   } catch (err) {
