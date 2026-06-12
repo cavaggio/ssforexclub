@@ -36,6 +36,11 @@ import {
   checkRiskPerTrade,
   checkDailyRiskLock,
   checkAutoExecutionConfidence,
+  clampUnitsToRiskBudget,
+  validateStopLoss,
+  checkConservativeCorrelatedExposure,
+  logPreSubmit,
+  recordRejection,
 } from './riskManager.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -401,11 +406,8 @@ export async function executeTrade(signal, options = {}) {
   if (confidence < MIN_CONFIDENCE) {
     return blocked(`Confidence ${confidence}% < minimum ${MIN_CONFIDENCE}%`);
   }
-  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
-  if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(confidence);
-    if (!confCheck.passed) return blocked(confCheck.reason);
-  }
+  // NOTE: the auto-execution confidence FLOOR (90, or 95 in conservative mode)
+  // is enforced after the account is fetched (it needs the daily P&L state).
 
   // ── Guard 3.5: Multi-timeframe trend alignment ────────────────────────────
   // Defensive check — scanner already validates these, but signals can arrive
@@ -542,10 +544,22 @@ export async function executeTrade(signal, options = {}) {
     return blocked('Account balance is 0. Fund account before live trading.');
   }
 
+  // Records the most recent risk rejection for the dashboard, then blocks.
+  const denyRisk = (reason) => {
+    recordRejection({ accountId: client?.accountId, reason, engine: 'V3/V3.5' });
+    return blocked(reason);
+  };
+
   // ── Daily drawdown circuit breaker (central, blocks NEW entries only) ──────
   const dailyLock = checkDailyRiskLock({ accountId: client?.accountId, balanceUSD });
   if (dailyLock.tradingLocked) {
-    return blocked(dailyLock.reason);
+    return denyRisk(dailyLock.reason);
+  }
+
+  // ── Auto-execution confidence floor (90 normally, 95 in conservative mode) ──
+  if (autoAi) {
+    const confCheck = checkAutoExecutionConfidence(confidence, { accountId: client?.accountId, balanceUSD });
+    if (!confCheck.passed) return denyRisk(confCheck.reason);
   }
 
   if (dailyStartBalance === null) dailyStartBalance = balanceUSD;
@@ -635,6 +649,12 @@ export async function executeTrade(signal, options = {}) {
     tpPriceFromLifecycle = lifecycle.tp.takeProfitPrice;
   }
 
+  // ── Stop-loss validation — never submit a trade without an enforceable stop ─
+  {
+    const slCheck = validateStopLoss({ entry, stopLoss: slPriceFromLifecycle, direction, stopLossPips: slPips });
+    if (!slCheck.valid) return denyRisk(slCheck.reason);
+  }
+
   const sizing = computeFixedDollarSizing({
     pair,
     direction,
@@ -648,20 +668,39 @@ export async function executeTrade(signal, options = {}) {
     accountBalanceUSD: balanceUSD,
   });
 
-  const units               = sizing.signedUnits;
-  const absUnits            = Math.abs(units);
+  let units                 = sizing.signedUnits;
+  let absUnits              = Math.abs(units);
   const slPrice             = sizing.stopLoss;
   const tpPrice             = sizing.takeProfit;
-  const estimatedMargin     = sizing.estimatedMarginRequired;
-  const notionalUSD         = sizing.notionalUSD;
+  let estimatedMargin       = sizing.estimatedMarginRequired;
+  let notionalUSD           = sizing.notionalUSD;
   const effectiveLeverage   = sizing.effectiveLeverage;
   const slDistancePips      = sizing.stopLossPips;
+  let actualRiskUSD         = sizing.actualRiskUSD;
 
   if (!absUnits || absUnits < 1) {
-    return blocked(
+    return denyRisk(
       `Sizing produced 0 units — pip value too small for $${dynamicRisk.riskUSD} risk at ${slDistancePips}p. ` +
       `pipValuePerLot=$${sizing.pipValuePerStandardLot}.`
     );
+  }
+
+  // ── Hard unit clamp to the per-trade risk budget (1.4%). Belt-and-braces over
+  //    the percent cap: dynamic sizing can NEVER place a position risking more
+  //    than the cap. Reduce units to fit; reject if it can't be sized safely.
+  {
+    const riskPerUnitUSD = absUnits > 0 ? actualRiskUSD / absUnits : 0;
+    const clamp = clampUnitsToRiskBudget({ balanceUSD, requestedUnits: absUnits, riskPerUnitUSD });
+    if (!clamp.ok) return denyRisk(clamp.reason);
+    if (clamp.reduced) {
+      const scale = clamp.units / absUnits;
+      notionalUSD     = +(notionalUSD * scale).toFixed(2);
+      estimatedMargin = +(estimatedMargin * scale).toFixed(2);
+      absUnits        = clamp.units;
+      units           = direction === 'short' ? -absUnits : absUnits;
+      actualRiskUSD   = clamp.riskUSD;
+      console.warn(`[RISK CLAMP] ${pair} ${direction} — units reduced to ${absUnits} to fit the per-trade risk budget (risk now $${actualRiskUSD.toFixed(2)}).`);
+    }
   }
 
   const minFreeMarginUSD    = balanceUSD * (MIN_FREE_MARGIN_PCT / 100);
@@ -669,7 +708,7 @@ export async function executeTrade(signal, options = {}) {
 
   console.log(
     `[RISK_SIZING] ${pair} ${direction} — mode=${RISK_MODE} target=$${sizing.targetRiskUSD} ` +
-    `actual=$${sizing.actualRiskUSD} reward=$${sizing.estimatedRewardUSD} (1:${sizing.riskReward}) ` +
+    `actual=$${actualRiskUSD} reward=$${sizing.estimatedRewardUSD} (1:${sizing.riskReward}) ` +
     `units=${absUnits} lots=${sizing.lotSize} SL=${slDistancePips}p TP=${sizing.takeProfitPips}p`
   );
   console.log(
@@ -688,19 +727,19 @@ export async function executeTrade(signal, options = {}) {
     const marginCheck = checkMargin({ marginAvailable, estimatedMargin });
     if (!marginCheck.allowed) {
       console.warn(`[MARGIN] ${pair} avail=$${marginAvailable.toFixed(2)} required=$${estimatedMargin.toFixed(2)}`);
-      return blocked(marginCheck.reason);
+      return denyRisk(marginCheck.reason);
     }
   }
 
   // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.4%) ──────
   {
     const riskCheck = checkRiskPerTrade({
-      balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slDistancePips, positionSize: absUnits,
+      balanceUSD, actualDollarRisk: actualRiskUSD, stopLossPips: slDistancePips, positionSize: absUnits,
     });
-    if (!riskCheck.passed) return blocked(riskCheck.reason);
+    if (!riskCheck.passed) return denyRisk(riskCheck.reason);
   }
 
-  // ── Auto AI portfolio guard: total-open-risk cap ──────────────────────────
+  // ── Auto AI portfolio guards: total-open-risk cap + conservative correlation ─
   if (autoAi) {
     let openTrades = [];
     try {
@@ -709,12 +748,17 @@ export async function executeTrade(signal, options = {}) {
       console.warn(`[AUTO_AI_OPEN_RISK] open-risk check skipped — ${err.message}`);
     }
     const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
-    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const newTradeRiskPercent = +((actualRiskUSD / balanceUSD) * 100).toFixed(4);
     const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
     if (!totalCheck.allowed) {
       console.warn(`[AUTO_AI_OPEN_RISK] ${pair} ${totalCheck.reason}`);
-      return blocked(totalCheck.reason);
+      return denyRisk(totalCheck.reason);
     }
+    // Conservative mode: refuse new trades that increase correlated exposure.
+    const corr = checkConservativeCorrelatedExposure({
+      conservativeMode: dailyLock.conservativeMode, pair, direction, openTrades,
+    });
+    if (!corr.allowed) return denyRisk(corr.reason);
   }
 
   if (projectedFreeMargin < minFreeMarginUSD) {
@@ -739,7 +783,7 @@ export async function executeTrade(signal, options = {}) {
     };
   }
 
-  const riskAmount = sizing.actualRiskUSD;
+  const riskAmount = actualRiskUSD;
   // Use the per-request client's accountId when present; fall back to env-default.
   const accountId  = client?.accountId || getAccountId();
 
@@ -754,7 +798,7 @@ export async function executeTrade(signal, options = {}) {
     volatilityState: signal.volatilityState,
     modifiers: dynamicRisk.factors.modifiers,
     targetRiskUSD: sizing.targetRiskUSD,
-    actualRiskUSD: sizing.actualRiskUSD,
+    actualRiskUSD,
     estimatedRewardUSD: sizing.estimatedRewardUSD,
     minimumRiskReward: sizing.minimumRiskReward,
     stopLossPips: sizing.stopLossPips,
@@ -795,6 +839,16 @@ export async function executeTrade(signal, options = {}) {
       takeProfitOnFill:   { price: tpPrice.toFixed(priceDecimals), timeInForce: 'GTC' },
     },
   };
+
+  logPreSubmit({
+    engine: 'V3/V3.5',
+    mode: `${autoAi ? 'auto' : 'manual'}${dailyLock.conservativeMode ? '+conservative' : ''}`,
+    balanceUSD,
+    stopLossPips: slDistancePips,
+    units,
+    actualDollarRisk: actualRiskUSD,
+    riskPercent: +((actualRiskUSD / balanceUSD) * 100).toFixed(3),
+  });
 
   console.log(`[ORDER_PAYLOAD] ${pair} ${direction} atomic IOC MARKET + SL/TP onFill`);
   console.log(`[ORDER_PAYLOAD]`, JSON.stringify(orderPayload));

@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 type RiskStatus = {
   accountBalance: number | null;
+  currentBalance: number | null;
   riskPerTradePercent: number;
   riskAmountUSD: number;
   dailyStartingBalance: number;
@@ -20,7 +21,10 @@ type RiskStatus = {
   dailyLossLimitUSD: number;
   remainingLossBudgetUSD: number;
   tradingLocked: boolean;
+  conservativeMode: boolean;
   autoExecutionConfidenceThreshold: number;
+  currentAutoConfidenceThreshold: number;
+  lastRejectedReason: string | null;
 };
 
 type State =
@@ -65,22 +69,26 @@ export function RiskManagementPanel() {
         return (
           <>
             <div style={grid}>
-              <KV label="Account Balance" value={usd(r.accountBalance)} />
-              <KV label="Risk Per Trade" value={`${r.riskPerTradePercent}%`} />
-              <KV label="Risk Amount" value={usd(r.riskAmountUSD)} />
               <KV label="Daily Starting Balance" value={usd(r.dailyStartingBalance)} />
+              <KV label="Current Balance" value={usd(r.currentBalance ?? r.accountBalance)} />
               <KV
-                label="Daily Realized P&L"
+                label="Realized Daily P&L"
                 value={usd(r.dailyRealizedPnL)}
                 color={r.dailyRealizedPnL < 0 ? 'var(--bad)' : r.dailyRealizedPnL > 0 ? 'var(--good)' : undefined}
               />
+              <KV label="Risk Per Trade" value={`${r.riskPerTradePercent}%`} />
+              <KV label="Risk Amount" value={usd(r.riskAmountUSD)} />
               <KV label={`Daily Loss Limit (${r.dailyLossLimitPercent}%)`} value={usd(r.dailyLossLimitUSD)} />
               <KV
-                label="Remaining Loss Budget"
+                label="Remaining Daily Loss Budget"
                 value={usd(r.remainingLossBudgetUSD)}
                 color={r.remainingLossBudgetUSD <= 0 ? 'var(--bad)' : 'var(--good)'}
               />
-              <KV label="Execution Threshold" value={`${r.autoExecutionConfidenceThreshold}%`} />
+              <KV
+                label="Auto Confidence Threshold"
+                value={`${r.currentAutoConfidenceThreshold}%`}
+                color={r.currentAutoConfidenceThreshold > r.autoExecutionConfidenceThreshold ? 'var(--warn)' : undefined}
+              />
             </div>
             <div style={{ marginTop: 12, fontSize: 13 }}>
               Trading Locked:{' '}
@@ -88,6 +96,17 @@ export function RiskManagementPanel() {
                 {r.tradingLocked ? 'Yes — new entries blocked (open trades still managed)' : 'No'}
               </strong>
             </div>
+            <div style={{ marginTop: 6, fontSize: 13 }}>
+              Conservative Mode:{' '}
+              <strong style={{ color: r.conservativeMode ? 'var(--warn)' : 'var(--good)' }}>
+                {r.conservativeMode ? 'Yes — only highest-quality setups (95% confidence)' : 'No'}
+              </strong>
+            </div>
+            {r.lastRejectedReason && (
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
+                Last rejected trade: <span style={{ color: 'var(--warn)' }}>{r.lastRejectedReason}</span>
+              </div>
+            )}
           </>
         );
       })()}

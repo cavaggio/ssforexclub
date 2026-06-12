@@ -36,6 +36,15 @@ export function riskConfig() {
     maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
     dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),
     autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || '90'),
+    // Progressive tightening: once realized daily loss reaches this % of the
+    // day's starting balance, the account enters conservative mode and the
+    // auto-execution confidence floor rises to conservativeMinConfidence.
+    conservativeTriggerPercent: parseFloat(process.env.RISK_CONSERVATIVE_TRIGGER_PERCENT || '1.4'),
+    conservativeMinConfidence: parseFloat(process.env.RISK_CONSERVATIVE_MIN_CONFIDENCE || '95'),
+    // Optional absolute stop-loss-distance ceiling (pips). 0 = disabled; the
+    // binding "too wide" guard is always the per-trade risk budget (a stop so
+    // wide it can't size ≥1 unit at the cap is rejected).
+    maxStopLossPips: parseFloat(process.env.RISK_MAX_STOP_LOSS_PIPS || '0'),
   };
 }
 
@@ -87,6 +96,77 @@ export function checkRiskPerTrade({ balanceUSD, actualDollarRisk, stopLossPips =
   };
 }
 
+/**
+ * Reduce a proposed position to fit within the per-trade risk budget, or reject.
+ *
+ *   riskBudgetUSD = balance × maxRiskPerTradePercent
+ *   maxUnits      = floor(riskBudgetUSD / riskPerUnitUSD)
+ *
+ * `riskPerUnitUSD` = stop-loss distance (pips) × USD-per-pip-per-unit — i.e. the
+ * dollar loss of ONE unit if the stop is hit. Returns the largest unit count
+ * that risks ≤ the cap. Rejects (ok:false) when the stop can't be priced or even
+ * a single unit would exceed the cap — never loosens the rule to fill the trade.
+ */
+export function clampUnitsToRiskBudget({ balanceUSD, requestedUnits, riskPerUnitUSD }, cfg = riskConfig()) {
+  const balance = Number(balanceUSD);
+  const reqUnits = Math.abs(Number(requestedUnits));
+  const perUnit = Number(riskPerUnitUSD);
+  const riskBudgetUSD = computeRiskBudgetUSD(balance, cfg);
+
+  if (!Number.isFinite(balance) || balance <= 0) {
+    return { ok: false, reason: 'Cannot size trade — account balance is unavailable.' };
+  }
+  if (!Number.isFinite(perUnit) || perUnit <= 0) {
+    return { ok: false, reason: 'Cannot price stop-loss risk per unit — trade rejected.' };
+  }
+  if (!Number.isFinite(reqUnits) || reqUnits < 1) {
+    return { ok: false, reason: 'Requested position is below the minimum tradable size.' };
+  }
+
+  const maxUnits = Math.floor(riskBudgetUSD / perUnit);
+  if (maxUnits < 1) {
+    return {
+      ok: false,
+      maxUnits,
+      riskBudgetUSD,
+      reason: `Stop-loss too wide to size within ${cfg.maxRiskPerTradePercent}% risk ` +
+        `($${riskBudgetUSD.toFixed(2)}) — one unit risks $${perUnit.toFixed(2)}. Trade rejected.`,
+    };
+  }
+
+  const units = Math.min(reqUnits, maxUnits);
+  const reduced = units < reqUnits;
+  const riskUSD = +(units * perUnit).toFixed(2);
+  return { ok: true, units, reduced, maxUnits, riskUSD, riskBudgetUSD, requestedUnits: reqUnits };
+}
+
+/**
+ * Pre-execution stop-loss validation. A trade with a missing, invalid (wrong
+ * side of entry), zero/negative, too-wide, or unpriceable stop is rejected —
+ * a trade must never be submitted without an enforceable ≤cap loss boundary.
+ */
+export function validateStopLoss({ entry, stopLoss, direction, stopLossPips, riskPerUnitUSD = null }, cfg = riskConfig()) {
+  const e = Number(entry);
+  const sl = Number(stopLoss);
+  const pips = Number(stopLossPips);
+  if (!Number.isFinite(sl)) return { valid: false, reason: 'Stop loss is missing or not a number — trade rejected.' };
+  if (!Number.isFinite(e)) return { valid: false, reason: 'Entry price is missing or not a number — trade rejected.' };
+  const dir = String(direction || '').toLowerCase();
+  const isLong = dir === 'long' || dir === 'buy';
+  const isShort = dir === 'short' || dir === 'sell';
+  if (!isLong && !isShort) return { valid: false, reason: `Invalid direction "${direction}" — trade rejected.` };
+  if (isLong && !(sl < e)) return { valid: false, reason: 'Invalid stop loss for long (must be below entry) — trade rejected.' };
+  if (isShort && !(sl > e)) return { valid: false, reason: 'Invalid stop loss for short (must be above entry) — trade rejected.' };
+  if (!Number.isFinite(pips) || pips <= 0) return { valid: false, reason: 'Stop-loss distance is zero/invalid — trade rejected.' };
+  if (cfg.maxStopLossPips > 0 && pips > cfg.maxStopLossPips) {
+    return { valid: false, reason: `Stop loss too wide (${pips}p > ${cfg.maxStopLossPips}p cap) — trade rejected.` };
+  }
+  if (riskPerUnitUSD != null && (!Number.isFinite(Number(riskPerUnitUSD)) || Number(riskPerUnitUSD) <= 0)) {
+    return { valid: false, reason: 'Cannot price stop-loss risk — trade rejected.' };
+  }
+  return { valid: true };
+}
+
 // ─── 2. Daily max-drawdown circuit breaker ──────────────────────────────────
 
 // accountId → { dayKey: 'YYYY-MM-DD' (NY), startingBalance: number }
@@ -133,16 +213,25 @@ export function checkDailyRiskLock({ accountId, balanceUSD, now = new Date() }, 
   const state = ensureDailyBaseline({ accountId, balanceUSD, now });
   const startingBalance = Number(state.startingBalance) || 0;
   const balance = Number.isFinite(Number(balanceUSD)) ? Number(balanceUSD) : startingBalance;
+  // Loss limit and conservative trigger are anchored to the day's STARTING
+  // balance — fixed for the whole day. They never move with the current balance.
   const lossLimit = +(startingBalance * (cfg.dailyMaxDrawdownPercent / 100)).toFixed(2);
+  const conservativeTrigger = +(startingBalance * (cfg.conservativeTriggerPercent / 100)).toFixed(2);
   // balance reflects realized P&L; positive = profit, negative = loss for the day.
   const realizedPnL = +(balance - startingBalance).toFixed(2);
   const tradingLocked = lossLimit > 0 && realizedPnL <= -lossLimit;
+  // Progressive tightening: conservative mode kicks in once realized loss reaches
+  // the trigger (default 1.4%) — the auto-execution confidence floor rises to 95.
+  const conservativeMode = conservativeTrigger > 0 && realizedPnL <= -conservativeTrigger;
+  const activeConfidenceThreshold = conservativeMode ? cfg.conservativeMinConfidence : cfg.autoExecutionMinConfidence;
   const remainingLossBudget = +Math.max(0, lossLimit + realizedPnL).toFixed(2);
   console.log(
     `[DAILY RISK LOCK]\n` +
     `startingBalance=${startingBalance.toFixed(2)}\n` +
     `realizedPnL=${realizedPnL.toFixed(2)}\n` +
     `lossLimit=${lossLimit.toFixed(2)}\n` +
+    `conservativeMode=${conservativeMode}\n` +
+    `activeConfidenceThreshold=${activeConfidenceThreshold}\n` +
     `tradingLocked=${tradingLocked}`
   );
   return {
@@ -150,6 +239,9 @@ export function checkDailyRiskLock({ accountId, balanceUSD, now = new Date() }, 
     startingBalance,
     realizedPnL,
     lossLimit,
+    conservativeTrigger,
+    conservativeMode,
+    activeConfidenceThreshold,
     remainingLossBudget,
     dailyMaxDrawdownPercent: cfg.dailyMaxDrawdownPercent,
     reason: tradingLocked
@@ -160,6 +252,20 @@ export function checkDailyRiskLock({ accountId, balanceUSD, now = new Date() }, 
   };
 }
 
+// ─── Last-rejection store (per account) — surfaced on the dashboard ──────────
+const lastRejection = new Map();
+
+/** Record the most recent risk rejection for an account (for the dashboard). */
+export function recordRejection({ accountId, reason, engine = null, now = new Date() } = {}) {
+  if (!reason) return;
+  lastRejection.set(accountKey(accountId), { reason, engine, at: now.toISOString() });
+}
+
+/** Read the most recent risk rejection for an account, or null. */
+export function getLastRejection(accountId) {
+  return lastRejection.get(accountKey(accountId)) || null;
+}
+
 /** Manual/admin reset of all daily baselines (e.g. broker daily reset hook). */
 export function resetDailyRisk() {
   const cleared = dailyState.size;
@@ -168,21 +274,115 @@ export function resetDailyRisk() {
   return { ok: true, cleared };
 }
 
-// ─── 3. Auto-execution confidence floor ─────────────────────────────────────
+// ─── 3. Auto-execution confidence floor (progressive tightening) ────────────
 
-/** Auto execution requires confidence ≥ floor. Logs [AUTO EXECUTION FILTER]. */
-export function checkAutoExecutionConfidence(confidence, cfg = riskConfig()) {
-  const required = cfg.autoExecutionMinConfidence;
+/**
+ * The active confidence floor for an account: the base floor (90), or the
+ * conservative floor (95) once the account is in conservative mode. Reads the
+ * per-account daily state without logging. Falls back to the base floor when no
+ * account context is supplied.
+ */
+export function resolveActiveConfidenceThreshold({ accountId = null, balanceUSD = null, now = new Date() } = {}, cfg = riskConfig()) {
+  if (accountId == null && balanceUSD == null) {
+    return { threshold: cfg.autoExecutionMinConfidence, conservativeMode: false };
+  }
+  const state = ensureDailyBaseline({ accountId, balanceUSD, now });
+  const startingBalance = Number(state.startingBalance) || 0;
+  const balance = Number.isFinite(Number(balanceUSD)) ? Number(balanceUSD) : startingBalance;
+  const realizedPnL = +(balance - startingBalance).toFixed(2);
+  const conservativeTrigger = +(startingBalance * (cfg.conservativeTriggerPercent / 100)).toFixed(2);
+  const conservativeMode = conservativeTrigger > 0 && realizedPnL <= -conservativeTrigger;
+  return {
+    threshold: conservativeMode ? cfg.conservativeMinConfidence : cfg.autoExecutionMinConfidence,
+    conservativeMode,
+  };
+}
+
+/**
+ * Auto execution requires confidence ≥ the ACTIVE floor (90 normally, 95 in
+ * conservative mode). Pass { accountId, balanceUSD } to apply progressive
+ * tightening; without it the base floor is used. Logs [AUTO EXECUTION FILTER].
+ */
+export function checkAutoExecutionConfidence(confidence, ctx = {}, cfg = riskConfig()) {
+  const { threshold: required, conservativeMode } = resolveActiveConfidenceThreshold(ctx, cfg);
   const conf = Number(confidence);
   const passed = Number.isFinite(conf) && conf >= required;
   console.log(
     `[AUTO EXECUTION FILTER]\n` +
     `confidence=${Number.isFinite(conf) ? conf : 'n/a'}\n` +
     `required=${required}\n` +
+    `conservativeMode=${conservativeMode}\n` +
     `passed=${passed}`
   );
-  if (passed) return { passed: true, required };
-  return { passed: false, required, reason: `Confidence ${Number.isFinite(conf) ? conf : '?'}% < auto-execution floor ${required}%.` };
+  if (passed) return { passed: true, required, conservativeMode };
+  return {
+    passed: false,
+    required,
+    conservativeMode,
+    reason: `Confidence ${Number.isFinite(conf) ? conf : '?'}% < ` +
+      `${conservativeMode ? 'conservative-mode ' : ''}auto-execution floor ${required}%.`,
+  };
+}
+
+// ─── Conservative-mode correlated-exposure guard ────────────────────────────
+
+function pairLegs(pair) {
+  const norm = String(pair || '').replace('/', '_').toUpperCase().split('_');
+  return norm.length === 2 ? { base: norm[0], quote: norm[1] } : null;
+}
+function directionSign(d) {
+  const s = String(d || '').toLowerCase();
+  if (s === 'long' || s === 'buy') return 1;
+  if (s === 'short' || s === 'sell') return -1;
+  return 0;
+}
+
+/**
+ * In conservative mode, refuse a NEW trade that increases existing directional
+ * exposure — i.e. an open position that shares a currency leg pulling the same
+ * way (e.g. long EUR_USD while already long EUR_GBP both add EUR-long risk).
+ * Outside conservative mode this is a no-op (returns allowed).
+ */
+export function checkConservativeCorrelatedExposure({ conservativeMode, pair, direction, openTrades = [] } = {}) {
+  if (!conservativeMode) return { allowed: true };
+  const legs = pairLegs(pair);
+  const sign = directionSign(direction);
+  if (!legs || sign === 0) return { allowed: true };
+  // New trade's per-currency exposure: +base, -quote (scaled by direction).
+  const want = { [legs.base]: sign, [legs.quote]: -sign };
+  for (const t of Array.isArray(openTrades) ? openTrades : []) {
+    const ol = pairLegs(t?.instrument ?? t?.pair);
+    const os = directionSign(t?.direction ?? (Number(t?.currentUnits) > 0 ? 'long' : Number(t?.currentUnits) < 0 ? 'short' : null));
+    if (!ol || os === 0) continue;
+    const open = { [ol.base]: os, [ol.quote]: -os };
+    for (const ccy of Object.keys(want)) {
+      if (open[ccy] && Math.sign(open[ccy]) === Math.sign(want[ccy])) {
+        return {
+          allowed: false,
+          reason: `Conservative mode: new ${direction} ${pair} reinforces existing ${ccy} exposure ` +
+            `(open ${ol.base}_${ol.quote}) — refusing to increase correlated directional risk.`,
+        };
+      }
+    }
+  }
+  return { allowed: true };
+}
+
+/**
+ * Structured pre-submit risk log — emitted by every engine immediately before
+ * the order is sent so the exact sizing inputs are auditable.
+ */
+export function logPreSubmit({ engine, mode, balanceUSD, stopLossPips, units, actualDollarRisk, riskPercent = null }) {
+  console.log(
+    `[PRE-SUBMIT RISK]\n` +
+    `engine=${engine}\n` +
+    `mode=${mode}\n` +
+    `balance=${Number.isFinite(Number(balanceUSD)) ? Number(balanceUSD).toFixed(2) : 'n/a'}\n` +
+    `stopLossPips=${stopLossPips ?? 'n/a'}\n` +
+    `units=${units ?? 'n/a'}\n` +
+    `actualDollarRisk=${Number.isFinite(Number(actualDollarRisk)) ? Number(actualDollarRisk).toFixed(2) : 'n/a'}\n` +
+    `riskPercent=${riskPercent != null ? `${riskPercent}%` : 'n/a'}`
+  );
 }
 
 // ─── 4. Margin availability ─────────────────────────────────────────────────
@@ -211,8 +411,10 @@ export function getRiskStatus({ accountId, balanceUSD, now = new Date() } = {}) 
   const cfg = riskConfig();
   const lock = checkDailyRiskLock({ accountId, balanceUSD, now }, cfg);
   const balance = Number(balanceUSD);
+  const last = getLastRejection(accountId);
   return {
     accountBalance: Number.isFinite(balance) ? +balance.toFixed(2) : null,
+    currentBalance: Number.isFinite(balance) ? +balance.toFixed(2) : null,
     riskPerTradePercent: cfg.maxRiskPerTradePercent,
     riskAmountUSD: computeRiskBudgetUSD(balance, cfg),
     dailyStartingBalance: lock.startingBalance,
@@ -221,6 +423,10 @@ export function getRiskStatus({ accountId, balanceUSD, now = new Date() } = {}) 
     dailyLossLimitUSD: lock.lossLimit,
     remainingLossBudgetUSD: lock.remainingLossBudget,
     tradingLocked: lock.tradingLocked,
+    conservativeMode: lock.conservativeMode,
     autoExecutionConfidenceThreshold: cfg.autoExecutionMinConfidence,
+    currentAutoConfidenceThreshold: lock.activeConfidenceThreshold,
+    lastRejectedReason: last?.reason ?? null,
+    lastRejectedAt: last?.at ?? null,
   };
 }

@@ -31,6 +31,11 @@ import {
   checkRiskPerTrade,
   checkDailyRiskLock,
   checkAutoExecutionConfidence,
+  clampUnitsToRiskBudget,
+  validateStopLoss,
+  checkConservativeCorrelatedExposure,
+  logPreSubmit,
+  recordRejection,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
@@ -107,11 +112,8 @@ export async function executeIctTrade(params = {}, {
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
   }
-  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
-  if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(analysis.confidence);
-    if (!confCheck.passed) return blocked(confCheck.reason);
-  }
+  // NOTE: the auto-execution confidence FLOOR (90, or 95 in conservative mode)
+  // is enforced after the account is fetched (it needs the daily P&L state).
 
   // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
   const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
@@ -142,16 +144,35 @@ export async function executeIctTrade(params = {}, {
   const balanceUSD = parseFloat(account?.balance ?? 0);
   if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');
 
+  // Records the most recent risk rejection for the dashboard, then blocks.
+  const denyRisk = (reason) => {
+    recordRejection({ accountId: client.accountId, reason, engine: 'ICT' });
+    rec(`blocked: ${reason}`);
+    return blocked(reason);
+  };
+
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
   const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
   if (dailyLock.tradingLocked) {
-    rec(`blocked: ${dailyLock.reason}`);
-    return blocked(dailyLock.reason);
+    return denyRisk(dailyLock.reason);
+  }
+
+  // ── 8a-ii. Auto-execution confidence floor (90, or 95 in conservative mode) ─
+  if (autoAi) {
+    const confCheck = checkAutoExecutionConfidence(analysis.confidence, { accountId: client.accountId, balanceUSD, now });
+    if (!confCheck.passed) return denyRisk(confCheck.reason);
   }
 
   const pipSize = getPipSize(pair);
   const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
   const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
+
+  // ── Stop-loss validation — never submit a trade without an enforceable stop ─
+  {
+    const slCheck = validateStopLoss({ entry, stopLoss, direction, stopLossPips: slPips });
+    if (!slCheck.valid) return denyRisk(slCheck.reason);
+  }
+
   // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
   const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
   const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
@@ -162,29 +183,46 @@ export async function executeIctTrade(params = {}, {
     accountMarginRate: parseFloat(account?.marginRate ?? 0),
     accountBalanceUSD: balanceUSD,
   });
-  const units = sizing.signedUnits;
-  if (!units || Math.abs(units) < 1) {
-    return blocked(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
+  let units = sizing.signedUnits;
+  let absUnits = Math.abs(units);
+  let estimatedMargin = sizing.estimatedMarginRequired;
+  let actualRiskUSD = sizing.actualRiskUSD;
+  if (!absUnits || absUnits < 1) {
+    return denyRisk(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
+  }
+
+  // ── Hard unit clamp to the per-trade risk budget — reduce, or reject if it
+  //    can't be sized safely. Bulletproofs the cap regardless of sizing inputs.
+  {
+    const riskPerUnitUSD = absUnits > 0 ? actualRiskUSD / absUnits : 0;
+    const clamp = clampUnitsToRiskBudget({ balanceUSD, requestedUnits: absUnits, riskPerUnitUSD });
+    if (!clamp.ok) return denyRisk(clamp.reason);
+    if (clamp.reduced) {
+      const scale = clamp.units / absUnits;
+      estimatedMargin = +(estimatedMargin * scale).toFixed(2);
+      absUnits = clamp.units;
+      units = direction === 'short' ? -absUnits : absUnits;
+      actualRiskUSD = clamp.riskUSD;
+      rec(`risk clamp — units reduced to ${absUnits} (risk now $${actualRiskUSD.toFixed(2)})`);
+    }
   }
 
   // ── 8b. Margin guard — never place a trade we cannot afford the margin for ──
   const marginAvailable = parseFloat(account?.marginAvailable ?? 0);
-  const marginCheck = checkMargin({ marginAvailable, estimatedMargin: sizing.estimatedMarginRequired });
+  const marginCheck = checkMargin({ marginAvailable, estimatedMargin });
   if (!marginCheck.allowed) {
-    rec(`blocked: margin avail=$${marginAvailable} required=$${sizing.estimatedMarginRequired}`);
-    return blocked(marginCheck.reason);
+    return denyRisk(marginCheck.reason);
   }
 
   // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.4%) ───────
   const riskCheck = checkRiskPerTrade({
-    balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slPips, positionSize: Math.abs(units),
+    balanceUSD, actualDollarRisk: actualRiskUSD, stopLossPips: slPips, positionSize: absUnits,
   });
   if (!riskCheck.passed) {
-    rec(`blocked: ${riskCheck.reason}`);
-    return blocked(riskCheck.reason);
+    return denyRisk(riskCheck.reason);
   }
 
-  // ── 8c. Auto AI total-open-risk cap (AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT) ──
+  // ── 8c. Auto AI portfolio guards: total-open-risk + conservative correlation ─
   if (autoAi) {
     let openTrades = [];
     try {
@@ -194,12 +232,15 @@ export async function executeIctTrade(params = {}, {
       rec(`open-risk check skipped — could not fetch open trades (${err.message})`);
     }
     const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
-    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const newTradeRiskPercent = +((actualRiskUSD / balanceUSD) * 100).toFixed(4);
     const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
     if (!totalCheck.allowed) {
-      rec(`blocked: ${totalCheck.reason}`);
-      return blocked(totalCheck.reason);
+      return denyRisk(totalCheck.reason);
     }
+    const corr = checkConservativeCorrelatedExposure({
+      conservativeMode: dailyLock.conservativeMode, pair, direction, openTrades,
+    });
+    if (!corr.allowed) return denyRisk(corr.reason);
   }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
@@ -213,7 +254,16 @@ export async function executeIctTrade(params = {}, {
       takeProfitOnFill: { price: targetProfit.toFixed(dp), timeInForce: 'GTC' },
     },
   };
-  rec(`submitted ${pair} ${direction} units=${units} risk=$${targetRiskUSD} (recomputed conf=${analysis.confidence} rr=${analysis.rr})`);
+  logPreSubmit({
+    engine: 'ICT',
+    mode: `${autoAi ? 'auto' : 'manual'}${dailyLock.conservativeMode ? '+conservative' : ''}`,
+    balanceUSD,
+    stopLossPips: slPips,
+    units,
+    actualDollarRisk: actualRiskUSD,
+    riskPercent: +((actualRiskUSD / balanceUSD) * 100).toFixed(3),
+  });
+  rec(`submitted ${pair} ${direction} units=${units} risk=$${actualRiskUSD.toFixed(2)} (recomputed conf=${analysis.confidence} rr=${analysis.rr})`);
 
   let resp;
   try {
@@ -245,7 +295,7 @@ export async function executeIctTrade(params = {}, {
     success: true, blocked: false, executionState: 'FILLED',
     tradeId, fillPrice, units, pair, direction,
     stopLoss, takeProfit: targetProfit,
-    riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
+    riskUSD: actualRiskUSD, signalId: analysis.signalId,
     holdMinutes,
     executionLog: log,
   };
