@@ -561,6 +561,44 @@ export function planDefensiveReduction({ openTrades = [], realizedPnL = 0, daily
   };
 }
 
+/**
+ * Execute (or recommend) the defensive reduction. Closes the worst-performing
+ * open trades FIRST, one at a time, only until projected risk fits under the cap
+ * — via the injected `closeFn(trade)` (the caller supplies the broker close).
+ * When `autoDefensiveClose` is false the plan is recorded/logged but no close
+ * fires. Records the action for the dashboard. Returns { plan, closed }.
+ */
+export async function executeDefensiveReduction({
+  accountId, openTrades = [], realizedPnL = 0, dailyLossLimit = 0,
+  autoDefensiveClose = false, closeFn = null, now = new Date(),
+} = {}) {
+  const plan = planDefensiveReduction({ openTrades, realizedPnL, dailyLossLimit });
+  if (!plan.reductionNeeded) {
+    recordAccountRiskAction({ accountId, action: 'none — projected risk within daily cap', now });
+    return { plan, closed: [] };
+  }
+  const targets = plan.toClose.map((t) => t.instrument).join(', ');
+  const action = `Projected daily risk exceeds cap $${plan.dailyLossLimit.toFixed(2)} — ` +
+    `${autoDefensiveClose ? 'closing' : 'recommend closing'} ${plan.toClose.length} trade(s) worst-first: ${targets}`;
+  recordAccountRiskAction({ accountId, action, now });
+  console.log(`[ACCOUNT RISK ACTION] autoDefensiveClose=${autoDefensiveClose} ${action}`);
+
+  const closed = [];
+  if (autoDefensiveClose && typeof closeFn === 'function') {
+    // plan.toClose is already ordered worst-unrealized-first and trimmed to the
+    // minimum set needed to bring projected risk under the cap.
+    for (const t of plan.toClose) {
+      try {
+        const r = await closeFn(t);
+        closed.push({ tradeId: t.tradeId, instrument: t.instrument, ok: !!(r && r.ok) });
+      } catch (err) {
+        closed.push({ tradeId: t.tradeId, instrument: t.instrument, ok: false, error: err?.message || String(err) });
+      }
+    }
+  }
+  return { plan, closed };
+}
+
 // ─── 3. Auto-execution confidence floor (progressive tightening) ────────────
 
 /**

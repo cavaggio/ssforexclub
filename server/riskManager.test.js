@@ -28,6 +28,7 @@ const {
   getAccountRiskCycle,
   checkTpProbability,
   planDefensiveReduction,
+  executeDefensiveReduction,
   MARGIN_RESTRICTION_MESSAGE,
 } = await import('./riskManager.js');
 
@@ -341,6 +342,57 @@ test('planDefensiveReduction is a no-op when projected risk is within the cap', 
   const openTrades = [{ id: 'T1', instrument: 'EUR_USD', currentUnits: '50000', price: '1.10', stopLossOrder: { price: '1.0980' }, unrealizedPL: 5 }];
   const plan = planDefensiveReduction({ openTrades, realizedPnL: 0, dailyLossLimit: 280 });
   assert.equal(plan.reductionNeeded, false);
+});
+
+test('executeDefensiveReduction closes the WORST trade first and stops once risk fits', async () => {
+  // Three trades, $120 open risk each (100k × 12 pips) = $360 total > $280 cap.
+  // Worst unrealized P&L is B; closing B alone ($360→$240) fits under the cap.
+  const openTrades = [
+    { id: 'A', instrument: 'EUR_USD', currentUnits: '100000', price: '1.10', stopLossOrder: { price: '1.0988' }, unrealizedPL: -5 },
+    { id: 'B', instrument: 'GBP_USD', currentUnits: '100000', price: '1.25', stopLossOrder: { price: '1.2488' }, unrealizedPL: -50 },
+    { id: 'C', instrument: 'AUD_USD', currentUnits: '100000', price: '0.66', stopLossOrder: { price: '0.6588' }, unrealizedPL: -20 },
+  ];
+  const closeOrder = [];
+  const closeFn = async (t) => { closeOrder.push(t.tradeId); return { ok: true }; };
+  const r = await executeDefensiveReduction({
+    accountId: 'DEF', openTrades, realizedPnL: 0, dailyLossLimit: 280,
+    autoDefensiveClose: true, closeFn,
+  });
+  assert.deepEqual(closeOrder, ['B']);          // worst-first, and only as many as needed
+  assert.equal(r.closed.length, 1);
+  assert.equal(r.closed[0].tradeId, 'B');
+  assert.equal(r.closed[0].ok, true);
+});
+
+test('executeDefensiveReduction with the flag OFF recommends but does NOT close', async () => {
+  const openTrades = [
+    { id: 'A', instrument: 'EUR_USD', currentUnits: '100000', price: '1.10', stopLossOrder: { price: '1.0988' }, unrealizedPL: -5 },
+    { id: 'B', instrument: 'GBP_USD', currentUnits: '100000', price: '1.25', stopLossOrder: { price: '1.2488' }, unrealizedPL: -50 },
+    { id: 'C', instrument: 'AUD_USD', currentUnits: '100000', price: '0.66', stopLossOrder: { price: '0.6588' }, unrealizedPL: -20 },
+  ];
+  let calls = 0;
+  const r = await executeDefensiveReduction({
+    accountId: 'DEF2', openTrades, realizedPnL: 0, dailyLossLimit: 280,
+    autoDefensiveClose: false, closeFn: async () => { calls += 1; return { ok: true }; },
+  });
+  assert.equal(calls, 0);                        // no broker close when flag is off
+  assert.equal(r.plan.reductionNeeded, true);    // but the reduction is still planned
+  assert.equal(r.closed.length, 0);
+});
+
+test('executeDefensiveReduction closes multiple worst-first when one is not enough', async () => {
+  // Two trades $200 each = $400 > $280; closing one ($200) still leaves $200 ≤ 280,
+  // so exactly one closes — confirm it picks the worst. Then a heavier case:
+  const openTrades = [
+    { id: 'X', instrument: 'EUR_USD', currentUnits: '100000', price: '1.10', stopLossOrder: { price: '1.0970' }, unrealizedPL: -10 }, // 30p → $300 risk
+    { id: 'Y', instrument: 'GBP_USD', currentUnits: '100000', price: '1.25', stopLossOrder: { price: '1.2220' }, unrealizedPL: -80 }, // 280p → $2800 risk (worst)
+  ];
+  const order = [];
+  await executeDefensiveReduction({
+    accountId: 'DEF3', openTrades, realizedPnL: 0, dailyLossLimit: 280,
+    autoDefensiveClose: true, closeFn: async (t) => { order.push(t.tradeId); return { ok: true }; },
+  });
+  assert.equal(order[0], 'Y'); // worst (most-negative unrealized) closed first
 });
 
 test('getRiskStatus surfaces the documented panel fields', () => {

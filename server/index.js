@@ -26,8 +26,8 @@ import { runAutoForUser } from './autoAiRouter.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
 import {
   getRiskStatus, hydrateDailyBaseline, persistDailyState, setRiskStore,
-  getAccountRiskCycle, planDefensiveReduction, computeOpenRiskUSD,
-  recordAccountRiskAction, riskConfig,
+  getAccountRiskCycle, executeDefensiveReduction, computeOpenRiskUSD,
+  riskConfig,
 } from './riskManager.js';
 import { createSupabaseRiskStore } from './riskStore.js';
 
@@ -1889,29 +1889,16 @@ app.post('/api/internal/oanda/risk-cycle', async (req, res) => {
         await persistDailyState({ accountId: client.accountId, status: cycle });
 
         const cfg = riskConfig();
-        const plan = planDefensiveReduction({
-          openTrades, realizedPnL: cycle.realizedPnL, dailyLossLimit: cycle.lossLimit,
+        // Close worst-performing trades FIRST, only as many as needed, via the
+        // shared executor. Closing fires only when RISK_AUTO_DEFENSIVE_CLOSE=true.
+        const { plan, closed } = await executeDefensiveReduction({
+          accountId: client.accountId,
+          openTrades,
+          realizedPnL: cycle.realizedPnL,
+          dailyLossLimit: cycle.lossLimit,
+          autoDefensiveClose: cfg.autoDefensiveClose,
+          closeFn: (t) => closeBrokerTrade({ tradeId: t.tradeId, instrument: t.instrument, client }),
         });
-        const closed = [];
-        if (plan.reductionNeeded) {
-          const targets = plan.toClose.map((t) => t.instrument).join(', ');
-          const action = `Projected risk $${cycle.projectedDailyRisk} > cap $${cycle.lossLimit} — ` +
-            `${cfg.autoDefensiveClose ? 'closing' : 'recommend closing'} ${plan.toClose.length} trade(s): ${targets}`;
-          recordAccountRiskAction({ accountId: client.accountId, action });
-          console.log(`[ACCOUNT RISK ACTION] autoDefensiveClose=${cfg.autoDefensiveClose} ${action}`);
-          if (cfg.autoDefensiveClose) {
-            for (const t of plan.toClose) {
-              try {
-                const r = await closeBrokerTrade({ tradeId: t.tradeId, instrument: t.instrument, client });
-                closed.push({ tradeId: t.tradeId, instrument: t.instrument, ok: !!r.ok });
-              } catch (err) {
-                closed.push({ tradeId: t.tradeId, instrument: t.instrument, ok: false, error: err?.message || String(err) });
-              }
-            }
-          }
-        } else {
-          recordAccountRiskAction({ accountId: client.accountId, action: 'none — projected risk within daily cap' });
-        }
         return { cycle, plan, autoDefensiveClose: cfg.autoDefensiveClose, closed };
       },
     );
