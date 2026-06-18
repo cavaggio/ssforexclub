@@ -45,6 +45,26 @@ export function environmentMismatchMessage(savedEnv, requestedEnv) {
 const LIVE_ENVS = new Set(['live', 'funded']);
 
 /**
+ * Decide a connection's validation outcome from a probe result. Returns
+ * 'valid' | 'invalid' | 'skip'. 'skip' means we could NOT actually reach the
+ * broker (scanner down / internal-auth / connector disabled) — so we must NOT
+ * mark a known-good account as failed; leave its status untouched.
+ *
+ *   ok             transport success (the internal endpoint returned 2xx)
+ *   transportCode  from mapScannerTransportError when !ok
+ *   code           connector diagnostic code (futures), if present
+ *   validationStatus connector validationStatus (futures), if present
+ */
+export function classifyValidationResult({ ok, transportCode, code, validationStatus } = {}) {
+  if (transportCode === 'SCANNER_UNREACHABLE' || transportCode === 'INTERNAL_AUTH_FAILED') return 'skip';
+  if (code === 'CONNECTOR_DISABLED' || code === 'GATEWAY_URL_MISSING') return 'skip';
+  if (validationStatus === 'valid' || code === 'OK' || code === 'NO_ACCOUNTS') return 'valid';
+  if (validationStatus === 'invalid' || code === 'BROKER_AUTH_FAILED') return 'invalid';
+  if (ok === true) return 'valid';   // OANDA risk-status 200 with no diagnostic code
+  return 'invalid';                  // broker responded with a rejection
+}
+
+/**
  * Pick the saved connection that matches the requested environment. Treats
  * paper/sim as equivalent and live/funded as equivalent (provider-specific
  * synonyms). Returns { match } or { match:null, savedEnvironments } so the

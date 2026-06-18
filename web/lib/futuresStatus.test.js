@@ -5,7 +5,29 @@ import {
   deriveFuturesView,
   pickConnectionForEnvironment,
   environmentMismatchMessage,
+  classifyValidationResult,
 } from './futuresStatus.js';
+
+// ─── validation classification (drives persisted validation_status) ─────────
+test('OANDA 200 probe (no diagnostic code) => valid', () => {
+  assert.equal(classifyValidationResult({ ok: true }), 'valid');
+});
+
+test('futures diagnostics OK / NO_ACCOUNTS => valid', () => {
+  assert.equal(classifyValidationResult({ ok: true, code: 'OK', validationStatus: 'valid' }), 'valid');
+  assert.equal(classifyValidationResult({ ok: true, code: 'NO_ACCOUNTS', validationStatus: 'valid' }), 'valid');
+});
+
+test('broker auth failure => invalid', () => {
+  assert.equal(classifyValidationResult({ ok: true, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid' }), 'invalid');
+  assert.equal(classifyValidationResult({ ok: false, transportCode: 'SCANNER_ERROR' }), 'invalid');
+});
+
+test('unreachable / internal-auth / connector-disabled => skip (never mark a good account failed)', () => {
+  assert.equal(classifyValidationResult({ ok: false, transportCode: 'SCANNER_UNREACHABLE' }), 'skip');
+  assert.equal(classifyValidationResult({ ok: false, transportCode: 'INTERNAL_AUTH_FAILED' }), 'skip');
+  assert.equal(classifyValidationResult({ ok: true, code: 'CONNECTOR_DISABLED' }), 'skip');
+});
 
 // ─── environment selection / mismatch ───────────────────────────────────────
 const liveConn = { id: '1', environment: 'live' };

@@ -15,6 +15,7 @@ import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { summarizeEnvironments } from '@/lib/environments';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus, type ClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { formatBrokerConnection } from '@/lib/brokerDisplay';
+import { ValidateConnectionsButton } from '@/components/validate-connections-button';
 import { TradingModeToggle } from '@/components/trading-mode-toggle';
 import { ConnectBrokerForm } from '@/components/connect-broker-form';
 import { LiveAckCard } from '@/components/live-ack-card';
@@ -179,9 +180,12 @@ export default async function SettingsPage() {
           padding: 24,
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h3 style={{ margin: 0, fontSize: 16 }}>Broker connections</h3>
-          <span style={{ color: 'var(--muted)', fontSize: 12 }}>{connections.length} active</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <ValidateConnectionsButton />
+            <span style={{ color: 'var(--muted)', fontSize: 12 }}>{connections.length} saved</span>
+          </div>
         </div>
 
         {connectionError ? (
