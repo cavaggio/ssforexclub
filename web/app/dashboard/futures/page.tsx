@@ -53,7 +53,7 @@ export default async function FuturesPage() {
         </p>
       </section>
 
-      <FuturesStatusPanel provider="ninjatrader" providerLabel="NinjaTrader Futures" gate={gate} />
+      <FuturesStatusPanel provider="ninjatrader" providerLabel="NinjaTrader / Tradovate" gate={gate} />
 
       <ConnectNinjaTraderForm />
     </div>

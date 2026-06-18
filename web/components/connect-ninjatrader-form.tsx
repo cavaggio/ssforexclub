@@ -22,7 +22,7 @@ export function ConnectNinjaTraderForm() {
 
   return (
     <section style={panel}>
-      <h3 style={{ margin: 0, fontSize: 16 }}>Connect NinjaTrader account</h3>
+      <h3 style={{ margin: 0, fontSize: 16 }}>Connect NinjaTrader / Tradovate account</h3>
       <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13 }}>
         Credentials are encrypted server-side with AES-256-GCM before storage and never
         returned to the browser. Live execution stays disabled until enabled by the platform.
