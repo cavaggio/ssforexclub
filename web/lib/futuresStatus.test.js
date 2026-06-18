@@ -1,6 +1,64 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapScannerTransportError, deriveFuturesView } from './futuresStatus.js';
+import {
+  mapScannerTransportError,
+  deriveFuturesView,
+  pickConnectionForEnvironment,
+  environmentMismatchMessage,
+} from './futuresStatus.js';
+
+// ─── environment selection / mismatch ───────────────────────────────────────
+const liveConn = { id: '1', environment: 'live' };
+const paperConn = { id: '2', environment: 'paper' };
+
+test('live connection exists but paper requested => no match (mismatch)', () => {
+  const r = pickConnectionForEnvironment([liveConn], 'paper');
+  assert.equal(r.match, null);
+  assert.deepEqual(r.savedEnvironments, ['live']);
+});
+
+test('paper connection exists but live requested => no match (mismatch)', () => {
+  const r = pickConnectionForEnvironment([paperConn], 'live');
+  assert.equal(r.match, null);
+});
+
+test('matching environment selects the connection', () => {
+  assert.equal(pickConnectionForEnvironment([liveConn, paperConn], 'live').match.id, '1');
+  assert.equal(pickConnectionForEnvironment([liveConn, paperConn], 'paper').match.id, '2');
+});
+
+test('missing matching environment returns null so broker auth is never attempted', () => {
+  assert.equal(pickConnectionForEnvironment([], 'paper').match, null);
+});
+
+test('mismatch message is specific, never generic auth failure', () => {
+  const m = environmentMismatchMessage('live', 'paper');
+  assert.match(m, /Live/);
+  assert.match(m, /Simulated \/ Paper/);
+  assert.doesNotMatch(m, /authentication failed/i);
+});
+
+test('ENVIRONMENT_MISMATCH code renders the specific message, execute hidden', () => {
+  const v = deriveFuturesView({
+    enabled: true, liveFlag: false, liveAck: false, hasConnection: true, connectionEnvironment: 'live',
+    diagnostics: { ok: false, code: 'ENVIRONMENT_MISMATCH', message: environmentMismatchMessage('live', 'paper') },
+  });
+  assert.equal(v.connection.label, 'Environment mismatch');
+  assert.match(v.message, /Switch to Live/);
+  assert.equal(v.executeVisible, false);
+  assert.equal(v.execution.label, 'Execution disabled');
+});
+
+test('saved live connection shows Live/Funded mode even before validation', () => {
+  const v = deriveFuturesView({
+    enabled: true, liveFlag: false, liveAck: false, hasConnection: true, connectionEnvironment: 'live',
+    diagnostics: { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid' },
+  });
+  assert.equal(v.mode.label, 'Live / Funded mode'); // reflects saved choice, not validation
+  assert.equal(v.connection.label, 'Credential validation failed');
+  assert.equal(v.executeVisible, false);
+});
+
 
 // ─── transport error mapping (never raw "fetch failed") ─────────────────────
 test('mapScannerTransportError maps Railway-unreachable to SCANNER_UNREACHABLE', () => {
@@ -68,8 +126,8 @@ test('no accounts => execute disabled even though validated', () => {
     ...base, liveFlag: true, liveAck: true, connectionEnvironment: 'live',
     diagnostics: { ok: true, code: 'NO_ACCOUNTS', validationStatus: 'valid', selectedAccount: null, accountMode: 'live', executionAllowed: true },
   });
-  assert.equal(v.executeEnabled, false);
-  assert.equal(v.mode.label, 'Simulated / Paper mode'); // no selected account => not live badge
+  assert.equal(v.executeEnabled, false); // no selected account => not executable
+  assert.equal(v.mode.label, 'Live / Funded mode'); // mode reflects the saved live connection
 });
 
 test('live account with all gates passing => Execution enabled', () => {

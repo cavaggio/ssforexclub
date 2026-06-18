@@ -193,8 +193,8 @@ export default async function SettingsPage() {
                     {c.environment} &middot; {c.accountId}
                   </span>
                 </span>
-                <span style={{ color: c.isActive ? 'var(--good)' : 'var(--muted)' }}>
-                  {c.isActive ? 'active' : 'disabled'}
+                <span style={{ color: connectionStatusColor(c) }}>
+                  {connectionStatusLabel(c)}
                 </span>
               </li>
             ))}
@@ -206,6 +206,33 @@ export default async function SettingsPage() {
 }
 
 function describeLiveGate(envSummary: {
+  liveTradingEnabled: boolean;
+  liveExecutionAllowedByPlatform: boolean;
+  liveConnectionLinked: boolean;
+  liveTradingAcknowledged: boolean;
+  userSelectedLive: boolean;
+  brokerCredentialStatus: string;
+}): string {
+  return liveStatusMessageInner(envSummary);
+}
+
+// "active" here means the DB row is active (saved), NOT that credentials are
+// authenticated. Validation status is a separate, explicit signal.
+function connectionStatusLabel(c: { isActive: boolean; validationStatus: string }): string {
+  if (!c.isActive) return 'disabled';
+  if (c.validationStatus === 'valid') return 'validated';
+  if (c.validationStatus === 'invalid') return 'validation failed';
+  return 'saved · validation pending';
+}
+
+function connectionStatusColor(c: { isActive: boolean; validationStatus: string }): string {
+  if (!c.isActive) return 'var(--muted)';
+  if (c.validationStatus === 'valid') return 'var(--good)';
+  if (c.validationStatus === 'invalid') return 'var(--bad)';
+  return 'var(--muted)';
+}
+
+function liveStatusMessageInner(envSummary: {
   liveTradingEnabled: boolean;
   liveExecutionAllowedByPlatform: boolean;
   liveConnectionLinked: boolean;

@@ -31,8 +31,15 @@ export function ninjaTraderLiveExecutionEnabled() {
   return String(process.env.NINJATRADER_LIVE_EXECUTION_ENABLED || 'false').toLowerCase() === 'true';
 }
 
-function gatewayBaseUrl() {
-  return process.env.NINJATRADER_GATEWAY_URL || 'https://gateway.ninjatrader.com';
+// NinjaTrader retail order routing uses the Tradovate REST API. The credential
+// set {name,password,appId,appVersion,cid,sec} is exactly Tradovate's
+// /auth/accesstokenrequest body. Paper/sim and live are DIFFERENT hosts, so the
+// base URL is chosen per environment — never mixed.
+function baseUrlForMode(mode) {
+  if (mode === 'live') {
+    return process.env.TRADOVATE_LIVE_URL || 'https://live.tradovateapi.com/v1';
+  }
+  return process.env.TRADOVATE_DEMO_URL || 'https://demo.tradovateapi.com/v1';
 }
 
 /**
@@ -66,15 +73,15 @@ export function buildNinjaTraderClient({ credentials, environment = 'sim', fetch
 
   const mode = environment === 'live' ? 'live' : 'sim';
   const doFetch = fetchImpl || globalThis.fetch;
-  const root = (baseUrl || gatewayBaseUrl()).replace(/\/+$/, '');
+  const root = (baseUrl || baseUrlForMode(mode)).replace(/\/+$/, '');
 
   let sessionToken = null;
 
-  async function call(path, { method = 'POST', body } = {}) {
+  async function call(path, { method = 'GET', body } = {}) {
     if (typeof doFetch !== 'function') {
       throw new Error('NinjaTrader connector: no fetch implementation available');
     }
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
     const res = await doFetch(`${root}${path}`, {
       method,
@@ -85,8 +92,8 @@ export function buildNinjaTraderClient({ credentials, environment = 'sim', fetch
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { /* keep null */ }
     if (!res.ok) {
-      const detail = (data && data.error) || text || `HTTP ${res.status}`;
-      const err = new Error(`NinjaTrader gateway error: ${detail}`);
+      const detail = (data && (data.errorText || data.error)) || text || `HTTP ${res.status}`;
+      const err = new Error(`Tradovate API error: ${detail}`);
       err.status = res.status;
       throw err;
     }
@@ -97,21 +104,32 @@ export function buildNinjaTraderClient({ credentials, environment = 'sim', fetch
     provider: NINJATRADER_PROVIDER,
     mode,
     baseUrl: root,
-    /** Authenticate with the Rithmic-style credential set; caches the session token. */
+    /**
+     * Tradovate access-token request. The body field names MUST match exactly
+     * (name, password, appId, appVersion, cid, sec) — no renaming. A successful
+     * response carries accessToken; a failure carries errorText, and a throttle
+     * response carries a p-ticket (treated as a failed auth here).
+     */
     async authenticate() {
-      const data = await call('/auth/login', {
+      const data = await call('/auth/accesstokenrequest', {
+        method: 'POST',
         body: {
-          user: credentials.name,
+          name: credentials.name,
           password: credentials.password,
           appId: credentials.appId,
           appVersion: credentials.appVersion,
           cid: credentials.cid,
           sec: credentials.sec,
-          mode,
         },
       });
-      sessionToken = (data && (data.token || data.sessionToken)) || null;
-      return { ok: Boolean(sessionToken), mode };
+      sessionToken = (data && data.accessToken) || null;
+      const ok = Boolean(sessionToken) && !(data && (data.errorText || data['p-ticket']));
+      // Safe log: host + outcome only, never the token or any credential.
+      try {
+        const host = new URL(root).host;
+        console.log(`[TRADOVATE AUTH] host=${host} mode=${mode} tokenReceived=${ok ? 'yes' : 'no'}`);
+      } catch { /* ignore */ }
+      return { ok, mode, reason: data && data.errorText ? data.errorText : null };
     },
     call,
   };
@@ -202,16 +220,17 @@ export async function getNinjaTraderAccounts(client) {
   if (!client || client.provider !== NINJATRADER_PROVIDER) {
     throw new Error('getNinjaTraderAccounts: client is not a NinjaTrader client');
   }
-  const data = await client.call('/accounts/list', { method: 'POST', body: { mode: client.mode } });
-  return (data && data.accounts) || [];
+  // Tradovate: GET /account/list returns an array of account objects.
+  const data = await client.call('/account/list', { method: 'GET' });
+  return Array.isArray(data) ? data : (data && data.accounts) || [];
 }
 
-export async function getNinjaTraderPositions(client, { accountId } = {}) {
+export async function getNinjaTraderPositions(client) {
   if (!client || client.provider !== NINJATRADER_PROVIDER) {
     throw new Error('getNinjaTraderPositions: client is not a NinjaTrader client');
   }
-  const data = await client.call('/positions/list', { method: 'POST', body: { accountId, mode: client.mode } });
-  return (data && data.positions) || [];
+  const data = await client.call('/position/list', { method: 'GET' });
+  return Array.isArray(data) ? data : (data && data.positions) || [];
 }
 
 /**
@@ -229,17 +248,17 @@ export async function placeNinjaTraderOrder(client, order = {}) {
       reason: 'NinjaTrader live execution is disabled (set NINJATRADER_LIVE_EXECUTION_ENABLED=true)',
     };
   }
-  const data = await client.call('/orders/place', {
+  // Tradovate: POST /order/placeorder
+  const data = await client.call('/order/placeorder', {
     method: 'POST',
     body: {
       accountId: order.accountId,
+      accountSpec: order.accountSpec,
       symbol: order.symbol,
-      side: order.side,
-      quantity: order.quantity,
-      orderType: order.orderType || 'MARKET',
-      stopLoss: order.stopLoss ?? null,
-      takeProfit: order.takeProfit ?? null,
-      mode: client.mode,
+      action: order.side === 'sell' || order.side === 'Sell' ? 'Sell' : 'Buy',
+      orderQty: order.quantity,
+      orderType: order.orderType || 'Market',
+      isAutomated: true,
     },
   });
   return { ok: true, order: data };
@@ -256,9 +275,10 @@ export async function closeNinjaTraderPosition(client, position = {}) {
       reason: 'NinjaTrader live execution is disabled (set NINJATRADER_LIVE_EXECUTION_ENABLED=true)',
     };
   }
-  const data = await client.call('/positions/close', {
+  // Tradovate: liquidate the position for the contract on this account.
+  const data = await client.call('/order/liquidateposition', {
     method: 'POST',
-    body: { accountId: position.accountId, symbol: position.symbol, mode: client.mode },
+    body: { accountId: position.accountId, contractId: position.contractId, admin: false },
   });
   return { ok: true, result: data };
 }

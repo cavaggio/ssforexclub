@@ -26,6 +26,8 @@ export type BrokerKind = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep';
 // 'sim' = NinjaTrader simulated; 'evaluation'/'funded' = Topstep combine/funded.
 export type BrokerEnvironment = 'practice' | 'live' | 'paper' | 'sim' | 'evaluation' | 'funded';
 
+export type ValidationStatus = 'unvalidated' | 'valid' | 'invalid';
+
 export type BrokerConnection = {
   id: string;
   userId: string;
@@ -33,6 +35,8 @@ export type BrokerConnection = {
   accountId: string;
   environment: BrokerEnvironment;
   isActive: boolean;
+  validationStatus: ValidationStatus;
+  lastValidatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -54,6 +58,8 @@ function rowToConnection(row: Record<string, unknown>): BrokerConnection {
     accountId: String(row.account_id),
     environment: row.environment as BrokerEnvironment,
     isActive: Boolean(row.is_active),
+    validationStatus: (row.validation_status as ValidationStatus) ?? 'unvalidated',
+    lastValidatedAt: (row.last_validated_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -66,7 +72,7 @@ export async function listBrokerConnectionsForUser(
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('broker_connections')
-    .select('id, user_id, broker, account_id, environment, is_active, created_at, updated_at')
+    .select('id, user_id, broker, account_id, environment, is_active, validation_status, last_validated_at, created_at, updated_at')
     .eq('user_id', clerkUserId)
     .order('created_at', { ascending: false });
   if (error) throw new Error(`listBrokerConnectionsForUser: ${error.message}`);
@@ -89,12 +95,31 @@ export async function createBrokerConnection(
       encrypted_secret: input.secret ? encryptSecret(input.secret) : null,
       is_active: true,
     })
-    .select('id, user_id, broker, account_id, environment, is_active, created_at, updated_at')
+    .select('id, user_id, broker, account_id, environment, is_active, validation_status, last_validated_at, created_at, updated_at')
     .single();
   if (error || !data) {
     throw new Error(`createBrokerConnection: ${error?.message ?? 'no row returned'}`);
   }
   return rowToConnection(data);
+}
+
+/**
+ * Persist the latest validation outcome for a connection (set after a
+ * diagnostics run). Best-effort — never throws to the caller; a failed write
+ * just leaves the previous status. Never touches credentials.
+ */
+export async function setConnectionValidationStatus(
+  clerkUserId: string,
+  connectionId: string,
+  status: 'valid' | 'invalid',
+): Promise<void> {
+  if (!clerkUserId || !connectionId) return;
+  const supabase = getServerSupabase();
+  await supabase
+    .from('broker_connections')
+    .update({ validation_status: status, last_validated_at: new Date().toISOString() })
+    .eq('user_id', clerkUserId)
+    .eq('id', connectionId);
 }
 
 export async function deactivateBrokerConnection(

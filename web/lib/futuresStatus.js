@@ -23,12 +23,38 @@ export const DIAG_MESSAGES = {
   INTERNAL_AUTH_FAILED: 'Internal scanner authentication failed.',
   BROKER_AUTH_FAILED:
     'NinjaTrader / Tradovate authentication failed. Check username, password, app ID, app version, CID, and secret.',
+  ENVIRONMENT_MISMATCH: 'Saved connection does not match the selected mode.',
   GATEWAY_URL_MISSING: 'NinjaTrader gateway URL is missing from server configuration.',
   SCANNER_ERROR: 'Scanner request failed.',
 };
 
+const ENV_LABEL = { paper: 'Simulated / Paper', sim: 'Simulated / Paper', live: 'Live', funded: 'Funded', evaluation: 'Evaluation' };
+
 export function messageForCode(code, detail) {
   return DIAG_MESSAGES[code] || detail || 'Unexpected error.';
+}
+
+/** Friendly, specific message for an environment mismatch (no generic auth error). */
+export function environmentMismatchMessage(savedEnv, requestedEnv) {
+  const saved = ENV_LABEL[savedEnv] || savedEnv || 'unknown';
+  const want = ENV_LABEL[requestedEnv] || requestedEnv || 'unknown';
+  return `Saved NinjaTrader / Tradovate connection is ${saved}, but the current Futures mode is ${want}. ` +
+    `Switch to ${saved} mode, or save ${want} credentials.`;
+}
+
+const LIVE_ENVS = new Set(['live', 'funded']);
+
+/**
+ * Pick the saved connection that matches the requested environment. Treats
+ * paper/sim as equivalent and live/funded as equivalent (provider-specific
+ * synonyms). Returns { match } or { match:null, savedEnvironments } so the
+ * caller can short-circuit WITHOUT calling broker auth on a mismatch.
+ */
+export function pickConnectionForEnvironment(connections, requestedEnv) {
+  const list = Array.isArray(connections) ? connections : [];
+  const wantLive = LIVE_ENVS.has(requestedEnv);
+  const match = list.find((c) => LIVE_ENVS.has(c.environment) === wantLive) || null;
+  return { match, savedEnvironments: list.map((c) => c.environment) };
 }
 
 /**
@@ -85,6 +111,16 @@ export function deriveFuturesView({
     code: null,
   };
 
+  // The mode badge reflects the SAVED connection's environment (the user's
+  // choice), independent of validation — so a saved live connection never shows
+  // "Simulated / Paper". Execution gating below is separate.
+  const savedIsLive = LIVE_ENVS.has(connectionEnvironment);
+  if (hasConnection) {
+    view.mode = savedIsLive
+      ? { tone: 'warn', label: 'Live / Funded mode' }
+      : { tone: 'muted', label: 'Simulated / Paper mode' };
+  }
+
   if (!hasConnection) {
     view.connection = { tone: 'muted', label: 'No credentials saved' };
     view.code = 'NO_CREDENTIALS';
@@ -109,7 +145,13 @@ export function deriveFuturesView({
   view.code = code;
   const validated = VALID_CODES.has(code) && diagnostics.validationStatus === 'valid';
 
-  // Connection badge by code.
+  // Connection badge by code. ENVIRONMENT_MISMATCH is its own state — a clear,
+  // specific message, never a generic "credential validation failed".
+  if (code === 'ENVIRONMENT_MISMATCH') {
+    view.connection = { tone: 'warn', label: 'Environment mismatch' };
+    view.message = diagnostics.message || 'Saved connection does not match the selected mode.';
+    return view; // no validation attempted — execution stays disabled, button hidden
+  }
   if (code === 'SCANNER_UNREACHABLE') view.connection = { tone: 'bad', label: 'Unable to reach scanner service' };
   else if (code === 'INTERNAL_AUTH_FAILED') view.connection = { tone: 'bad', label: 'Internal scanner authentication failed' };
   else if (code === 'BROKER_AUTH_FAILED') view.connection = { tone: 'bad', label: 'Credential validation failed' };
@@ -120,16 +162,13 @@ export function deriveFuturesView({
 
   view.message = messageForCode(code, diagnostics.message);
 
-  // Mode badge: Live/Funded ONLY when validated, the account is live/funded,
-  // and an account is actually selected. Otherwise default to Sim/Paper.
+  // The mode badge was already set from the saved connection above. For execution
+  // gating we additionally require the validated account itself to be live/funded.
   const accountMode = diagnostics.accountMode || null;
   const isLiveAccount =
     validated &&
     Boolean(diagnostics.selectedAccount) &&
     (LIVE_MODES.has(connectionEnvironment) || LIVE_MODES.has(accountMode));
-  view.mode = isLiveAccount
-    ? { tone: 'warn', label: 'Live / Funded mode' }
-    : { tone: 'muted', label: 'Simulated / Paper mode' };
 
   // Execution enabled requires EVERY gate.
   const ackOk = liveAck === null || liveAck === true; // null = not applicable to this provider

@@ -111,7 +111,7 @@ test('diagnostics: gateway rejects auth (HTTP error) => BROKER_AUTH_FAILED, no t
 test('diagnostics: valid paper account => OK, validated, execution NOT allowed (paper)', async () => {
   process.env.NINJATRADER_FUTURES_ENABLED = 'true';
   delete process.env.NINJATRADER_LIVE_EXECUTION_ENABLED;
-  const okFetch = fakeFetch({ token: 't', accounts: [{ name: 'Sim101', balance: 5000 }], positions: [] });
+  const okFetch = fakeFetch({ accessToken: 't', accounts: [{ name: 'Sim101', balance: 5000 }], positions: [] });
   const d = await getNinjaTraderDiagnostics({ credentials: GOOD_CREDS, environment: 'paper', fetchImpl: okFetch });
   assert.equal(d.code, 'OK');
   assert.equal(d.validationStatus, 'valid');
@@ -125,7 +125,7 @@ test('diagnostics: valid paper account => OK, validated, execution NOT allowed (
 test('diagnostics: live account with live flag => executionAllowed true', async () => {
   process.env.NINJATRADER_FUTURES_ENABLED = 'true';
   process.env.NINJATRADER_LIVE_EXECUTION_ENABLED = 'true';
-  const okFetch = fakeFetch({ token: 't', accounts: [{ name: 'Live-1', balance: 25000 }], positions: [{ symbol: 'ES' }] });
+  const okFetch = fakeFetch({ accessToken: 't', accounts: [{ name: 'Live-1', balance: 25000 }], positions: [{ symbol: 'ES' }] });
   const d = await getNinjaTraderDiagnostics({ credentials: GOOD_CREDS, environment: 'live', fetchImpl: okFetch });
   assert.equal(d.environment, 'live');
   assert.equal(d.executionAllowed, true);

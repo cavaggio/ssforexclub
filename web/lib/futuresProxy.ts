@@ -19,6 +19,7 @@ import 'server-only';
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { callInternalEndpoint } from './scannerProxy';
+import { setConnectionValidationStatus } from './brokerConnections';
 import {
   listFuturesConnections,
   resolveFuturesCredentials,
@@ -98,5 +99,12 @@ export async function callFuturesProvider(args: {
   // result.data is the connector payload (its own ok/code) — never credentials.
   const data = result.data && typeof result.data === 'object' ? (result.data as Record<string, unknown>) : { data: result.data };
   log(`scannerStatus=200 code=${String(data.code ?? 'OK')}`);
+
+  // Persist the validation outcome so the Broker connections list can show
+  // validated / validation failed instead of just "active" (DB-row active).
+  if (op === 'diagnostics' && (data.validationStatus === 'valid' || data.validationStatus === 'invalid')) {
+    await setConnectionValidationStatus(userId, conn.id, data.validationStatus as 'valid' | 'invalid').catch(() => undefined);
+  }
+
   return NextResponse.json({ provider, ...data });
 }
