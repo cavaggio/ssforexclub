@@ -13,7 +13,7 @@ import alpacaAssets from './alpacaAssets.js';
 
 // ─── OANDA imports ─────────────────────────────────────────────────────────
 import { runDiagnostics } from './oandaDiagnostics.js';
-import { getAccountSummary, getInstruments, getPricing, getCandles, getOpenTrades } from './oandaMarketData.js';
+import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
@@ -24,16 +24,7 @@ import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
-import {
-  getRiskStatus, hydrateDailyBaseline, persistDailyState, setRiskStore,
-  getAccountRiskCycle, executeDefensiveReduction, computeOpenRiskUSD,
-  riskConfig,
-} from './riskManager.js';
-import { createSupabaseRiskStore } from './riskStore.js';
-
-// Wire durable daily-risk persistence (Supabase service-role). Returns null and
-// stays in-memory-only when Supabase env vars are absent.
-setRiskStore(createSupabaseRiskStore());
+import { getRiskStatus } from './riskManager.js';
 import {
   executeTrade,
   closePosition,
@@ -1846,65 +1837,10 @@ app.post('/api/internal/oanda/risk-status', async (req, res) => {
       () => getAccountSummary({ client }),
     );
     const balanceUSD = parseFloat(account?.balance ?? 0);
-    let openTrades = [];
-    try { openTrades = (await getOpenTrades({ client })) || []; } catch { /* best-effort */ }
-    // Hydrate the durable baseline so the panel reflects the true start-of-day
-    // balance even right after a restart.
-    await hydrateDailyBaseline({ accountId: client.accountId, balanceUSD });
-    const status = getRiskStatus({ accountId: client.accountId, balanceUSD, openTradeRiskUSD: computeOpenRiskUSD(openTrades) });
+    const status = getRiskStatus({ accountId: client.accountId, balanceUSD });
     res.json({ ok: true, ...status });
   } catch (err) {
     console.error('[INTERNAL_RISK_STATUS] error:', err?.message || err);
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
-});
-
-// POST /api/internal/oanda/risk-cycle
-//   The account-level 5-minute risk pass (runs BEFORE scanning for new entries).
-//   Hydrates the durable baseline, computes the account risk cycle (realized P&L,
-//   open-trade risk, projected daily risk, profit target, lock), persists it, and
-//   plans a defensive reduction when projected risk would breach the 2.8% cap.
-//   Closing of the worst open trades executes only when RISK_AUTO_DEFENSIVE_CLOSE
-//   is enabled; otherwise the plan is logged/recorded as a recommendation. This
-//   runs even when new entries are locked — exits/management are never gated.
-app.post('/api/internal/oanda/risk-cycle', async (req, res) => {
-  if (!requireInternalAuth(req, res)) return;
-  const client = buildClientFromBody(req.body, res);
-  if (!client) return;
-  assertClientMatchesRequest(client, req.body);
-  logInternalCall('RISK_CYCLE', req.body);
-  try {
-    const out = await runUserScoped(
-      { accountId: client.accountId, environment: client.environment },
-      async () => {
-        const account = await getAccountSummary({ client });
-        const balanceUSD = parseFloat(account?.balance ?? 0);
-        let openTrades = [];
-        try { openTrades = (await getOpenTrades({ client })) || []; }
-        catch (err) { console.warn(`[ACCOUNT RISK CYCLE] open-trades fetch failed — ${err?.message || err}`); }
-
-        await hydrateDailyBaseline({ accountId: client.accountId, balanceUSD });
-        const openTradeRiskUSD = computeOpenRiskUSD(openTrades);
-        const cycle = getAccountRiskCycle({ accountId: client.accountId, balanceUSD, openTradeRiskUSD });
-        await persistDailyState({ accountId: client.accountId, status: cycle });
-
-        const cfg = riskConfig();
-        // Close worst-performing trades FIRST, only as many as needed, via the
-        // shared executor. Closing fires only when RISK_AUTO_DEFENSIVE_CLOSE=true.
-        const { plan, closed } = await executeDefensiveReduction({
-          accountId: client.accountId,
-          openTrades,
-          realizedPnL: cycle.realizedPnL,
-          dailyLossLimit: cycle.lossLimit,
-          autoDefensiveClose: cfg.autoDefensiveClose,
-          closeFn: (t) => closeBrokerTrade({ tradeId: t.tradeId, instrument: t.instrument, client }),
-        });
-        return { cycle, plan, autoDefensiveClose: cfg.autoDefensiveClose, closed };
-      },
-    );
-    res.json({ ok: true, ...out });
-  } catch (err) {
-    console.error('[INTERNAL_RISK_CYCLE] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

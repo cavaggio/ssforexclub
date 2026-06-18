@@ -103,14 +103,11 @@ export async function POST(req: Request) {
       const acct = creds.accountId ? `${creds.accountId.slice(0, 3)}…${creds.accountId.slice(-3)}` : '***';
       const credBody = { apiKey: creds.token, accountId: creds.accountId, baseUrl: resolved.baseUrl, environment: resolved.activeEnvironment, runId };
 
-      // ── Account-level risk pass FIRST (rule 12): hydrate + cycle + defensive
-      //    reduction plan — runs even when new entries are locked. The cron logs
-      //    [ACCOUNT RISK CYCLE]/[ACCOUNT RISK ACTION] server-side.
-      const cycleRes = await callInternalEndpoint('/api/internal/oanda/risk-cycle', { ...credBody });
-      const cycle = cycleRes.ok ? cycleRes.data : { error: cycleRes.error };
+      // Route to EXACTLY one engine for this user (ICT or V3 — never both).
+      const auto = await callInternalEndpoint('/api/internal/oanda/auto', { ...credBody, engine });
+      const autoData = (auto.ok ? auto.data : null) as { scanned?: number; qualified?: number; executed?: unknown[]; skipped?: unknown[] } | null;
 
-      // ── Active-trade reassessment (recommend-only) — for BOTH engines, and it
-      //    runs regardless of the trading lock so open trades keep being managed.
+      // Recommend-only lifecycle reassessment (ICT engine only).
       let reassess: unknown = null;
       let recs = 0;
       if (engine === 'ict') {
@@ -121,21 +118,12 @@ export async function POST(req: Request) {
           const recList = (r.ok ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations : null) ?? [];
           recs = recList.filter((x) => x?.reassessDue).length;
         }
-      } else {
-        // V3/V3.5 active-trade reassessment (recommend-only).
-        const r = await callInternalEndpoint('/api/internal/oanda/active-trades/reassess', { ...credBody });
-        reassess = r.ok ? r.data : { error: r.error };
       }
-
-      // ── Only AFTER account protection + reassessment: scan + execute new
-      //    entries (one engine). The executor enforces every per-trade gate.
-      const auto = await callInternalEndpoint('/api/internal/oanda/auto', { ...credBody, engine });
-      const autoData = (auto.ok ? auto.data : null) as { scanned?: number; qualified?: number; executed?: unknown[]; skipped?: unknown[] } | null;
 
       const q = autoData?.qualified ?? 0, e = autoData?.executed?.length ?? 0, s = autoData?.skipped?.length ?? 0;
       totalQualified += q; totalExecuted += e; totalSkipped += s; totalRecs += recs;
       console.log(`${tag} user=${mask(userId)} account=${acct} engine=${engine} pairs=${autoData?.scanned ?? 0} qualified=${q} executed=${e} skipped=${s} recommendations=${recs}`);
-      results.push({ user: mask(userId), engine, riskCycle: cycle, auto: auto.ok ? auto.data : { error: auto.error }, reassess });
+      results.push({ user: mask(userId), engine, auto: auto.ok ? auto.data : { error: auto.error }, reassess });
     } catch (err) {
       console.log(`${tag} user=${mask(userId)} error=${err instanceof Error ? err.message : String(err)}`);
       results.push({ user: mask(userId), error: err instanceof Error ? err.message : String(err) });

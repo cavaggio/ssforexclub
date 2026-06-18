@@ -12,26 +12,15 @@ import { useCallback, useEffect, useState } from 'react';
 
 type RiskStatus = {
   accountBalance: number | null;
-  currentBalance: number | null;
   riskPerTradePercent: number;
   riskAmountUSD: number;
   dailyStartingBalance: number;
   dailyRealizedPnL: number;
-  dailyProfitTargetPercent: number;
-  dailyProfitTargetUSD: number;
   dailyLossLimitPercent: number;
   dailyLossLimitUSD: number;
   remainingLossBudgetUSD: number;
-  openTradeRiskUSD: number;
-  projectedDailyRiskUSD: number;
   tradingLocked: boolean;
-  conservativeMode: boolean;
-  capitalProtectionMode: boolean;
   autoExecutionConfidenceThreshold: number;
-  currentAutoConfidenceThreshold: number;
-  lastRejectedReason: string | null;
-  lastAccountRiskAction: string | null;
-  lastReassessmentAction: string | null;
 };
 
 type State =
@@ -76,32 +65,22 @@ export function RiskManagementPanel() {
         return (
           <>
             <div style={grid}>
+              <KV label="Account Balance" value={usd(r.accountBalance)} />
+              <KV label="Risk Per Trade" value={`${r.riskPerTradePercent}%`} />
+              <KV label="Risk Amount" value={usd(r.riskAmountUSD)} />
               <KV label="Daily Starting Balance" value={usd(r.dailyStartingBalance)} />
-              <KV label="Current Balance" value={usd(r.currentBalance ?? r.accountBalance)} />
               <KV
-                label="Realized Daily P&L"
+                label="Daily Realized P&L"
                 value={usd(r.dailyRealizedPnL)}
                 color={r.dailyRealizedPnL < 0 ? 'var(--bad)' : r.dailyRealizedPnL > 0 ? 'var(--good)' : undefined}
               />
-              <KV
-                label={`Daily Profit Target (+${r.dailyProfitTargetPercent}%)`}
-                value={usd(r.dailyProfitTargetUSD)}
-                color={r.dailyRealizedPnL >= r.dailyProfitTargetUSD && r.dailyProfitTargetUSD > 0 ? 'var(--good)' : undefined}
-              />
               <KV label={`Daily Loss Limit (${r.dailyLossLimitPercent}%)`} value={usd(r.dailyLossLimitUSD)} />
               <KV
-                label="Remaining Daily Loss Budget"
+                label="Remaining Loss Budget"
                 value={usd(r.remainingLossBudgetUSD)}
                 color={r.remainingLossBudgetUSD <= 0 ? 'var(--bad)' : 'var(--good)'}
               />
-              <KV label="Open Trade Risk" value={usd(r.openTradeRiskUSD)} />
-              <KV
-                label="Projected Daily Risk"
-                value={usd(r.projectedDailyRiskUSD)}
-                color={r.projectedDailyRiskUSD > r.dailyLossLimitUSD ? 'var(--bad)' : undefined}
-              />
-              <KV label="Risk Per Trade" value={`${r.riskPerTradePercent}%`} />
-              <KV label="Auto Confidence Threshold" value={`${r.currentAutoConfidenceThreshold}%`} />
+              <KV label="Execution Threshold" value={`${r.autoExecutionConfidenceThreshold}%`} />
             </div>
             <div style={{ marginTop: 12, fontSize: 13 }}>
               Trading Locked:{' '}
@@ -109,33 +88,6 @@ export function RiskManagementPanel() {
                 {r.tradingLocked ? 'Yes — new entries blocked (open trades still managed)' : 'No'}
               </strong>
             </div>
-            <div style={{ marginTop: 6, fontSize: 13 }}>
-              Capital Protection Mode:{' '}
-              <strong style={{ color: r.capitalProtectionMode ? 'var(--good)' : 'var(--muted)' }}>
-                {r.capitalProtectionMode ? 'Yes — +2% target hit; only elite setups, protect gains' : 'No'}
-              </strong>
-            </div>
-            <div style={{ marginTop: 6, fontSize: 13 }}>
-              Conservative Mode:{' '}
-              <strong style={{ color: r.conservativeMode ? 'var(--warn)' : 'var(--good)' }}>
-                {r.conservativeMode ? 'Yes — correlated adds blocked' : 'No'}
-              </strong>
-            </div>
-            {r.lastAccountRiskAction && (
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
-                Last account risk action: <span style={{ color: 'var(--text)' }}>{r.lastAccountRiskAction}</span>
-              </div>
-            )}
-            {r.lastReassessmentAction && (
-              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-                Last trade reassessment: <span style={{ color: 'var(--text)' }}>{r.lastReassessmentAction}</span>
-              </div>
-            )}
-            {r.lastRejectedReason && (
-              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-                Last trade rejection: <span style={{ color: 'var(--warn)' }}>{r.lastRejectedReason}</span>
-              </div>
-            )}
           </>
         );
       })()}

@@ -24,22 +24,13 @@ import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles, getOpenTrades } from './oandaMarketData.js';
+import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
   checkAutoExecutionConfidence,
-  clampUnitsToRiskBudget,
-  validateStopLoss,
-  checkConservativeCorrelatedExposure,
-  computeOpenRiskUSD,
-  evaluateNewTradeBudget,
-  checkTpProbability,
-  logPreSubmit,
-  recordRejection,
-  hydrateDailyBaseline,
-  persistDailyState,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
@@ -116,8 +107,11 @@ export async function executeIctTrade(params = {}, {
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
   }
-  // NOTE: the auto-execution confidence FLOOR (90, or 95 in conservative mode)
-  // is enforced after the account is fetched (it needs the daily P&L state).
+  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
+  if (autoAi) {
+    const confCheck = checkAutoExecutionConfidence(analysis.confidence);
+    if (!confCheck.passed) return blocked(confCheck.reason);
+  }
 
   // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
   const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
@@ -148,54 +142,19 @@ export async function executeIctTrade(params = {}, {
   const balanceUSD = parseFloat(account?.balance ?? 0);
   if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');
 
-  // Records the most recent risk rejection for the dashboard, then blocks.
-  const denyRisk = (reason) => {
-    recordRejection({ accountId: client.accountId, reason, engine: 'ICT' });
-    rec(`blocked: ${reason}`);
-    return blocked(reason);
-  };
-
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
-  // Hydrate the durable baseline first so a mid-day restart never re-anchors the
-  // day's starting balance to the current (lower) balance.
-  await hydrateDailyBaseline({ accountId: client.accountId, balanceUSD, now });
   const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
-  await persistDailyState({ accountId: client.accountId, status: dailyLock, now });
   if (dailyLock.tradingLocked) {
-    return denyRisk(dailyLock.reason);
+    rec(`blocked: ${dailyLock.reason}`);
+    return blocked(dailyLock.reason);
   }
-
-  // ── 8a-ii. Auto-execution confidence floor (95% across all auto engines) ────
-  if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(analysis.confidence, { accountId: client.accountId, balanceUSD, now });
-    if (!confCheck.passed) return denyRisk(confCheck.reason);
-  }
-
-  // ── 8a-iii. Account-as-one-risk-system: open risk + daily budget gate ──────
-  let openTrades = [];
-  try {
-    const openFn = getOpen || (() => getOpenTrades({ client }));
-    openTrades = (await openFn()) || [];
-  } catch (err) {
-    rec(`open-trades fetch failed — ${err.message}`);
-  }
-  const openTradeRiskUSD = computeOpenRiskUSD(openTrades);
-  const budget = evaluateNewTradeBudget({ accountId: client.accountId, balanceUSD, openTradeRiskUSD, now });
-  if (!budget.passed) return denyRisk(budget.reason);
 
   const pipSize = getPipSize(pair);
   const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
   const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
-
-  // ── Stop-loss validation — never submit a trade without an enforceable stop ─
-  {
-    const slCheck = validateStopLoss({ entry, stopLoss, direction, stopLossPips: slPips });
-    if (!slCheck.valid) return denyRisk(slCheck.reason);
-  }
-
-  // Per-trade cap (1.4%) AND the remaining daily budget — whichever is smaller.
+  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
   const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
-  const targetRiskUSD = +Math.min(balanceUSD * (effectiveRiskPercent / 100), budget.allowedNewTradeRisk).toFixed(2);
+  const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
     stopLossPips: slPips, stopLossPrice: stopLoss,
@@ -203,74 +162,44 @@ export async function executeIctTrade(params = {}, {
     accountMarginRate: parseFloat(account?.marginRate ?? 0),
     accountBalanceUSD: balanceUSD,
   });
-  let units = sizing.signedUnits;
-  let absUnits = Math.abs(units);
-  let estimatedMargin = sizing.estimatedMarginRequired;
-  let actualRiskUSD = sizing.actualRiskUSD;
-  if (!absUnits || absUnits < 1) {
-    return denyRisk(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
-  }
-
-  // ── Hard unit clamp to the per-trade risk budget — reduce, or reject if it
-  //    can't be sized safely. Bulletproofs the cap regardless of sizing inputs.
-  {
-    const riskPerUnitUSD = absUnits > 0 ? actualRiskUSD / absUnits : 0;
-    const clamp = clampUnitsToRiskBudget({ balanceUSD, requestedUnits: absUnits, riskPerUnitUSD });
-    if (!clamp.ok) return denyRisk(clamp.reason);
-    if (clamp.reduced) {
-      const scale = clamp.units / absUnits;
-      estimatedMargin = +(estimatedMargin * scale).toFixed(2);
-      absUnits = clamp.units;
-      units = direction === 'short' ? -absUnits : absUnits;
-      actualRiskUSD = clamp.riskUSD;
-      rec(`risk clamp — units reduced to ${absUnits} (risk now $${actualRiskUSD.toFixed(2)})`);
-    }
+  const units = sizing.signedUnits;
+  if (!units || Math.abs(units) < 1) {
+    return blocked(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
   }
 
   // ── 8b. Margin guard — never place a trade we cannot afford the margin for ──
   const marginAvailable = parseFloat(account?.marginAvailable ?? 0);
-  const marginCheck = checkMargin({ marginAvailable, estimatedMargin });
+  const marginCheck = checkMargin({ marginAvailable, estimatedMargin: sizing.estimatedMarginRequired });
   if (!marginCheck.allowed) {
-    return denyRisk(marginCheck.reason);
+    rec(`blocked: margin avail=$${marginAvailable} required=$${sizing.estimatedMarginRequired}`);
+    return blocked(marginCheck.reason);
   }
 
   // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.4%) ───────
   const riskCheck = checkRiskPerTrade({
-    balanceUSD, actualDollarRisk: actualRiskUSD, stopLossPips: slPips, positionSize: absUnits,
+    balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slPips, positionSize: Math.abs(units),
   });
   if (!riskCheck.passed) {
-    return denyRisk(riskCheck.reason);
+    rec(`blocked: ${riskCheck.reason}`);
+    return blocked(riskCheck.reason);
   }
 
-  // ── 8c. Projected daily risk must stay under the 2.8% cap (realized+open+new) ─
-  {
-    const realizedLoss = Math.abs(Math.min(budget.realizedPnL, 0));
-    const projectedDailyRisk = +(realizedLoss + budget.openTradeRisk + actualRiskUSD).toFixed(2);
-    if (projectedDailyRisk > budget.dailyLossLimit + 1e-9) {
-      return denyRisk(
-        `Projected daily risk $${projectedDailyRisk.toFixed(2)} would exceed the daily cap ` +
-        `$${budget.dailyLossLimit.toFixed(2)} — trade rejected.`,
-      );
-    }
-  }
-
-  // ── 8d. Auto quality gates: TP probability + conservative correlated exposure ─
+  // ── 8c. Auto AI total-open-risk cap (AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT) ──
   if (autoAi) {
-    const tp = checkTpProbability({
-      stopLossPips: slPips, takeProfitPips: tpPips,
-      atrPips: analysis.atrPips ?? analysis.concepts?.atrPips ?? null, spreadPips: analysis.spreadPips ?? null,
-    });
-    rec(
-      `[TRADE QUALITY CHECK] engine=ICT pair=${pair} direction=${direction} confidence=${analysis.confidence} ` +
-      `setup=${analysis.setupType ?? 'n/a'} tpProbability=${tp.passed ? 'ok' : 'low'} passed=${tp.passed}` +
-      `${tp.passed ? '' : ` rejectionReason=${tp.reason}`}`,
-    );
-    if (!tp.passed) return denyRisk(tp.reason);
-
-    const corr = checkConservativeCorrelatedExposure({
-      conservativeMode: dailyLock.conservativeMode, pair, direction, openTrades,
-    });
-    if (!corr.allowed) return denyRisk(corr.reason);
+    let openTrades = [];
+    try {
+      const openFn = getOpen || (() => getOpenTrades({ client }));
+      openTrades = (await openFn()) || [];
+    } catch (err) {
+      rec(`open-risk check skipped — could not fetch open trades (${err.message})`);
+    }
+    const currentOpenRiskPercent = computeOpenRiskPercent(openTrades, balanceUSD) ?? 0;
+    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
+    if (!totalCheck.allowed) {
+      rec(`blocked: ${totalCheck.reason}`);
+      return blocked(totalCheck.reason);
+    }
   }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
@@ -284,16 +213,7 @@ export async function executeIctTrade(params = {}, {
       takeProfitOnFill: { price: targetProfit.toFixed(dp), timeInForce: 'GTC' },
     },
   };
-  logPreSubmit({
-    engine: 'ICT',
-    mode: `${autoAi ? 'auto' : 'manual'}${dailyLock.conservativeMode ? '+conservative' : ''}`,
-    balanceUSD,
-    stopLossPips: slPips,
-    units,
-    actualDollarRisk: actualRiskUSD,
-    riskPercent: +((actualRiskUSD / balanceUSD) * 100).toFixed(3),
-  });
-  rec(`submitted ${pair} ${direction} units=${units} risk=$${actualRiskUSD.toFixed(2)} (recomputed conf=${analysis.confidence} rr=${analysis.rr})`);
+  rec(`submitted ${pair} ${direction} units=${units} risk=$${targetRiskUSD} (recomputed conf=${analysis.confidence} rr=${analysis.rr})`);
 
   let resp;
   try {
@@ -325,7 +245,7 @@ export async function executeIctTrade(params = {}, {
     success: true, blocked: false, executionState: 'FILLED',
     tradeId, fillPrice, units, pair, direction,
     stopLoss, takeProfit: targetProfit,
-    riskUSD: actualRiskUSD, signalId: analysis.signalId,
+    riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
     holdMinutes,
     executionLog: log,
   };
