@@ -62,9 +62,9 @@ async function saveFutures(
 
 // ─── NinjaTrader ────────────────────────────────────────────────────────────
 export async function saveNinjaTraderConnectionAction(formData: FormData): Promise<ActionResult> {
-  const environment = (str(formData, 'environment') || 'sim') as BrokerEnvironment;
-  if (environment !== 'sim' && environment !== 'live') {
-    return { ok: false, error: 'NinjaTrader environment must be sim or live' };
+  const environment = (str(formData, 'environment') || 'paper') as BrokerEnvironment;
+  if (environment !== 'paper' && environment !== 'live') {
+    return { ok: false, error: 'NinjaTrader environment must be paper or live' };
   }
   return saveFutures('ninjatrader', environment, {
     name: str(formData, 'name'),

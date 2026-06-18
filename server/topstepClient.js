@@ -149,6 +149,69 @@ export async function topstepConnectivityCheck({ credentials, environment, fetch
   }
 }
 
+function toNum(v) {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Full safe diagnostic for the dashboard panel. Never throws on auth failure;
+ * never returns secrets/tokens. executionAllowed folds in the compliance gate
+ * (evaluateTopstepExecution), so it is false while cloud execution is disallowed.
+ */
+export async function getTopstepDiagnostics({ credentials, environment, fetchImpl, baseUrl } = {}) {
+  const shape = validateTopstepCredentials(credentials);
+  if (!shape.ok) {
+    return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: shape.error, missing: shape.missing };
+  }
+  if (!topstepEnabled()) {
+    return { ok: false, code: 'CONNECTOR_DISABLED', validationStatus: 'unvalidated', message: 'Topstep provider is disabled.' };
+  }
+
+  let client;
+  try {
+    client = buildTopstepClient({ credentials, environment, fetchImpl, baseUrl });
+  } catch (err) {
+    return { ok: false, code: 'CONNECTOR_DISABLED', validationStatus: 'unvalidated', message: err?.message || 'Connector unavailable' };
+  }
+
+  try {
+    const auth = await client.authenticate();
+    if (!auth.ok) {
+      return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: 'Topstep authentication failed.' };
+    }
+  } catch {
+    return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: 'Topstep authentication failed.' };
+  }
+
+  let accounts = [];
+  let positions = [];
+  try {
+    accounts = await getTopstepAccounts(client);
+    positions = await getTopstepPositions(client, {});
+  } catch {
+    accounts = [];
+    positions = [];
+  }
+
+  const sel = accounts[0] || null;
+  const gate = evaluateTopstepExecution({ environment: client.mode });
+  return {
+    ok: true,
+    code: accounts.length ? 'OK' : 'NO_ACCOUNTS',
+    validationStatus: 'valid',
+    environment: client.mode === 'funded' ? 'live' : 'paper',
+    accountMode: client.mode, // 'funded' | 'evaluation'
+    accountCount: accounts.length,
+    selectedAccount: sel ? String(sel.name ?? sel.id ?? '') || null : null,
+    balance: sel ? toNum(sel.balance) : null,
+    equity: sel ? toNum(sel.equity) : null,
+    openPositions: positions.length,
+    executionAllowed: gate.allowed,
+    executionReason: gate.reason,
+  };
+}
+
 export async function getTopstepAccounts(client) {
   if (!client || client.provider !== TOPSTEP_PROVIDER) {
     throw new Error('getTopstepAccounts: client is not a Topstep client');

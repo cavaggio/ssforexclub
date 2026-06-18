@@ -18,7 +18,7 @@ async function wrapper(_prev: ActionResult | null, formData: FormData): Promise<
 
 export function ConnectNinjaTraderForm() {
   const [state, formAction, pending] = useActionState(wrapper, null);
-  const [environment, setEnvironment] = useState<'sim' | 'live'>('sim');
+  const [environment, setEnvironment] = useState<'paper' | 'live'>('paper');
 
   return (
     <section style={panel}>
@@ -30,8 +30,8 @@ export function ConnectNinjaTraderForm() {
 
       <form action={formAction} style={grid}>
         <Field label="Environment">
-          <select name="environment" value={environment} onChange={(e) => setEnvironment(e.target.value as 'sim' | 'live')} style={input}>
-            <option value="sim">Simulated / Paper</option>
+          <select name="environment" value={environment} onChange={(e) => setEnvironment(e.target.value as 'paper' | 'live')} style={input}>
+            <option value="paper">Simulated / Paper</option>
             <option value="live">Live</option>
           </select>
         </Field>

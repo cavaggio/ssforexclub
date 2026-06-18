@@ -15,6 +15,7 @@ import {
   topstepCloudExecutionAllowed,
   TOPSTEP_COMPLIANCE_MESSAGE,
 } from '@/lib/futuresProvider';
+import { getUserTradingSettings } from '@/lib/userTradingSettings';
 import { ConnectTopstepForm } from '@/components/connect-topstep-form';
 import { FuturesStatusPanel, type FuturesGate } from '@/components/futures-status-panel';
 
@@ -24,24 +25,23 @@ export default async function TopstepPage() {
   const { userId } = await auth();
   if (!userId) return null;
 
-  const connections = await listFuturesConnections(userId, 'topstep').catch(() => []);
+  const [connections, settings] = await Promise.all([
+    listFuturesConnections(userId, 'topstep').catch(() => []),
+    getUserTradingSettings(userId).catch(() => null),
+  ]);
   const active = connections[0] ?? null;
   const enabled = topstepEnabled();
   const cloudAllowed = topstepCloudExecutionAllowed();
-  const liveEnabled = topstepLiveEnabled();
-  const isFunded = active?.environment === 'funded';
-
-  // Execution permitted ONLY when: provider on + cloud execution allowed (compliance)
-  // + a connection exists + (evaluation/sim) OR (funded AND live flag on).
-  const liveExecutionAllowed = Boolean(
-    enabled && cloudAllowed && active && (!isFunded || liveEnabled),
-  );
+  // Live execution is permitted by flags ONLY when cloud execution is allowed
+  // (compliance) AND the live flag is on.
+  const liveFlag = cloudAllowed && topstepLiveEnabled();
 
   const gate: FuturesGate = {
     enabled,
-    liveExecutionAllowed,
+    liveFlag,
+    liveAck: settings?.liveTradingAcknowledged ?? false,
     hasConnection: Boolean(active),
-    environment: active?.environment ?? null,
+    connectionEnvironment: active?.environment ?? null,
     complianceMessage: !cloudAllowed ? TOPSTEP_COMPLIANCE_MESSAGE : null,
   };
 

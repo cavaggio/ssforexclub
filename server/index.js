@@ -45,12 +45,12 @@ import { PROVIDERS, assertExecutionProvider } from './providerRouting.js';
 import {
   ninjaTraderConnectivityCheck, buildNinjaTraderClient, getNinjaTraderAccounts,
   getNinjaTraderPositions, placeNinjaTraderOrder, closeNinjaTraderPosition,
-  ninjaTraderFuturesEnabled,
+  ninjaTraderFuturesEnabled, getNinjaTraderDiagnostics,
 } from './ninjatraderClient.js';
 import {
   topstepConnectivityCheck, buildTopstepClient, getTopstepAccounts,
   getTopstepPositions, placeTopstepOrder, closeTopstepPosition,
-  topstepEnabled, evaluateTopstepExecution,
+  topstepEnabled, evaluateTopstepExecution, getTopstepDiagnostics,
 } from './topstepClient.js';
 
 dotenv.config({
@@ -1846,6 +1846,22 @@ function logFuturesCall(provider, op, body) {
   console.log(`[INTERNAL ${provider.toUpperCase()} ${op}] env=${body?.environment ?? '<missing>'} mode=futures`);
 }
 
+// Safe diagnostics log — reports PRESENCE only, never values. Lists which
+// required credential fields arrived and whether the gateway URL is configured.
+function logFuturesDiag(provider, body, gatewayEnvVar) {
+  const creds = body?.credentials || {};
+  const fields = provider === 'ninjatrader'
+    ? ['name', 'password', 'appId', 'appVersion', 'cid', 'sec']
+    : ['userName', 'apiKey'];
+  const present = fields.filter((f) => creds[f] != null && String(creds[f]).trim() !== '');
+  const missing = fields.filter((f) => !present.includes(f));
+  console.log(
+    `[INTERNAL ${provider.toUpperCase()} DIAGNOSTICS] env=${body?.environment ?? '<missing>'} ` +
+    `fieldsPresent=[${present.join(',')}] fieldsMissing=[${missing.join(',')}] ` +
+    `gatewayUrl=${process.env[gatewayEnvVar] ? 'present' : 'default'}`,
+  );
+}
+
 // Wrap a futures handler: internal-auth, provider assertion, error envelope.
 function futuresRoute(routeProvider, handler) {
   return async (req, res) => {
@@ -1874,6 +1890,12 @@ app.post('/api/internal/ninjatrader/validate', futuresRoute(PROVIDERS.NINJATRADE
   logFuturesCall('ninjatrader', 'VALIDATE', body);
   const result = await ninjaTraderConnectivityCheck({ credentials: body.credentials, environment: body.environment });
   res.json({ ok: result.ok, status: result.status, error: result.error ?? null, missing: result.missing ?? [] });
+}));
+
+app.post('/api/internal/ninjatrader/diagnostics', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
+  logFuturesDiag('ninjatrader', body, 'NINJATRADER_GATEWAY_URL');
+  const diag = await getNinjaTraderDiagnostics({ credentials: body.credentials, environment: body.environment });
+  res.json(diag);
 }));
 
 app.post('/api/internal/ninjatrader/status', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
@@ -1909,6 +1931,12 @@ app.post('/api/internal/topstep/validate', futuresRoute(PROVIDERS.TOPSTEP, async
   logFuturesCall('topstep', 'VALIDATE', body);
   const result = await topstepConnectivityCheck({ credentials: body.credentials, environment: body.environment });
   res.json({ ok: result.ok, status: result.status, error: result.error ?? null, missing: result.missing ?? [] });
+}));
+
+app.post('/api/internal/topstep/diagnostics', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {
+  logFuturesDiag('topstep', body, 'TOPSTEP_API_BASE_URL');
+  const diag = await getTopstepDiagnostics({ credentials: body.credentials, environment: body.environment });
+  res.json(diag);
 }));
 
 app.post('/api/internal/topstep/status', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {

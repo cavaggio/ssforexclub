@@ -10,6 +10,9 @@
  *
  * The decrypted credentials never appear in the NextResponse — only the
  * sanitized scanner payload (accounts/positions/order result) is returned.
+ *
+ * Transport failures (Railway unreachable, internal-auth mismatch, missing
+ * secret) are mapped to stable codes — a raw "fetch failed" is never surfaced.
  */
 
 import 'server-only';
@@ -21,8 +24,13 @@ import {
   resolveFuturesCredentials,
   type FuturesProvider,
 } from './futuresProvider';
+import { mapScannerTransportError, messageForCode } from './futuresStatus';
 
-type Op = 'validate' | 'status' | 'trade' | 'close';
+type Op = 'validate' | 'diagnostics' | 'status' | 'trade' | 'close';
+
+function redactUser(userId: string): string {
+  return userId.length <= 8 ? '***' : `${userId.slice(0, 5)}…${userId.slice(-3)}`;
+}
 
 /**
  * Resolve the user's active connection for `provider`, forward to the internal
@@ -38,34 +46,40 @@ export async function callFuturesProvider(args: {
 
   const { userId } = await auth();
   if (!userId) {
-    return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
+    return NextResponse.json({ ok: false, code: 'UNAUTHENTICATED', message: 'Unauthenticated' }, { status: 401 });
   }
 
-  const connections = await listFuturesConnections(userId, provider);
+  const log = (msg: string) => console.log(`[FUTURES ${provider.toUpperCase()} ${op}] user=${redactUser(userId)} broker=${provider} ${msg}`);
+
+  // ─── credential lookup ──────────────────────────────────────────────────
+  const connections = await listFuturesConnections(userId, provider).catch(() => []);
   if (connections.length === 0) {
+    log('savedCredentials=false → NO_CREDENTIALS');
     return NextResponse.json(
-      { ok: false, error: `No ${provider} account connected`, connectionStatus: 'not_connected' },
-      { status: 409 },
+      { ok: false, code: 'NO_CREDENTIALS', message: messageForCode('NO_CREDENTIALS') },
+      { status: 400 },
     );
   }
-  // Most-recent active connection for this provider (list is newest-first).
-  const conn = connections[0];
-  const resolved = await resolveFuturesCredentials(userId, conn.id);
+  const conn = connections[0]; // most-recent active connection for this provider
+  const resolved = await resolveFuturesCredentials(userId, conn.id).catch(() => null);
   if (!resolved) {
+    log('savedCredentials=true decrypt=failed → DECRYPT_FAILED');
     return NextResponse.json(
-      { ok: false, error: 'Could not decrypt futures credentials', connectionStatus: 'decrypt_failed' },
+      { ok: false, code: 'DECRYPT_FAILED', message: 'Could not decrypt saved credentials.' },
       { status: 500 },
     );
   }
 
-  console.log(
-    `[FUTURES ${provider.toUpperCase()} ${op}] clerkUserId=${userId} env=${resolved.environment} ` +
-      `connection=${conn.id} usingDefaultClient=false`,
+  const railwayConfigured = Boolean(process.env.SCANNER_BASE_URL);
+  const secretConfigured = Boolean(process.env.SCANNER_INTERNAL_SECRET);
+  log(
+    `savedCredentials=true env=${resolved.environment} scannerUrl=${railwayConfigured ? 'present' : 'default-localhost'} ` +
+    `internalSecret=${secretConfigured ? 'present' : 'MISSING'}`,
   );
 
+  // ─── forward to the scanner ─────────────────────────────────────────────
   const result = await callInternalEndpoint(`/api/internal/${provider}/${op}`, {
-    // Provider tag is asserted server-side against the route — defense in depth.
-    provider,
+    provider, // asserted server-side against the route
     credentials: resolved.credentials,
     environment: resolved.environment,
     accountId: resolved.accountId,
@@ -73,14 +87,16 @@ export async function callFuturesProvider(args: {
   });
 
   if (!result.ok) {
-    return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
+    const { code, detail } = mapScannerTransportError(result);
+    log(`scannerStatus=${result.status} → ${code}`);
+    return NextResponse.json(
+      { ok: false, code, message: messageForCode(code, detail) },
+      { status: code === 'SCANNER_UNREACHABLE' ? 502 : code === 'INTERNAL_AUTH_FAILED' ? 502 : result.status || 500 },
+    );
   }
 
-  // result.data is the scanner payload — it never contains credentials.
-  return NextResponse.json({
-    ok: true,
-    provider,
-    environment: resolved.environment,
-    ...(result.data && typeof result.data === 'object' ? result.data : { data: result.data }),
-  });
+  // result.data is the connector payload (its own ok/code) — never credentials.
+  const data = result.data && typeof result.data === 'object' ? (result.data as Record<string, unknown>) : { data: result.data };
+  log(`scannerStatus=200 code=${String(data.code ?? 'OK')}`);
+  return NextResponse.json({ provider, ...data });
 }

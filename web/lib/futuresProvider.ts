@@ -68,7 +68,7 @@ function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknow
 }
 
 const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
-  ninjatrader: ['sim', 'live'],
+  ninjatrader: ['paper', 'live'],
   topstep: ['evaluation', 'funded'],
 };
 

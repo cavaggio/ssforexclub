@@ -132,6 +132,72 @@ export async function ninjaTraderConnectivityCheck({ credentials, environment, f
   }
 }
 
+function toNum(v) {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Run a full safe diagnostic: validate fields → authenticate → fetch accounts +
+ * positions. NEVER throws on auth failure or bad credentials — returns a coded
+ * result instead. NEVER returns secrets/tokens. This is what the dashboard
+ * connection panel reads through the proxy.
+ */
+export async function getNinjaTraderDiagnostics({ credentials, environment, fetchImpl, baseUrl } = {}) {
+  const shape = validateNinjaTraderCredentials(credentials);
+  if (!shape.ok) {
+    return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: shape.error, missing: shape.missing };
+  }
+  if (!ninjaTraderFuturesEnabled()) {
+    return { ok: false, code: 'CONNECTOR_DISABLED', validationStatus: 'unvalidated', message: 'NinjaTrader provider is disabled.' };
+  }
+
+  let client;
+  try {
+    client = buildNinjaTraderClient({ credentials, environment, fetchImpl, baseUrl });
+  } catch (err) {
+    return { ok: false, code: 'CONNECTOR_DISABLED', validationStatus: 'unvalidated', message: err?.message || 'Connector unavailable' };
+  }
+
+  try {
+    const auth = await client.authenticate();
+    if (!auth.ok) {
+      return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: 'NinjaTrader / Tradovate authentication failed.' };
+    }
+  } catch {
+    // Broker rejected creds or gateway error during auth — coded, never raw.
+    return { ok: false, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid', message: 'NinjaTrader / Tradovate authentication failed.' };
+  }
+
+  let accounts = [];
+  let positions = [];
+  try {
+    accounts = await getNinjaTraderAccounts(client);
+    positions = await getNinjaTraderPositions(client, {});
+  } catch {
+    // Auth succeeded but data fetch failed — still "valid", just no data.
+    accounts = [];
+    positions = [];
+  }
+
+  const sel = accounts[0] || null;
+  const envIsLive = client.mode === 'live';
+  return {
+    ok: true,
+    code: accounts.length ? 'OK' : 'NO_ACCOUNTS',
+    validationStatus: 'valid',
+    environment: envIsLive ? 'live' : 'paper',
+    accountMode: envIsLive ? 'live' : 'simulated',
+    accountCount: accounts.length,
+    selectedAccount: sel ? String(sel.name ?? sel.id ?? '') || null : null,
+    balance: sel ? toNum(sel.balance) : null,
+    equity: sel ? toNum(sel.equity) : null,
+    openPositions: positions.length,
+    // Backend's view of whether an order COULD execute (flag + live account).
+    executionAllowed: envIsLive && ninjaTraderLiveExecutionEnabled(),
+  };
+}
+
 export async function getNinjaTraderAccounts(client) {
   if (!client || client.provider !== NINJATRADER_PROVIDER) {
     throw new Error('getNinjaTraderAccounts: client is not a NinjaTrader client');

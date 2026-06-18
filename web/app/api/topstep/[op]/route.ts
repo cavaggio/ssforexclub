@@ -14,7 +14,7 @@ import { callFuturesProvider } from '@/lib/futuresProxy';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const ALLOWED = new Set(['validate', 'status', 'trade', 'close']);
+const ALLOWED = new Set(['validate', 'diagnostics', 'status', 'trade', 'close']);
 
 export async function POST(req: Request, ctx: { params: Promise<{ op: string }> }) {
   const { op } = await ctx.params;
@@ -34,5 +34,5 @@ export async function POST(req: Request, ctx: { params: Promise<{ op: string }> 
   if (op === 'close') extraBody.position = body.position ?? {};
   if (typeof body.accountId === 'string') extraBody.accountId = body.accountId;
 
-  return callFuturesProvider({ provider: 'topstep', op: op as 'validate' | 'status' | 'trade' | 'close', extraBody });
+  return callFuturesProvider({ provider: 'topstep', op: op as 'validate' | 'diagnostics' | 'status' | 'trade' | 'close', extraBody });
 }
