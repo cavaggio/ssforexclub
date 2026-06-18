@@ -33,12 +33,18 @@ test('normalizeEnvironment maps sim→paper and passes through known values', ()
   assert.equal(normalizeEnvironment(null), 'unknown');
 });
 
-test('normalizeValidationStatus defaults to pending when missing', () => {
+test('normalizeValidationStatus handles canonical + legacy vocab, defaults to pending', () => {
+  // canonical DB vocab
+  assert.equal(normalizeValidationStatus('validated'), 'validated');
+  assert.equal(normalizeValidationStatus('failed'), 'validation failed');
+  assert.equal(normalizeValidationStatus('pending'), 'validation pending');
+  // legacy values still understood
   assert.equal(normalizeValidationStatus('valid'), 'validated');
   assert.equal(normalizeValidationStatus('invalid'), 'validation failed');
+  assert.equal(normalizeValidationStatus('unvalidated'), 'validation pending');
+  // missing
   assert.equal(normalizeValidationStatus(null), 'validation pending');
   assert.equal(normalizeValidationStatus(undefined), 'validation pending');
-  assert.equal(normalizeValidationStatus('unvalidated'), 'validation pending');
 });
 
 // These mirror the settings-page rows — the page renders formatBrokerConnection()
@@ -47,13 +53,13 @@ test('formatBrokerConnection renders OANDA practice + live', () => {
   const p = formatBrokerConnection({ broker: 'oanda', environment: 'practice', accountId: '101-1', isActive: true, validationStatus: 'unvalidated' });
   assert.equal(p.brokerLabel, 'OANDA');
   assert.equal(p.environment, 'practice');
-  const l = formatBrokerConnection({ broker: 'oanda', environment: 'live', accountId: '001-9', isActive: true, validationStatus: 'valid' });
+  const l = formatBrokerConnection({ broker: 'oanda', environment: 'live', accountId: '001-9', isActive: true, validationStatus: 'validated' });
   assert.equal(l.statusLabel, 'validated');
   assert.equal(l.statusTone, 'good');
 });
 
 test('formatBrokerConnection renders a NINJATRADER live row', () => {
-  const r = formatBrokerConnection({ broker: 'ninjatrader', environment: 'live', accountId: 'cavaggio', isActive: true, validationStatus: 'invalid' });
+  const r = formatBrokerConnection({ broker: 'ninjatrader', environment: 'live', accountId: 'cavaggio', isActive: true, validationStatus: 'failed' });
   assert.equal(r.brokerLabel, 'NinjaTrader / Tradovate');
   assert.equal(r.environment, 'live');
   assert.equal(r.statusLabel, 'validation failed');

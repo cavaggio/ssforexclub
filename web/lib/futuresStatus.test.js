@@ -9,18 +9,18 @@ import {
 } from './futuresStatus.js';
 
 // ─── validation classification (drives persisted validation_status) ─────────
-test('OANDA 200 probe (no diagnostic code) => valid', () => {
-  assert.equal(classifyValidationResult({ ok: true }), 'valid');
+test('OANDA 200 probe (no diagnostic code) => validated', () => {
+  assert.equal(classifyValidationResult({ ok: true }), 'validated');
 });
 
-test('futures diagnostics OK / NO_ACCOUNTS => valid', () => {
-  assert.equal(classifyValidationResult({ ok: true, code: 'OK', validationStatus: 'valid' }), 'valid');
-  assert.equal(classifyValidationResult({ ok: true, code: 'NO_ACCOUNTS', validationStatus: 'valid' }), 'valid');
+test('futures diagnostics OK / NO_ACCOUNTS => validated', () => {
+  assert.equal(classifyValidationResult({ ok: true, code: 'OK', validationStatus: 'valid' }), 'validated');
+  assert.equal(classifyValidationResult({ ok: true, code: 'NO_ACCOUNTS', validationStatus: 'valid' }), 'validated');
 });
 
-test('broker auth failure => invalid', () => {
-  assert.equal(classifyValidationResult({ ok: true, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid' }), 'invalid');
-  assert.equal(classifyValidationResult({ ok: false, transportCode: 'SCANNER_ERROR' }), 'invalid');
+test('broker auth failure => failed', () => {
+  assert.equal(classifyValidationResult({ ok: true, code: 'BROKER_AUTH_FAILED', validationStatus: 'invalid' }), 'failed');
+  assert.equal(classifyValidationResult({ ok: false, transportCode: 'SCANNER_ERROR' }), 'failed');
 });
 
 test('unreachable / internal-auth / connector-disabled => skip (never mark a good account failed)', () => {

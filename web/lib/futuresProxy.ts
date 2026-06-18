@@ -101,9 +101,13 @@ export async function callFuturesProvider(args: {
   log(`scannerStatus=200 code=${String(data.code ?? 'OK')}`);
 
   // Persist the validation outcome so the Broker connections list can show
-  // validated / validation failed instead of just "active" (DB-row active).
-  if (op === 'diagnostics' && (data.validationStatus === 'valid' || data.validationStatus === 'invalid')) {
-    await setConnectionValidationStatus(userId, conn.id, data.validationStatus as 'valid' | 'invalid').catch(() => undefined);
+  // validated / validation failed. Map the connector's valid/invalid vocab to
+  // the DB's validated/failed vocab.
+  if (op === 'diagnostics') {
+    const persistStatus = data.validationStatus === 'valid' ? 'validated' : data.validationStatus === 'invalid' ? 'failed' : null;
+    if (persistStatus) {
+      await setConnectionValidationStatus(userId, conn.id, persistStatus).catch(() => undefined);
+    }
   }
 
   return NextResponse.json({ provider, ...data });

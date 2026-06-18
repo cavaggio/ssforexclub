@@ -34,11 +34,14 @@ export function normalizeEnvironment(value) {
   return v || 'unknown';
 }
 
-/** valid → validated; invalid → validation failed; anything else → pending. */
+/**
+ * Canonical DB vocab is pending | validated | failed. Legacy values
+ * (valid/invalid/unvalidated) are accepted too. Anything else → pending.
+ */
 export function normalizeValidationStatus(value) {
   const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (v === 'valid' || v === 'validated') return 'validated';
-  if (v === 'invalid' || v === 'validation failed') return 'validation failed';
+  if (v === 'validated' || v === 'valid') return 'validated';
+  if (v === 'failed' || v === 'invalid' || v === 'validation failed') return 'validation failed';
   return 'validation pending';
 }
 

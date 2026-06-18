@@ -58,10 +58,10 @@ const LIVE_ENVS = new Set(['live', 'funded']);
 export function classifyValidationResult({ ok, transportCode, code, validationStatus } = {}) {
   if (transportCode === 'SCANNER_UNREACHABLE' || transportCode === 'INTERNAL_AUTH_FAILED') return 'skip';
   if (code === 'CONNECTOR_DISABLED' || code === 'GATEWAY_URL_MISSING') return 'skip';
-  if (validationStatus === 'valid' || code === 'OK' || code === 'NO_ACCOUNTS') return 'valid';
-  if (validationStatus === 'invalid' || code === 'BROKER_AUTH_FAILED') return 'invalid';
-  if (ok === true) return 'valid';   // OANDA risk-status 200 with no diagnostic code
-  return 'invalid';                  // broker responded with a rejection
+  if (validationStatus === 'valid' || code === 'OK' || code === 'NO_ACCOUNTS') return 'validated';
+  if (validationStatus === 'invalid' || code === 'BROKER_AUTH_FAILED') return 'failed';
+  if (ok === true) return 'validated';   // OANDA risk-status 200 with no diagnostic code
+  return 'failed';                       // broker responded with a rejection
 }
 
 /**

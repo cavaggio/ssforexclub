@@ -14,7 +14,7 @@ import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { validateAllConnections } from '@/lib/connectionValidation';
 
 export type ValidateActionResult =
-  | { ok: true; validated: number; failed: number; skipped: number }
+  | { ok: true; validated: number; failed: number; skipped: number; updateFailed: number; saved: number; persistWarning?: string }
   | { ok: false; error: string };
 
 export async function validateConnectionsAction(): Promise<ValidateActionResult> {
@@ -29,11 +29,16 @@ export async function validateConnectionsAction(): Promise<ValidateActionResult>
     revalidatePath('/dashboard/futures');
     revalidatePath('/dashboard/topstep');
 
+    const updateFailed = outcomes.filter((o) => o.updateFailed).length;
     return {
       ok: true,
-      validated: outcomes.filter((o) => o.result === 'valid').length,
-      failed: outcomes.filter((o) => o.result === 'invalid').length,
+      validated: outcomes.filter((o) => o.result === 'validated').length,
+      failed: outcomes.filter((o) => o.result === 'failed').length,
       skipped: outcomes.filter((o) => o.result === 'skip').length,
+      updateFailed,
+      saved: outcomes.length,
+      // A non-zero updateFailed means we validated but could NOT write the status.
+      persistWarning: updateFailed > 0 ? 'Validation completed but status could not be saved.' : undefined,
     };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

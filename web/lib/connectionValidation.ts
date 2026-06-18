@@ -24,20 +24,23 @@ import { resolveFuturesCredentials } from './futuresProvider';
 import { callInternalEndpoint } from './scannerProxy';
 import { mapScannerTransportError, classifyValidationResult } from './futuresStatus';
 
+type ProbeResult = 'validated' | 'failed' | 'skip';
+
 export type ConnectionValidationOutcome = {
   connectionId: string;
   broker: string;
-  result: 'valid' | 'invalid' | 'skip';
+  result: ProbeResult;
+  updateFailed: boolean;
 };
 
-async function probeOanda(userId: string, conn: BrokerConnection) {
+async function probeOanda(userId: string, conn: BrokerConnection): Promise<ProbeResult> {
   const creds = await getDecryptedBrokerCredentials(userId, conn.id);
-  if (!creds) return classifyValidationResult({ ok: false, transportCode: 'BROKER' }); // no creds → invalid
+  if (!creds) return 'failed'; // saved but no decryptable credentials
   let baseUrl: string;
   try {
     baseUrl = resolveBrokerBaseUrl(conn.broker, conn.environment);
   } catch {
-    return 'invalid' as const;
+    return 'failed';
   }
   // risk-status is a read-only auth probe: a 200 means OANDA accepted the creds.
   const res = await callInternalEndpoint('/api/internal/oanda/risk-status', {
@@ -51,9 +54,9 @@ async function probeOanda(userId: string, conn: BrokerConnection) {
   return classifyValidationResult({ ok: false, transportCode: code });
 }
 
-async function probeFutures(userId: string, conn: BrokerConnection) {
+async function probeFutures(userId: string, conn: BrokerConnection): Promise<ProbeResult> {
   const resolved = await resolveFuturesCredentials(userId, conn.id);
-  if (!resolved) return 'invalid' as const;
+  if (!resolved) return 'failed';
   const res = await callInternalEndpoint(`/api/internal/${conn.broker}/diagnostics`, {
     provider: conn.broker,
     credentials: resolved.credentials,
@@ -73,26 +76,31 @@ async function probeFutures(userId: string, conn: BrokerConnection) {
 
 /** Validate a single connection and persist the outcome (unless 'skip'). */
 export async function validateConnection(userId: string, conn: BrokerConnection): Promise<ConnectionValidationOutcome> {
-  let result: 'valid' | 'invalid' | 'skip';
+  let result: ProbeResult;
   try {
     if (conn.broker === 'oanda' || conn.broker === 'alpaca') {
       result = await probeOanda(userId, conn);
     } else if (conn.broker === 'ninjatrader' || conn.broker === 'topstep') {
       result = await probeFutures(userId, conn);
     } else {
-      result = 'invalid';
+      result = 'failed';
     }
   } catch {
     // Never let one bad connection abort the batch; treat as unreachable.
     result = 'skip';
   }
 
-  if (result === 'valid' || result === 'invalid') {
-    // Per-id update — only THIS connection's row is touched.
-    await setConnectionValidationStatus(userId, conn.id, result).catch(() => undefined);
+  let updateFailed = false;
+  if (result === 'validated' || result === 'failed') {
+    // Per-id + per-user update — only THIS connection's row is touched.
+    const persisted = await setConnectionValidationStatus(userId, conn.id, result);
+    updateFailed = !persisted.ok;
+    if (updateFailed) {
+      console.warn(`[VALIDATE] persist FAILED broker=${conn.broker} connection=${conn.id} reason=${'code' in persisted ? persisted.code : '?'}`);
+    }
   }
-  console.log(`[VALIDATE] broker=${conn.broker} env=${conn.environment} connection=${conn.id} result=${result}`);
-  return { connectionId: conn.id, broker: conn.broker, result };
+  console.log(`[VALIDATE] broker=${conn.broker} env=${conn.environment} connection=${conn.id} result=${result} persisted=${!updateFailed}`);
+  return { connectionId: conn.id, broker: conn.broker, result, updateFailed };
 }
 
 /** Validate every active connection for the user. */

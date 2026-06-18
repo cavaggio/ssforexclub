@@ -29,9 +29,11 @@ export function ValidateConnectionsButton() {
         {pending ? 'Checking…' : 'Re-check connections'}
       </button>
       {result && result.ok && (
-        <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+        <span style={{ color: result.updateFailed ? 'var(--bad)' : 'var(--muted)', fontSize: 12 }}>
           {result.validated} validated · {result.failed} failed
           {result.skipped ? ` · ${result.skipped} unreachable` : ''}
+          {result.updateFailed ? ` · ${result.updateFailed} not saved` : ''}
+          {result.persistWarning ? ` — ${result.persistWarning}` : ''}
         </span>
       )}
       {result && !result.ok && (

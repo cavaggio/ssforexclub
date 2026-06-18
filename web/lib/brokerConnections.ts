@@ -26,7 +26,8 @@ export type BrokerKind = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep';
 // 'sim' = NinjaTrader simulated; 'evaluation'/'funded' = Topstep combine/funded.
 export type BrokerEnvironment = 'practice' | 'live' | 'paper' | 'sim' | 'evaluation' | 'funded';
 
-export type ValidationStatus = 'unvalidated' | 'valid' | 'invalid';
+// Canonical vocabulary, matching the DB column + the dashboard labels.
+export type ValidationStatus = 'pending' | 'validated' | 'failed';
 
 export type BrokerConnection = {
   id: string;
@@ -58,7 +59,7 @@ function rowToConnection(row: Record<string, unknown>): BrokerConnection {
     accountId: String(row.account_id),
     environment: row.environment as BrokerEnvironment,
     isActive: Boolean(row.is_active),
-    validationStatus: (row.validation_status as ValidationStatus) ?? 'unvalidated',
+    validationStatus: (row.validation_status as ValidationStatus) ?? 'pending',
     lastValidatedAt: (row.last_validated_at as string | null) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -122,23 +123,40 @@ export async function createBrokerConnection(
   return rowToConnection(data as unknown as Record<string, unknown>);
 }
 
+export type SetValidationResult =
+  | { ok: true; rowsUpdated: number }
+  | { ok: false; code: 'UPDATE_NO_ROWS' | 'UPDATE_ERROR' | 'BAD_ARGS'; error?: string };
+
 /**
- * Persist the latest validation outcome for a connection (set after a
- * diagnostics run). Best-effort — never throws to the caller; a failed write
- * just leaves the previous status. Never touches credentials.
+ * Persist a connection's validation outcome. Scoped by BOTH user_id AND id so
+ * one user can never update another's row and duplicate broker/env rows never
+ * collide. Returns a structured result — the caller surfaces failures rather
+ * than silently no-opping. Asserts exactly one row was updated. Never throws;
+ * never touches credentials.
  */
 export async function setConnectionValidationStatus(
   clerkUserId: string,
   connectionId: string,
-  status: 'valid' | 'invalid',
-): Promise<void> {
-  if (!clerkUserId || !connectionId) return;
+  status: 'validated' | 'failed',
+): Promise<SetValidationResult> {
+  if (!clerkUserId || !connectionId) return { ok: false, code: 'BAD_ARGS' };
   const supabase = getServerSupabase();
-  await supabase
+  const { data, error } = await supabase
     .from('broker_connections')
     .update({ validation_status: status, last_validated_at: new Date().toISOString() })
     .eq('user_id', clerkUserId)
-    .eq('id', connectionId);
+    .eq('id', connectionId)
+    .select('id'); // returns exactly the rows that were updated
+  if (error) {
+    console.warn(`[VALIDATE_PERSIST] update failed connection=${connectionId} code=${error.code ?? '?'} msg=${error.message}`);
+    return { ok: false, code: 'UPDATE_ERROR', error: error.message };
+  }
+  const rowsUpdated = Array.isArray(data) ? data.length : 0;
+  if (rowsUpdated !== 1) {
+    console.warn(`[VALIDATE_PERSIST] expected 1 row, updated ${rowsUpdated} for connection=${connectionId}`);
+    return { ok: false, code: 'UPDATE_NO_ROWS' };
+  }
+  return { ok: true, rowsUpdated };
 }
 
 export async function deactivateBrokerConnection(
