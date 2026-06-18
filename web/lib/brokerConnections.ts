@@ -65,18 +65,34 @@ function rowToConnection(row: Record<string, unknown>): BrokerConnection {
   };
 }
 
+// Columns added by the futures migration (20260618000000). Production may not
+// have them applied yet, so every select tries them first and transparently
+// falls back to the base columns if Postgres reports they don't exist. This
+// keeps the settings page (and the broker resolver) from crashing on a partial
+// migration; rowToConnection defaults the missing fields safely.
+const BASE_COLS = 'id, user_id, broker, account_id, environment, is_active, created_at, updated_at';
+const FULL_COLS = `${BASE_COLS}, validation_status, last_validated_at`;
+
+function isMissingColumnError(error: { message?: string; code?: string } | null): boolean {
+  if (!error) return false;
+  // Postgres undefined_column = 42703; PostgREST surfaces it in the message too.
+  return error.code === '42703' || /validation_status|last_validated_at|column .* does not exist|schema cache/i.test(error.message || '');
+}
+
 export async function listBrokerConnectionsForUser(
   clerkUserId: string
 ): Promise<BrokerConnection[]> {
   if (!clerkUserId) throw new Error('listBrokerConnectionsForUser: missing clerkUserId');
   const supabase = getServerSupabase();
-  const { data, error } = await supabase
-    .from('broker_connections')
-    .select('id, user_id, broker, account_id, environment, is_active, validation_status, last_validated_at, created_at, updated_at')
-    .eq('user_id', clerkUserId)
-    .order('created_at', { ascending: false });
+  const run = (cols: string) =>
+    supabase.from('broker_connections').select(cols).eq('user_id', clerkUserId).order('created_at', { ascending: false });
+
+  let { data, error } = await run(FULL_COLS);
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await run(BASE_COLS));
+  }
   if (error) throw new Error(`listBrokerConnectionsForUser: ${error.message}`);
-  return (data ?? []).map(rowToConnection);
+  return (data ?? []).map((r) => rowToConnection(r as unknown as Record<string, unknown>));
 }
 
 export async function createBrokerConnection(
@@ -84,23 +100,26 @@ export async function createBrokerConnection(
 ): Promise<BrokerConnection> {
   if (!input.clerkUserId) throw new Error('createBrokerConnection: missing clerkUserId');
   const supabase = getServerSupabase();
-  const { data, error } = await supabase
-    .from('broker_connections')
-    .insert({
-      user_id: input.clerkUserId,
-      broker: input.broker,
-      account_id: input.accountId,
-      environment: input.environment,
-      encrypted_token: encryptSecret(input.token),
-      encrypted_secret: input.secret ? encryptSecret(input.secret) : null,
-      is_active: true,
-    })
-    .select('id, user_id, broker, account_id, environment, is_active, validation_status, last_validated_at, created_at, updated_at')
-    .single();
+  const row = {
+    user_id: input.clerkUserId,
+    broker: input.broker,
+    account_id: input.accountId,
+    environment: input.environment,
+    encrypted_token: encryptSecret(input.token),
+    encrypted_secret: input.secret ? encryptSecret(input.secret) : null,
+    is_active: true,
+  };
+  const run = (cols: string) =>
+    supabase.from('broker_connections').insert(row).select(cols).single();
+
+  let { data, error } = await run(FULL_COLS);
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await run(BASE_COLS));
+  }
   if (error || !data) {
     throw new Error(`createBrokerConnection: ${error?.message ?? 'no row returned'}`);
   }
-  return rowToConnection(data);
+  return rowToConnection(data as unknown as Record<string, unknown>);
 }
 
 /**

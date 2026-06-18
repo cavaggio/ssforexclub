@@ -13,7 +13,8 @@
 import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { summarizeEnvironments } from '@/lib/environments';
-import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
+import { resolveActiveBrokerForUser, toClientSafeBrokerStatus, type ClientSafeBrokerStatus } from '@/lib/brokerResolver';
+import { formatBrokerConnection } from '@/lib/brokerDisplay';
 import { TradingModeToggle } from '@/components/trading-mode-toggle';
 import { ConnectBrokerForm } from '@/components/connect-broker-form';
 import { LiveAckCard } from '@/components/live-ack-card';
@@ -34,8 +35,26 @@ export default async function SettingsPage() {
   // pass it directly to a `"use client"` component. `toClientSafeBrokerStatus`
   // strips the callback so the toggle can receive a plain-JSON object that
   // React can serialize across the Server → Client boundary.
-  const resolvedBroker = await resolveActiveBrokerForUser(userId);
-  const brokerStatus   = toClientSafeBrokerStatus(resolvedBroker);
+  // Wrapped defensively: a resolver failure must not crash the whole page.
+  let brokerStatus: ClientSafeBrokerStatus;
+  try {
+    brokerStatus = toClientSafeBrokerStatus(await resolveActiveBrokerForUser(userId));
+  } catch (err) {
+    if (!connectionError) connectionError = err instanceof Error ? err.message : String(err);
+    brokerStatus = {
+      activeBroker: null,
+      activeEnvironment: 'practice',
+      activeConnectionId: null,
+      isLiveTrading: false,
+      isPaperTrading: true,
+      liveTradingAcknowledged: false,
+      environmentSource: 'fallback_dev_env',
+      platformLiveTradingEnabled: false,
+      brokerCredentialStatus: 'error',
+      baseUrl: null,
+      reason: 'Broker status unavailable',
+    };
+  }
   // The Trading-environments panel MUST reflect what the scanner will actually
   // use. summarizeEnvironments derives from the resolver output, not a parallel
   // calculation, so the panel and the scanner can never disagree.
@@ -188,13 +207,13 @@ export default async function SettingsPage() {
                 }}
               >
                 <span>
-                  <strong>{c.broker.toUpperCase()}</strong>
+                  <strong>{formatBrokerConnection(c).brokerLabel}</strong>
                   <span style={{ color: 'var(--muted)', marginLeft: 8 }}>
-                    {c.environment} &middot; {c.accountId}
+                    {formatBrokerConnection(c).environment} &middot; {formatBrokerConnection(c).accountLabel}
                   </span>
                 </span>
-                <span style={{ color: connectionStatusColor(c) }}>
-                  {connectionStatusLabel(c)}
+                <span style={{ color: statusToneColor(formatBrokerConnection(c).statusTone) }}>
+                  {formatBrokerConnection(c).statusLabel}
                 </span>
               </li>
             ))}
@@ -216,19 +235,12 @@ function describeLiveGate(envSummary: {
   return liveStatusMessageInner(envSummary);
 }
 
-// "active" here means the DB row is active (saved), NOT that credentials are
-// authenticated. Validation status is a separate, explicit signal.
-function connectionStatusLabel(c: { isActive: boolean; validationStatus: string }): string {
-  if (!c.isActive) return 'disabled';
-  if (c.validationStatus === 'valid') return 'validated';
-  if (c.validationStatus === 'invalid') return 'validation failed';
-  return 'saved · validation pending';
-}
-
-function connectionStatusColor(c: { isActive: boolean; validationStatus: string }): string {
-  if (!c.isActive) return 'var(--muted)';
-  if (c.validationStatus === 'valid') return 'var(--good)';
-  if (c.validationStatus === 'invalid') return 'var(--bad)';
+// Maps a formatBrokerConnection() status tone to a CSS color. "validation
+// pending"/disabled are muted; validated is good; failed is bad. (A DB-active
+// row only means "saved", never "authenticated".)
+function statusToneColor(tone: string): string {
+  if (tone === 'good') return 'var(--good)';
+  if (tone === 'bad') return 'var(--bad)';
   return 'var(--muted)';
 }
 
