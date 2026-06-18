@@ -22,8 +22,9 @@ import 'server-only';
 import { getServerSupabase } from './db';
 import { decryptSecret, encryptSecret } from './encryption';
 
-export type BrokerKind = 'oanda' | 'alpaca';
-export type BrokerEnvironment = 'practice' | 'live' | 'paper';
+export type BrokerKind = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep';
+// 'sim' = NinjaTrader simulated; 'evaluation'/'funded' = Topstep combine/funded.
+export type BrokerEnvironment = 'practice' | 'live' | 'paper' | 'sim' | 'evaluation' | 'funded';
 
 export type BrokerConnection = {
   id: string;
@@ -176,6 +177,15 @@ export function resolveBrokerBaseUrl(
       return process.env.ALPACA_LIVE_URL || 'https://api.alpaca.markets';
     }
     throw new Error(`Alpaca does not support environment="${environment}"`);
+  }
+  if (broker === 'ninjatrader') {
+    // Futures connectors resolve their own gateway URL server-side; this is
+    // returned only so the broker resolver doesn't throw when NinjaTrader is
+    // the active broker. Futures execution does NOT flow through this URL.
+    return process.env.NINJATRADER_GATEWAY_URL || 'https://gateway.ninjatrader.com';
+  }
+  if (broker === 'topstep') {
+    return process.env.TOPSTEP_API_BASE_URL || 'https://api.topstepx.com';
   }
   throw new Error(`Unsupported broker: ${broker}`);
 }

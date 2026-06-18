@@ -41,6 +41,17 @@ import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveT
 import { createOandaClient } from './oandaClient.js';
 import { getCalibrationSnapshot } from './oandaCalibration.js';
 import { runUserScoped } from './requestContext.js';
+import { PROVIDERS, assertExecutionProvider } from './providerRouting.js';
+import {
+  ninjaTraderConnectivityCheck, buildNinjaTraderClient, getNinjaTraderAccounts,
+  getNinjaTraderPositions, placeNinjaTraderOrder, closeNinjaTraderPosition,
+  ninjaTraderFuturesEnabled,
+} from './ninjatraderClient.js';
+import {
+  topstepConnectivityCheck, buildTopstepClient, getTopstepAccounts,
+  getTopstepPositions, placeTopstepOrder, closeTopstepPosition,
+  topstepEnabled, evaluateTopstepExecution,
+} from './topstepClient.js';
 
 dotenv.config({
   path: path.resolve(process.cwd(), '.env'),
@@ -1820,6 +1831,114 @@ function logInternalCall(tag, body) {
     `[INTERNAL ${tag}] broker=oanda env=${env} accountId=${maskAccountId(accountId)} usingDefaultClient=false`,
   );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INTERNAL endpoints — FUTURES providers (NinjaTrader, Topstep).
+//
+// Kept physically separate from the /api/internal/oanda/* forex endpoints. Each
+// route asserts its own provider against the credential provider via
+// assertExecutionProvider() so a futures order can NEVER route through OANDA and
+// an OANDA request can never reach a futures connector. Credentials arrive as a
+// decrypted multi-field object in the body (NOT apiKey/accountId/baseUrl).
+// ══════════════════════════════════════════════════════════════════════════════
+
+function logFuturesCall(provider, op, body) {
+  console.log(`[INTERNAL ${provider.toUpperCase()} ${op}] env=${body?.environment ?? '<missing>'} mode=futures`);
+}
+
+// Wrap a futures handler: internal-auth, provider assertion, error envelope.
+function futuresRoute(routeProvider, handler) {
+  return async (req, res) => {
+    if (!requireInternalAuth(req, res)) return;
+    const body = req.body || {};
+    try {
+      // The body declares which provider it carries; it MUST match the route.
+      assertExecutionProvider(routeProvider, body.provider);
+    } catch (err) {
+      return res.status(409).json({ ok: false, error: err?.message || String(err), code: err?.code });
+    }
+    if (!body.credentials || typeof body.credentials !== 'object') {
+      return res.status(400).json({ ok: false, error: 'Missing credentials object in body' });
+    }
+    try {
+      await handler(body, res);
+    } catch (err) {
+      console.error(`[INTERNAL_${routeProvider.toUpperCase()}] error:`, err?.message || err);
+      res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  };
+}
+
+// ─── NinjaTrader ────────────────────────────────────────────────────────────
+app.post('/api/internal/ninjatrader/validate', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
+  logFuturesCall('ninjatrader', 'VALIDATE', body);
+  const result = await ninjaTraderConnectivityCheck({ credentials: body.credentials, environment: body.environment });
+  res.json({ ok: result.ok, status: result.status, error: result.error ?? null, missing: result.missing ?? [] });
+}));
+
+app.post('/api/internal/ninjatrader/status', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
+  logFuturesCall('ninjatrader', 'STATUS', body);
+  if (!ninjaTraderFuturesEnabled()) {
+    return res.json({ ok: true, enabled: false, accounts: [], positions: [], reason: 'NinjaTrader provider disabled' });
+  }
+  const client = buildNinjaTraderClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const accounts = await getNinjaTraderAccounts(client);
+  const positions = await getNinjaTraderPositions(client, { accountId: body.accountId });
+  res.json({ ok: true, enabled: true, mode: client.mode, accounts, positions });
+}));
+
+app.post('/api/internal/ninjatrader/trade', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
+  logFuturesCall('ninjatrader', 'TRADE', body);
+  const client = buildNinjaTraderClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const result = await placeNinjaTraderOrder(client, body.order || {});
+  res.json(result);
+}));
+
+app.post('/api/internal/ninjatrader/close', futuresRoute(PROVIDERS.NINJATRADER, async (body, res) => {
+  logFuturesCall('ninjatrader', 'CLOSE', body);
+  const client = buildNinjaTraderClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const result = await closeNinjaTraderPosition(client, body.position || {});
+  res.json(result);
+}));
+
+// ─── Topstep ──────────────────────────────────────────────────────────────────
+app.post('/api/internal/topstep/validate', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {
+  logFuturesCall('topstep', 'VALIDATE', body);
+  const result = await topstepConnectivityCheck({ credentials: body.credentials, environment: body.environment });
+  res.json({ ok: result.ok, status: result.status, error: result.error ?? null, missing: result.missing ?? [] });
+}));
+
+app.post('/api/internal/topstep/status', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {
+  logFuturesCall('topstep', 'STATUS', body);
+  if (!topstepEnabled()) {
+    return res.json({ ok: true, enabled: false, accounts: [], positions: [], reason: 'Topstep provider disabled' });
+  }
+  const client = buildTopstepClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const accounts = await getTopstepAccounts(client);
+  const positions = await getTopstepPositions(client, { accountId: body.accountId });
+  const execGate = evaluateTopstepExecution({ environment: body.environment });
+  res.json({ ok: true, enabled: true, mode: client.mode, accounts, positions, executionAllowed: execGate.allowed, executionReason: execGate.reason });
+}));
+
+app.post('/api/internal/topstep/trade', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {
+  logFuturesCall('topstep', 'TRADE', body);
+  const client = buildTopstepClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const result = await placeTopstepOrder(client, body.order || {});
+  res.json(result);
+}));
+
+app.post('/api/internal/topstep/close', futuresRoute(PROVIDERS.TOPSTEP, async (body, res) => {
+  logFuturesCall('topstep', 'CLOSE', body);
+  const client = buildTopstepClient({ credentials: body.credentials, environment: body.environment });
+  await client.authenticate();
+  const result = await closeTopstepPosition(client, body.position || {});
+  res.json(result);
+}));
 
 // POST /api/internal/oanda/risk-status
 //   Read-only risk snapshot for the dashboard Risk Management panel: account
