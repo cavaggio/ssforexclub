@@ -61,7 +61,7 @@ export function isIctExecutionEnabled() {
 
 const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '2.0');
 
-const DEFAULT_ICT_PAIRS = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD', 'XAU_USD', 'XAG_USD'];
+const DEFAULT_ICT_PAIRS = ['GBP_USD', 'EUR_USD', 'AUD_CAD', 'GBP_JPY', 'USD_CAD', 'EUR_AUD'];
 const ICT_PAIRS = (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST)
   ? (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST).split(',').map((p) => p.trim()).filter(Boolean)
   : DEFAULT_ICT_PAIRS;

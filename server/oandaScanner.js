@@ -79,46 +79,26 @@ const _SLOG_CUR = _SLOG_RANK[SCANNER_LOG_LEVEL] ?? 2;
 const scannerLogEnabled = (level) => (_SLOG_RANK[level] ?? 2) <= _SLOG_CUR;
 function slog(level, ...args) { if (scannerLogEnabled(level)) console.log(...args); }
 
-const DEFAULT_PAIRS = [
-  'EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'USD_CAD', 'XAU_USD', 'XAG_USD',
+const DEFAULT_FOREX_WATCHLIST = [
+  'GBP_USD',
+  'EUR_USD',
+  'AUD_CAD',
+  'GBP_JPY',
+  'USD_CAD',
+  'EUR_AUD',
 ];
 
 const WATCHLIST = process.env.FOREX_WATCHLIST
   ? process.env.FOREX_WATCHLIST.split(',').map(p => p.trim()).filter(Boolean)
-  : DEFAULT_PAIRS;
-const PRIORITY_PAIRS = {
-  tier1: [
-    'EUR_USD',
-    'GBP_USD',
-    'USD_JPY',
-    'GBP_JPY',
-    'EUR_JPY',
-    'USD_CHF',
-    'USD_CAD'
-  ],
-
-  tier2: [
-    'GBP_CHF',
-    'EUR_AUD',
-    'GBP_AUD',
-    'GBP_CAD',
-    'CAD_JPY',
-    'CHF_JPY'
-  ],
-
-  tier3: [
-    'AUD_CAD',
-    'AUD_NZD',
-    'NZD_CAD',
-    'EUR_NZD',
-    'GBP_NZD'
-  ]
-};
+  : DEFAULT_FOREX_WATCHLIST;
 
 const ORDERED_WATCHLIST = [
-  ...PRIORITY_PAIRS.tier1,
-  ...PRIORITY_PAIRS.tier2,
-  ...PRIORITY_PAIRS.tier3
+  'GBP_USD',
+  'EUR_USD',
+  'AUD_CAD',
+  'GBP_JPY',
+  'USD_CAD',
+  'EUR_AUD',
 ].filter(pair => WATCHLIST.includes(pair));
 
 // ─── Instrument helpers ───────────────────────────────────────────────────────
