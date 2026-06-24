@@ -42,7 +42,16 @@ import {
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
 const MIN_SCORE             = parseInt(process.env.FOREX_MIN_SCORE     || '8',   10);
 const MIN_CONFIDENCE        = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
-const MAX_DAILY_TRADES      = parseInt(process.env.FOREX_MAX_DAILY_TRADES  || '3',   10);
+// Auto AI daily trade cap — env-driven, read at call time so it can be tuned
+// without a rebuild. Prefers AUTO_AI_DAILY_TRADE_CAP; falls back to the legacy
+// FOREX_MAX_DAILY_TRADES; safe default 10. This caps trade COUNT only — every
+// risk/loss/margin/duplicate/live-ack guard remains fully enforced.
+export function dailyTradeCap() {
+  return Number(process.env.AUTO_AI_DAILY_TRADE_CAP || process.env.FOREX_MAX_DAILY_TRADES || 10);
+}
+export function isDailyTradeCapReached(count) {
+  return Number(count) >= dailyTradeCap();
+}
 const MAX_DAILY_LOSS_PERCENT= parseFloat(process.env.FOREX_MAX_DAILY_LOSS_PERCENT || '2');
 const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS       || '5.0');
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
@@ -519,12 +528,13 @@ export async function executeTrade(signal, options = {}) {
     return blocked(`Duplicate trade already active: ${tradeKey}`);
   }
 
-  // ── Guard 8: Daily cap ────────────────────────────────────────────────────
+  // ── Guard 8: Daily cap (count only — risk/loss guards below stay enforced) ──
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   dailyTradeTimestamps = dailyTradeTimestamps.filter((t) => t > todayStart.getTime());
-  if (dailyTradeTimestamps.length >= MAX_DAILY_TRADES) {
-    return blocked(`Daily trade cap reached: ${dailyTradeTimestamps.length}/${MAX_DAILY_TRADES}`);
+  const cap = dailyTradeCap();
+  if (dailyTradeTimestamps.length >= cap) {
+    return blocked(`Daily trade cap reached: ${dailyTradeTimestamps.length}/${cap}`);
   }
 
   // ── Guard 9: Account + balance + daily loss cap ───────────────────────────
@@ -1166,7 +1176,7 @@ export function getTradeState() {
   return {
     autoTradeEnabled:   AUTO_TRADE_ENABLED,
     dailyTradesCount:   dailyTradeTimestamps.length,
-    dailyTradesCap:     MAX_DAILY_TRADES,
+    dailyTradesCap:     dailyTradeCap(),
     dailyLossUSD:       +dailyLossUSD.toFixed(2),
     activeTrades:       Array.from(activeTrades),
     cooldownRemainingMs: Math.max(0, COOLDOWN_MS - (Date.now() - lastTradeTime)),
