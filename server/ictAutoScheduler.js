@@ -8,14 +8,14 @@
  * user's creds, and calls back into the Railway internal ICT endpoints.
  *
  * Off by default (ICT_AUTO_AI_SCHEDULER_ENABLED=false). Only fires on NY
- * weekdays between 02:00 and 11:00 ET (DST-aware via ictTime).
+ * weekdays between 02:15 and 10:00 ET (DST-aware via ictTime).
  */
 
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 2 * 60, endMin: 11 * 60 }; // 02:00–11:00 ET
+export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 10 * 60 }; // 02:15–10:00 ET
 
-/** True only on a NY weekday within 02:00–11:00 ET. */
+/** True only on a NY weekday within 02:15–10:00 ET. */
 export function inAutoAiWindow(input = new Date()) {
   const et = etParts(input);
   if (!et || et.isWeekend) return false;
@@ -40,7 +40,7 @@ export function startAutoAiScheduler({ intervalMs = INTERVAL_MS } = {}) {
     console.log('[AUTO_AI] NEXT_BASE_URL / AUTO_AI_CRON_SECRET not set — scheduler not started');
     return { started: false, reason: 'missing_config' };
   }
-  console.log(`[AUTO_AI] starting 5-min scheduler → ${nextUrl}/api/cron/auto-ai-trading (NY weekday 02:00–11:00 ET)`);
+  console.log(`[AUTO_AI] starting 5-min scheduler → ${nextUrl}/api/cron/auto-ai-trading (NY weekday 02:15–10:00 ET)`);
   _timer = setInterval(() => { void tick(nextUrl, secret); }, intervalMs);
   if (typeof _timer.unref === 'function') _timer.unref();
   return { started: true, intervalMs };
