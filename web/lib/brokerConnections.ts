@@ -22,9 +22,9 @@ import 'server-only';
 import { getServerSupabase } from './db';
 import { decryptSecret, encryptSecret } from './encryption';
 
-export type BrokerKind = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep';
+export type BrokerKind = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep' | 'ftmo';
 // 'sim' = NinjaTrader simulated; 'evaluation'/'funded' = Topstep combine/funded.
-export type BrokerEnvironment = 'practice' | 'live' | 'paper' | 'sim' | 'evaluation' | 'funded';
+export type BrokerEnvironment = 'practice' | 'live' | 'paper' | 'sim' | 'evaluation' | 'funded' | 'challenge' | 'verification';
 
 // Canonical vocabulary, matching the DB column + the dashboard labels.
 export type ValidationStatus = 'pending' | 'validated' | 'failed';
@@ -248,6 +248,9 @@ export function resolveBrokerBaseUrl(
   }
   if (broker === 'topstep') {
     return process.env.TOPSTEP_API_BASE_URL || 'https://api.topstepx.com';
+  }
+  if (broker === 'ftmo') {
+    return process.env.FTMO_API_BASE_URL || process.env.FTMO_CTRADER_API_BASE_URL || 'https://api.ctrader.com';
   }
   throw new Error(`Unsupported broker: ${broker}`);
 }

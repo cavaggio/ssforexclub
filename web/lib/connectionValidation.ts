@@ -80,7 +80,7 @@ export async function validateConnection(userId: string, conn: BrokerConnection)
   try {
     if (conn.broker === 'oanda' || conn.broker === 'alpaca') {
       result = await probeOanda(userId, conn);
-    } else if (conn.broker === 'ninjatrader' || conn.broker === 'topstep') {
+    } else if (conn.broker === 'ninjatrader' || conn.broker === 'topstep' || conn.broker === 'ftmo') {
       result = await probeFutures(userId, conn);
     } else {
       result = 'failed';

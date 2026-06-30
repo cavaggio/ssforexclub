@@ -22,7 +22,7 @@ import {
   type BrokerEnvironment,
 } from './brokerConnections';
 
-export type FuturesProvider = 'ninjatrader' | 'topstep';
+export type FuturesProvider = 'ninjatrader' | 'topstep' | 'ftmo';
 
 export const NINJATRADER_REQUIRED_FIELDS = ['name', 'password', 'appId', 'appVersion', 'cid', 'sec'] as const;
 export const TOPSTEP_REQUIRED_FIELDS = ['userName', 'apiKey'] as const;
@@ -70,6 +70,7 @@ function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknow
 const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
   ninjatrader: ['paper', 'live'],
   topstep: ['evaluation', 'funded'],
+  ftmo: ['challenge', 'verification', 'funded'],
 };
 
 /**
@@ -128,7 +129,7 @@ export async function resolveFuturesCredentials(
 ): Promise<{ provider: FuturesProvider; environment: BrokerEnvironment; accountId: string; credentials: Record<string, unknown> } | null> {
   const creds = await getDecryptedBrokerCredentials(clerkUserId, connectionId);
   if (!creds) return null;
-  if (creds.broker !== 'ninjatrader' && creds.broker !== 'topstep') return null;
+  if (creds.broker !== 'ninjatrader' && creds.broker !== 'topstep' && creds.broker !== 'ftmo') return null;
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(creds.token);

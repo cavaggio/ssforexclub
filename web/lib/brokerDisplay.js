@@ -7,13 +7,14 @@
  * No secrets are ever read or returned here.
  */
 
-const KNOWN_BROKERS = new Set(['oanda', 'alpaca', 'ninjatrader', 'topstep']);
+const KNOWN_BROKERS = new Set(['oanda', 'alpaca', 'ninjatrader', 'topstep', 'ftmo']);
 
 const BROKER_LABELS = {
   oanda: 'OANDA',
   alpaca: 'Alpaca',
   ninjatrader: 'NinjaTrader / Tradovate',
   topstep: 'Topstep',
+  ftmo: 'FTMO / cTrader',
 };
 
 /** Lowercase + recognize; unknown values normalize to 'unknown' (never throws). */
