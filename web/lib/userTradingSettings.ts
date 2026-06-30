@@ -16,7 +16,7 @@
 import 'server-only';
 import { getServerSupabase } from './db';
 
-export type ActiveBroker = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep';
+export type ActiveBroker = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep' | 'ftmo';
 export type ActiveEnvironment = 'practice' | 'paper' | 'live' | 'sim' | 'evaluation' | 'funded';
 
 export type UserTradingSettings = {
