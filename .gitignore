@@ -43,3 +43,5 @@ server/data/v3-shadow-log.json
 *.njsproj
 *.sln
 *.sw?
+.vercel
+.env*.local
