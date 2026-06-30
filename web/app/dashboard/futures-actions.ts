@@ -53,7 +53,7 @@ async function saveFutures(
     await saveFuturesConnection({ clerkUserId: userId, provider, environment, credentials });
 
     revalidatePath('/dashboard/futures');
-    revalidatePath('/dashboard/topstep');
+    revalidatePath('/dashboard/ftmo');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

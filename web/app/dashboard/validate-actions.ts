@@ -27,7 +27,7 @@ export async function validateConnectionsAction(): Promise<ValidateActionResult>
 
     revalidatePath('/dashboard/settings');
     revalidatePath('/dashboard/futures');
-    revalidatePath('/dashboard/topstep');
+    revalidatePath('/dashboard/ftmo');
 
     const updateFailed = outcomes.filter((o) => o.updateFailed).length;
     return {
