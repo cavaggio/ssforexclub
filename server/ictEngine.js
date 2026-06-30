@@ -48,7 +48,7 @@ export function ictExecConfig() {
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
     minConfidence: parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'),
     minRR: parseFloat(process.env.ICT_MIN_RR || '2.0'),
-    maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1'),
+    maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.25'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
   };
 }
@@ -61,7 +61,7 @@ export function isIctExecutionEnabled() {
 
 const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '2.0');
 
-const DEFAULT_ICT_PAIRS = ['GBP_USD', 'EUR_USD', 'AUD_CAD', 'GBP_JPY', 'USD_CAD', 'EUR_AUD'];
+const DEFAULT_ICT_PAIRS = ['EUR_USD', 'USD_CAD', 'AUD_USD', 'NZD_USD', 'USD_CHF', 'EUR_GBP', 'EUR_CHF', 'AUD_CAD'];
 const ICT_PAIRS = (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST)
   ? (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST).split(',').map((p) => p.trim()).filter(Boolean)
   : DEFAULT_ICT_PAIRS;

@@ -32,7 +32,7 @@ export const RISK_MODE = 'dynamic';
 export const MINIMUM_RISK_REWARD = 1.5;   // hard floor; lifecycle engine enforces
 
 export const MIN_RISK_PERCENT          = parseFloat(process.env.FOREX_MIN_RISK_PERCENT          || '0.5');
-export const MAX_RISK_PERCENT          = parseFloat(process.env.FOREX_MAX_RISK_PERCENT          || '2.0');
+export const MAX_RISK_PERCENT          = parseFloat(process.env.FOREX_MAX_RISK_PERCENT || '1.25');
 export const CONFIDENCE_FOR_MAX_RISK   = parseFloat(process.env.FOREX_CONFIDENCE_FOR_MAX_RISK   || '80');
 
 // Legacy hard cap. When set, no single trade can risk more than this absolute USD

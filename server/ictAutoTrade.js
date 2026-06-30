@@ -17,19 +17,72 @@ function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
 
-export async function runAutoAiForUser({ client, now = new Date(), runId = null } = {}) {
+function buildIctWatchState(analyses = [], minConfidence = 80) {
+  const nearQualifiedPairs = new Set();
+  const hotPairs = new Set();
+  const lateEntryPairs = new Set();
+
+  for (const item of analyses) {
+    const pair = item?.pair;
+    if (!pair) continue;
+
+    let text = '';
+    try { text = JSON.stringify(item || {}).toLowerCase(); }
+    catch { text = String(item || '').toLowerCase(); }
+
+    const confidence = Number(item?.confidence ?? 0);
+    const hasDirectionalSignal = item?.signal && item.signal !== 'none';
+
+    if (text.includes('late_entry') || text.includes('overextended')) {
+      lateEntryPairs.add(pair);
+      continue;
+    }
+
+    if (hasDirectionalSignal && confidence >= minConfidence) {
+      hotPairs.add(pair);
+      continue;
+    }
+
+    if (
+      confidence >= Math.max(60, minConfidence - 15) ||
+      text.includes('sweep') ||
+      text.includes('liquidity') ||
+      text.includes('fvg') ||
+      text.includes('order block') ||
+      text.includes('order_block') ||
+      text.includes('pending')
+    ) {
+      nearQualifiedPairs.add(pair);
+    }
+  }
+
+  for (const pair of lateEntryPairs) {
+    nearQualifiedPairs.delete(pair);
+    hotPairs.delete(pair);
+  }
+
+  return {
+    nearQualifiedPairs: Array.from(nearQualifiedPairs),
+    hotPairs: Array.from(hotPairs),
+    lateEntryPairs: Array.from(lateEntryPairs),
+  };
+}
+
+export async function runAutoAiForUser({ client, now = new Date(), runId = null, scanMode = 'full', pairs = null } = {}) {
   const cfg = ictExecConfig();
   const tag = `[AUTO_AI][ICT][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} independentFromV3=true ${m}`);
-  log('scan started');
+  const scanPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
-  const { analyses } = await analyzeICTPairs(null, { client, now });
+  const { analyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });
   const qualified = analyses.filter((a) => a.signal !== 'none' && a.confidence >= cfg.minConfidence);
+  const watchState = buildIctWatchState(analyses, cfg.minConfidence);
 
   if (!qualified.length) {
     log(`scan complete pairs=${analyses.length} qualified=0 executed=0 skipped=0`);
-    return { scanned: analyses.length, qualified: 0, executed: [], skipped: [] };
+    return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], ...watchState };
   }
 
   const executed = [];
@@ -50,5 +103,5 @@ export async function runAutoAiForUser({ client, now = new Date(), runId = null 
     }
   }
   log(`scan complete pairs=${analyses.length} qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
-  return { scanned: analyses.length, qualified: qualified.length, executed, skipped };
+  return { scanned: analyses.length, qualified: qualified.length, executed, skipped, ...watchState };
 }

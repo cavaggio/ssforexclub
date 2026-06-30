@@ -19,6 +19,7 @@ import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
 import { computeV3Comparisons } from './v3IctComparison.js';
+import { buildFtmoClient, validateFtmoCredentials } from './ftmoClient.js';
 import { runAutoAiForUser } from './ictAutoTrade.js';
 import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
@@ -2099,10 +2100,17 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
   }
   assertClientMatchesRequest(client, req.body);
   logInternalCall('ICT_AUTO', req.body);
+  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+    ? String(req.body?.scanMode || 'full')
+    : 'full';
+  const pairs = Array.isArray(req.body?.pairs)
+    ? req.body.pairs.map((p) => String(p).trim()).filter(Boolean)
+    : null;
+  console.log(`[AUTO_AI][ICT] scanMode=${scanMode} pairs=${pairs?.length ? pairs.join(',') : 'ALL'}`);
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoAiForUser({ client, runId: req.body?.runId }),
+      () => runAutoAiForUser({ client, runId: req.body?.runId, scanMode, pairs }),
     );
     res.json(result);
   } catch (err) {
@@ -2126,11 +2134,18 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
   }
   assertClientMatchesRequest(client, req.body);
   const engine = String(req.body?.engine || 'ict').toLowerCase() === 'v3' ? 'v3' : 'ict';
+  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+    ? String(req.body?.scanMode || 'full')
+    : 'full';
+  const pairs = Array.isArray(req.body?.pairs)
+    ? req.body.pairs.map((p) => String(p).trim()).filter(Boolean)
+    : null;
   logInternalCall(`AUTO_${engine.toUpperCase()}`, req.body);
+  console.log(`[AUTO_AI][${engine.toUpperCase()}] scanMode=${scanMode} pairs=${pairs?.length ? pairs.join(',') : 'ALL'}`);
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoForUser({ client, engine, runId: req.body?.runId }),
+      () => runAutoForUser({ client, engine, runId: req.body?.runId, scanMode, pairs }),
     );
     res.json(result);
   } catch (err) {
@@ -2342,6 +2357,50 @@ app.use('/api', (req, res) => {
 });
 
 console.log('USING LIVE-ONLY SERVER INDEX FILE');
+
+
+// GET /api/internal/ftmo/validate
+//   Validates FTMO/cTrader connector configuration. Does not execute trades.
+app.get('/api/internal/ftmo/validate', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+
+  try {
+    const validation = validateFtmoCredentials();
+
+    if (!validation.ok) {
+      res.status(400).json({
+        ok: false,
+        provider: 'ftmo',
+        adapter: 'ctrader',
+        error: validation.error,
+        missing: validation.missing,
+      });
+      return;
+    }
+
+    const client = buildFtmoClient();
+
+    res.json({
+      ok: true,
+      provider: 'ftmo',
+      adapter: 'ctrader',
+      accountId: client.accountId ? `${String(client.accountId).slice(0, 3)}…${String(client.accountId).slice(-3)}` : null,
+      liveExecutionEnabled: client.config.liveExecutionEnabled,
+      autoTradeEnabled: client.config.autoTradeEnabled,
+      useV3: client.config.useV3,
+      useICT: client.config.useICT,
+    });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      provider: 'ftmo',
+      adapter: 'ctrader',
+      error: err?.message || String(err),
+      missing: err?.missing || [],
+    });
+  }
+});
+
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Trading API Server running on port ${PORT}`);
