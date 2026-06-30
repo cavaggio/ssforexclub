@@ -16,7 +16,7 @@ const LINKS = [
   { href: '/dashboard/edge-intelligence', label: 'Edge Intelligence' },
   { href: '/dashboard/ict-intelligence',  label: 'ICT Intelligence'  },
   { href: '/dashboard/futures',           label: 'Futures / NinjaTrader' },
-  { href: '/dashboard/topstep',           label: 'Topstep'           },
+  { href: '/dashboard/ftmo',              label: 'FTMO'              },
   { href: '/dashboard/settings',          label: 'Settings'          },
 ];
 
