@@ -85,14 +85,22 @@ const WATCHLIST = process.env.FOREX_WATCHLIST
   ? process.env.FOREX_WATCHLIST.split(',').map(p => p.trim()).filter(Boolean)
   : DEFAULT_FOREX_WATCHLIST;
 
-const ORDERED_WATCHLIST = [
-  'GBP_USD',
+const WATCHLIST_PRIORITY_ORDER = [
   'EUR_USD',
-  'AUD_CAD',
-  'GBP_JPY',
   'USD_CAD',
-  'EUR_AUD',
-].filter(pair => WATCHLIST.includes(pair));
+  'AUD_USD',
+  'NZD_USD',
+  'USD_CHF',
+  'EUR_GBP',
+  'EUR_CHF',
+  'AUD_CAD',
+];
+
+// Keep the preferred scan order, but never drop valid env/default watchlist pairs.
+const ORDERED_WATCHLIST = [
+  ...WATCHLIST_PRIORITY_ORDER.filter(pair => WATCHLIST.includes(pair)),
+  ...WATCHLIST.filter(pair => !WATCHLIST_PRIORITY_ORDER.includes(pair)),
+];
 
 // ─── Instrument helpers ───────────────────────────────────────────────────────
 
