@@ -21,7 +21,7 @@ const EPS = 1e-9;
 
 export function autoAiRiskConfig() {
   return {
-    maxTotalOpenRiskPercent: parseFloat(process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT || '4.5'),
+    maxTotalOpenRiskPercent: parseFloat(process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT || '2.5'),
   };
 }
 

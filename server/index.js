@@ -2099,10 +2099,17 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
   }
   assertClientMatchesRequest(client, req.body);
   logInternalCall('ICT_AUTO', req.body);
+  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+    ? String(req.body?.scanMode || 'full')
+    : 'full';
+  const pairs = Array.isArray(req.body?.pairs)
+    ? req.body.pairs.map((p) => String(p).trim()).filter(Boolean)
+    : null;
+  console.log(`[AUTO_AI][ICT] scanMode=${scanMode} pairs=${pairs?.length ? pairs.join(',') : 'ALL'}`);
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoAiForUser({ client, runId: req.body?.runId }),
+      () => runAutoAiForUser({ client, runId: req.body?.runId, scanMode, pairs }),
     );
     res.json(result);
   } catch (err) {
@@ -2126,11 +2133,18 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
   }
   assertClientMatchesRequest(client, req.body);
   const engine = String(req.body?.engine || 'ict').toLowerCase() === 'v3' ? 'v3' : 'ict';
+  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+    ? String(req.body?.scanMode || 'full')
+    : 'full';
+  const pairs = Array.isArray(req.body?.pairs)
+    ? req.body.pairs.map((p) => String(p).trim()).filter(Boolean)
+    : null;
   logInternalCall(`AUTO_${engine.toUpperCase()}`, req.body);
+  console.log(`[AUTO_AI][${engine.toUpperCase()}] scanMode=${scanMode} pairs=${pairs?.length ? pairs.join(',') : 'ALL'}`);
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoForUser({ client, engine, runId: req.body?.runId }),
+      () => runAutoForUser({ client, engine, runId: req.body?.runId, scanMode, pairs }),
     );
     res.json(result);
   } catch (err) {

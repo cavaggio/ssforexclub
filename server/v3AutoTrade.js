@@ -18,19 +18,82 @@ function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
 
-export async function runAutoV3ForUser({ client, now = new Date(), runId = null } = {}) {
+function pairOf(item) {
+  return item?.pair || item?.instrument || item?.symbol || item?.signal?.pair || null;
+}
+
+function textOf(item) {
+  try { return JSON.stringify(item || {}).toLowerCase(); }
+  catch { return String(item || '').toLowerCase(); }
+}
+
+function buildV3WatchState(scan, qualified = []) {
+  const nearQualifiedPairs = new Set();
+  const hotPairs = new Set();
+  const lateEntryPairs = new Set();
+
+  for (const sig of qualified) {
+    const pair = pairOf(sig);
+    if (pair) hotPairs.add(pair);
+  }
+
+  const rejected = Array.isArray(scan?.rejected) ? scan.rejected
+    : Array.isArray(scan?.rejections) ? scan.rejections
+    : Array.isArray(scan?.signals) ? scan.signals
+    : [];
+
+  for (const item of rejected) {
+    const pair = pairOf(item);
+    if (!pair) continue;
+
+    const text = textOf(item);
+    const confidence = Number(item?.confidence ?? item?.score ?? item?.v3?.score ?? 0);
+
+    if (text.includes('late_entry') || text.includes('overextended')) {
+      lateEntryPairs.add(pair);
+      continue;
+    }
+
+    if (
+      confidence >= 70 ||
+      text.includes('near') ||
+      text.includes('valid_entry') ||
+      text.includes('liquidity_sweep') ||
+      text.includes('fvg') ||
+      text.includes('order block') ||
+      text.includes('order_block')
+    ) {
+      nearQualifiedPairs.add(pair);
+    }
+  }
+
+  for (const pair of lateEntryPairs) {
+    nearQualifiedPairs.delete(pair);
+    hotPairs.delete(pair);
+  }
+
+  return {
+    nearQualifiedPairs: Array.from(nearQualifiedPairs),
+    hotPairs: Array.from(hotPairs),
+    lateEntryPairs: Array.from(lateEntryPairs),
+  };
+}
+
+export async function runAutoV3ForUser({ client, now = new Date(), runId = null, scanMode = 'full', pairs = null } = {}) {
   const tag = `[AUTO_AI][V3][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} engine=v3 ${m}`);
   void now;
-  log('scan started');
+  const scanPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
-  const scan = await scanForexPairs(null, { client });
+  const scan = await scanForexPairs(scanPairs, { client, scanMode });
   const qualified = scan?.qualified ?? [];
+  const watchState = buildV3WatchState(scan, qualified);
 
   if (!qualified.length) {
     log('scan complete qualified=0 executed=0 skipped=0');
-    return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? 0, qualified: 0, executed: [], skipped: [] };
+    return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? 0, qualified: 0, executed: [], skipped: [], ...watchState };
   }
 
   const executed = [];
@@ -49,5 +112,5 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null 
     }
   }
   log(`scan complete qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
-  return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? qualified.length, qualified: qualified.length, executed, skipped };
+  return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? qualified.length, qualified: qualified.length, executed, skipped, ...watchState };
 }

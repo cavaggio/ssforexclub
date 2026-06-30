@@ -79,14 +79,7 @@ const _SLOG_CUR = _SLOG_RANK[SCANNER_LOG_LEVEL] ?? 2;
 const scannerLogEnabled = (level) => (_SLOG_RANK[level] ?? 2) <= _SLOG_CUR;
 function slog(level, ...args) { if (scannerLogEnabled(level)) console.log(...args); }
 
-const DEFAULT_FOREX_WATCHLIST = [
-  'GBP_USD',
-  'EUR_USD',
-  'AUD_CAD',
-  'GBP_JPY',
-  'USD_CAD',
-  'EUR_AUD',
-];
+const DEFAULT_FOREX_WATCHLIST = ['EUR_USD', 'USD_CAD', 'AUD_USD', 'NZD_USD', 'USD_CHF', 'EUR_GBP', 'EUR_CHF', 'AUD_CAD'];
 
 const WATCHLIST = process.env.FOREX_WATCHLIST
   ? process.env.FOREX_WATCHLIST.split(',').map(p => p.trim()).filter(Boolean)
