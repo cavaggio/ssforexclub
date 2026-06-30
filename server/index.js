@@ -19,6 +19,7 @@ import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
 import { computeV3Comparisons } from './v3IctComparison.js';
+import { buildFtmoClient, validateFtmoCredentials } from './ftmoClient.js';
 import { runAutoAiForUser } from './ictAutoTrade.js';
 import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
@@ -2356,6 +2357,50 @@ app.use('/api', (req, res) => {
 });
 
 console.log('USING LIVE-ONLY SERVER INDEX FILE');
+
+
+// GET /api/internal/ftmo/validate
+//   Validates FTMO/cTrader connector configuration. Does not execute trades.
+app.get('/api/internal/ftmo/validate', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+
+  try {
+    const validation = validateFtmoCredentials();
+
+    if (!validation.ok) {
+      res.status(400).json({
+        ok: false,
+        provider: 'ftmo',
+        adapter: 'ctrader',
+        error: validation.error,
+        missing: validation.missing,
+      });
+      return;
+    }
+
+    const client = buildFtmoClient();
+
+    res.json({
+      ok: true,
+      provider: 'ftmo',
+      adapter: 'ctrader',
+      accountId: client.accountId ? `${String(client.accountId).slice(0, 3)}…${String(client.accountId).slice(-3)}` : null,
+      liveExecutionEnabled: client.config.liveExecutionEnabled,
+      autoTradeEnabled: client.config.autoTradeEnabled,
+      useV3: client.config.useV3,
+      useICT: client.config.useICT,
+    });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      provider: 'ftmo',
+      adapter: 'ctrader',
+      error: err?.message || String(err),
+      missing: err?.missing || [],
+    });
+  }
+});
+
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Trading API Server running on port ${PORT}`);
