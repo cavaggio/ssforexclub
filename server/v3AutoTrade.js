@@ -14,6 +14,103 @@
 import { scanForexPairs } from './oandaScanner.js';
 import { executeTrade } from './oandaTrade.js';
 
+function envOn(value, fallback = false) {
+  const raw = value == null ? String(fallback) : String(value);
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
+function envNum(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeV3Direction(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'buy') return 'long';
+  if (v === 'sell') return 'short';
+  if (v === 'long' || v === 'short') return v;
+  return null;
+}
+
+function safeV3Promotions(scan, log) {
+  if (!envOn(process.env.FOREX_V3_PROMOTE_ONLY, false)) return [];
+
+  const rejected = Array.isArray(scan?.rejected) ? scan.rejected : [];
+  const minConfidence = envNum(process.env.FOREX_V3_PROMOTE_MIN_CONFIDENCE, 70);
+  const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.75);
+  const promoted = [];
+
+  for (const item of rejected) {
+    const v3 = item?.v3 || item?.v3Eval || item?.v3Analysis || item?.metadata?.v3 || null;
+    if (!v3) continue;
+
+    const pair = item?.pair || v3?.pair;
+    const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
+    const confidence = envNum(item?.confidence ?? v3?.confidence ?? v3?.score, NaN);
+    const rr = envNum(item?.expectedRR ?? item?.rr ?? v3?.expectedRR ?? v3?.rr, NaN);
+
+    const entry = Number(item?.entry ?? item?.entryPrice ?? v3?.entry ?? v3?.entryPrice);
+    const stopLoss = Number(item?.stopLoss ?? item?.sl ?? v3?.stopLoss ?? v3?.sl);
+    const targetProfit = Number(item?.targetProfit ?? item?.takeProfit ?? item?.tp ?? v3?.targetProfit ?? v3?.takeProfit ?? v3?.tp);
+
+    const news = item?.newsRisk || v3?.newsRisk || {};
+    const entryStatus = item?.entryTiming?.status || v3?.entryTiming?.status || '';
+
+    const text = [
+      item?.reason,
+      item?.rejectionReason,
+      item?.finalQualifiedStatus,
+      entryStatus,
+      v3?.reason,
+      v3?.rejectionReason,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    const safe =
+      pair &&
+      direction &&
+      confidence >= minConfidence &&
+      rr >= minRR &&
+      Number.isFinite(entry) &&
+      Number.isFinite(stopLoss) &&
+      Number.isFinite(targetProfit) &&
+      !news.blocked &&
+      entryStatus !== 'late_entry' &&
+      !text.includes('news_block') &&
+      !text.includes('late_entry') &&
+      !text.includes('overextended') &&
+      !text.includes('spread') &&
+      !text.includes('margin') &&
+      !text.includes('drawdown') &&
+      !text.includes('risk cap');
+
+    if (!safe) {
+      log(`v3-only not promoted pair=${pair || 'unknown'} conf=${Number.isFinite(confidence) ? confidence : 'n/a'} rr=${Number.isFinite(rr) ? rr : 'n/a'} reason="${text || 'missing safe execution fields'}"`);
+      continue;
+    }
+
+    promoted.push({
+      ...item,
+      ...v3,
+      pair,
+      direction,
+      confidence,
+      expectedRR: rr,
+      rr,
+      entry,
+      entryPrice: entry,
+      stopLoss,
+      targetProfit,
+      takeProfit: targetProfit,
+      source: 'v3_promoted_only',
+      finalQualifiedStatus: 'v3_promoted_only',
+    });
+
+    log(`v3-only promoted pair=${pair} dir=${direction} conf=${confidence} rr=${rr}`);
+  }
+
+  return promoted;
+}
+
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
@@ -88,12 +185,14 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
   log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
   const scan = await scanForexPairs(scanPairs, { client, scanMode });
-  const qualified = scan?.qualified ?? [];
+  const legacyQualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
+  const promoted = safeV3Promotions(scan, log);
+  const qualified = [...legacyQualified, ...promoted];
   const watchState = buildV3WatchState(scan, qualified);
 
   if (!qualified.length) {
-    log('scan complete qualified=0 executed=0 skipped=0');
-    return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? 0, qualified: 0, executed: [], skipped: [], ...watchState };
+    log('scan complete qualified=0 executed=0 skipped=0 v3Promoted=0');
+    return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? 0, qualified: 0, executed: [], skipped: [], v3Promoted: 0, ...watchState };
   }
 
   const executed = [];
@@ -111,6 +210,6 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
       log(`execution skipped pair=${sig.pair} reason="${res?.reason || res?.rejectReason || 'not executed'}"`);
     }
   }
-  log(`scan complete qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
-  return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? qualified.length, qualified: qualified.length, executed, skipped, ...watchState };
+  log(`scan complete qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length} v3Promoted=${promoted.length}`);
+  return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? qualified.length, qualified: qualified.length, executed, skipped, v3Promoted: promoted.length, ...watchState };
 }
