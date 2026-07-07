@@ -1,3 +1,4 @@
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
 /**
  * server/oandaTradeLifecycle.js
  *
@@ -102,6 +103,36 @@ function findRecentSwing(candles, kind, lookback = 20, swingLookback = 2) {
  *     allowed, rejectionReason
  *   }
  */
+
+function applyPrimaryTimeframeGate(signalLike, direction) {
+  const primary = evaluatePrimaryTimeframeAlignment(signalLike, direction);
+
+  if (!signalLike || typeof signalLike !== 'object') return primary;
+
+  signalLike.primaryTimeframeAlignment = primary;
+
+  if (!Array.isArray(signalLike.warnings)) signalLike.warnings = [];
+  if (!Array.isArray(signalLike.rejectionReasons)) signalLike.rejectionReasons = [];
+
+  if (!primary.passed) {
+    signalLike.rejectionReasons.push(primary.reason);
+  } else if (primary.contextConflicts?.length) {
+    signalLike.warnings.push(primary.reason);
+    signalLike.rejectionReasons = signalLike.rejectionReasons.filter((r) => {
+      const s = String(r || '').toLowerCase();
+      return !(
+        s.includes('alignment score') ||
+        s.includes('timeframe score') ||
+        s.includes('h1') ||
+        s.includes('m30') ||
+        s.includes('m5')
+      );
+    });
+  }
+
+  return primary;
+}
+
 export function computeDynamicStopLoss({
   pair, direction, entryPrice,
   atrPips, m15Candles, h1Candles,
@@ -276,22 +307,7 @@ export function computeDynamicStopLoss({
 /**
  * Computes a realistic TP from stop distance + market context.
  *
- *   Base R:R chosen from alignment score:
- *     alignment ≥ 80  → 3.0
- *     alignment 65–79 → 2.5
- *     alignment 55–64 → 2.0
- *     alignment < 55  → 1.5  (will likely fail the MIN_RISK_REWARD check)
- *
- *   Adjustments:
- *     volatility expanded  ×1.20
- *     volatility compressed ×0.80
- *     exec confirmation partial ×0.85
- *     reversal risk medium ×0.85
- *     reversal risk high   ×0.70
- *     low session liquidity ×0.85
- *
- *   Caps:
- *     TP cannot exceed `MAX_TP_ATR_MULTIPLE * atrPips`
+ *   Base R:R chosen from `Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`MAX_TP_ATR_MULTIPLE * atrPips`
  *     TP cannot reach within 4 pips of the next unbroken H4 key level
  */
 export function computeDynamicTakeProfit({

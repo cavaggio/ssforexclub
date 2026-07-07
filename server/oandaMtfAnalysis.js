@@ -1,3 +1,4 @@
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
 /**
  * server/oandaMtfAnalysis.js
  *
@@ -99,6 +100,36 @@ function findKeyLevels(candles, pipSize) {
  *     notes:            string[]
  *   }
  */
+
+function applyPrimaryTimeframeGate(signalLike, direction) {
+  const primary = evaluatePrimaryTimeframeAlignment(signalLike, direction);
+
+  if (!signalLike || typeof signalLike !== 'object') return primary;
+
+  signalLike.primaryTimeframeAlignment = primary;
+
+  if (!Array.isArray(signalLike.warnings)) signalLike.warnings = [];
+  if (!Array.isArray(signalLike.rejectionReasons)) signalLike.rejectionReasons = [];
+
+  if (!primary.passed) {
+    signalLike.rejectionReasons.push(primary.reason);
+  } else if (primary.contextConflicts?.length) {
+    signalLike.warnings.push(primary.reason);
+    signalLike.rejectionReasons = signalLike.rejectionReasons.filter((r) => {
+      const s = String(r || '').toLowerCase();
+      return !(
+        s.includes('alignment score') ||
+        s.includes('timeframe score') ||
+        s.includes('h1') ||
+        s.includes('m30') ||
+        s.includes('m5')
+      );
+    });
+  }
+
+  return primary;
+}
+
 export function analyzeMacro({ dailyCandles, h4Candles, pair }) {
   const notes = [];
   const pipSize = getPipSize(pair);
@@ -697,7 +728,7 @@ export function computeAlignment({
   minMacroConfidence    = 30,
   minStructuralConfidence = 30,
   minExecutionConfidence  = 35,
-  minAlignmentScore       = 55,
+  minAlignmentScore       = 0,
   minRiskReward           = 3,
 }) {
   const timeframes = {
@@ -740,22 +771,7 @@ export function computeAlignment({
   if (Math.abs(directional) > 0.7 && conflictingTimeframes.length <= 1) alignmentStatus = 'strong';
   else if (conflictingTimeframes.length >= 3)                            alignmentStatus = 'conflicting';
 
-  // Alignment score (0–100)
-  const directionalScore = Math.round(Math.abs(directional) * 100); // 0..100
-  const layerScore = Math.round(
-    0.40 * macro.macroConfidence       +
-    0.35 * structure.structuralConfidence +
-    0.25 * momentum.executionConfidence
-  );
-  const conflictPenalty = Math.min(40, conflictingTimeframes.length * 12);
-  const timeframeAlignmentScore = Math.max(0, Math.min(100,
-    Math.round(0.5 * directionalScore + 0.5 * layerScore - conflictPenalty)
-  ));
-
-  // ── Trade qualification ──────────────────────────────────────────────────
-  const rejectionReasons = [];
-
-  if (macroDir === 'ranging') {
+  // `Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`'ranging') {
     rejectionReasons.push('Macro bias is ranging — no directional trade qualified');
   } else if (!momentum.executionSignal) {
     rejectionReasons.push('Momentum layer produced no execution signal');
@@ -775,7 +791,7 @@ export function computeAlignment({
     rejectionReasons.push(`Execution confidence ${momentum.executionConfidence} < min ${minExecutionConfidence}`);
   }
   if (timeframeAlignmentScore < minAlignmentScore) {
-    rejectionReasons.push(`Alignment score ${timeframeAlignmentScore} < min ${minAlignmentScore}`);
+    rejectionReasons.push(`Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`);
   }
   if (conflictingTimeframes.length >= 2) {
     rejectionReasons.push(`${conflictingTimeframes.length} timeframes conflict with macro: ${conflictingTimeframes.join(', ')}`);

@@ -1,3 +1,4 @@
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
 /**
  * server/oandaScanner.js
  *
@@ -103,6 +104,36 @@ const ORDERED_WATCHLIST = [
 ];
 
 // ─── Instrument helpers ───────────────────────────────────────────────────────
+
+
+function applyPrimaryTimeframeGate(signalLike, direction) {
+  const primary = evaluatePrimaryTimeframeAlignment(signalLike, direction);
+
+  if (!signalLike || typeof signalLike !== 'object') return primary;
+
+  signalLike.primaryTimeframeAlignment = primary;
+
+  if (!Array.isArray(signalLike.warnings)) signalLike.warnings = [];
+  if (!Array.isArray(signalLike.rejectionReasons)) signalLike.rejectionReasons = [];
+
+  if (!primary.passed) {
+    signalLike.rejectionReasons.push(primary.reason);
+  } else if (primary.contextConflicts?.length) {
+    signalLike.warnings.push(primary.reason);
+    signalLike.rejectionReasons = signalLike.rejectionReasons.filter((r) => {
+      const s = String(r || '').toLowerCase();
+      return !(
+        s.includes('alignment score') ||
+        s.includes('timeframe score') ||
+        s.includes('h1') ||
+        s.includes('m30') ||
+        s.includes('m5')
+      );
+    });
+  }
+
+  return primary;
+}
 
 export function getPipSize(pair) {
   if (pair.includes('JPY')) return 0.01;
@@ -923,94 +954,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         direction,
         // Signal Stack V3 execution engine evaluation (shadow/active).
         v3: v3Eval,
-        score: alignment.timeframeAlignmentScore,    // 0–100 alignment score (UI bar)
-        confidence,
-        // Signal Stack V3 — Expected-R qualification (per-signal)
-        expectedRiskPips:   rrQual.expectedRiskPips,
-        expectedRewardPips: rrQual.expectedRewardPips,
-        expectedRR:         rrQual.expectedRR,
-        rrTier:             rrQual.rrTier,
-        rrQualityFactor:    rrQual.qualityFactor,
-        entry: +entry.toFixed(5),
-        stopLoss,
-        stopLossPips,
-        takeProfit,
-        takeProfitPips,
-        riskReward,
-        spreadPips: pricing.spreadPips,
-        session,
-        lotSize,
-        tradeUnits,
-        amountTraded,
-        riskPercent: dynamicRisk.riskPercent,
-        // Dynamic per-trade risk fields.
-        riskMode: RISK_MODE,
-        targetRiskUSD: sizing.targetRiskUSD,
-        actualRiskUSD: sizing.actualRiskUSD,
-        estimatedRewardUSD: sizing.estimatedRewardUSD,
-        minimumRiskReward: sizing.minimumRiskReward,
-        notionalUSD: sizing.notionalUSD,
-        estimatedMarginRequired: sizing.estimatedMarginRequired,
-        effectiveLeverage: sizing.effectiveLeverage,
-        pipValuePerStandardLot: sizing.pipValuePerStandardLot,
-        riskSizingFactors: dynamicRisk.factors,
-        sizingWarnings,
-        aggressiveRiskWarning: DYNAMIC_RISK_NOTICE,
-        // Trade lifecycle — dynamic SL/TP/hold/probability
-        lifecycle: {
-          sl: lifecycle.sl,
-          tp: lifecycle.tp,
-          hold: lifecycle.hold,
-          probs: lifecycle.probs,
-          momentumPersistence: lifecycle.momentumPersistence,
-          volatilityPersistence: lifecycle.volatilityPersistence,
-        },
-        // Structure-aware SL audit (mirrors lifecycle.sl.stopLossAnalysis — top-level for dashboard)
-        stopLossAnalysis: lifecycle.sl.stopLossAnalysis,
-        targetReason: lifecycle.tp.targetReason,
-        invalidationReason: lifecycle.sl.invalidationReason,
-        cappedByKeyLevel: lifecycle.tp.cappedByKeyLevel,
-        cappedByAtr: lifecycle.tp.cappedByAtr,
-        keyLevelDistance: lifecycle.tp.keyLevelDistance,
-        tpProbability: lifecycle.probs.tpProbability,
-        slProbability: lifecycle.probs.slProbability,
-        holdWindowMinMinutes: lifecycle.hold.minMinutes,
-        holdWindowMaxMinutes: lifecycle.hold.maxMinutes,
-        holdConfidence: lifecycle.hold.holdConfidence,
-        // Waterfall analysis — full hierarchy for the dashboard
-        macro,
-        structure,
-        momentum,
-        alignment,
-        // Entry-quality layer (Fibonacci + institutional flow + news + timing)
-        fibonacci,
-        institutionalFlow,
-        newsRisk,
-        entryTiming,
-        // Extended qualification (2026-05-27)
-        candleStrength,
-        candleStrengthScore: candleStrength.candleStrengthScore,
-        marketState: marketState.marketState,
-        marketStateScore: marketState.marketStateScore,
-        marketStateReason: marketState.marketStateReason,
-        marketStateRules: marketState.rules,
-        marketStateAnalysis: marketState,
-        mtfAuthority,
-        multiTimeframeAlignmentScore: mtfAuthority?.multiTimeframeAlignmentScore ?? null,
-        multiTimeframeReason: mtfAuthority?.multiTimeframeReason ?? null,
-        overextension,
-        lateEntryDetected: overextension?.lateEntryDetected ?? false,
-        overextensionScore: overextension?.overextensionScore ?? 0,
-        entryTimingReason: overextension?.entryTimingReason ?? null,
-        instrumentProfile: profile,
-        // Dashboard mirrors (Task 10 debug response)
-        recommendedStopLoss: lifecycle.recommendedStopLoss,
-        recommendedTakeProfit: lifecycle.recommendedTakeProfit,
-        riskRewardRatio: lifecycle.riskRewardRatio,
-        expectedHoldTimeMinutes: lifecycle.expectedHoldTimeMinutes,
-        tpSlReason: lifecycle.tpSlReason,
-        liquiditySweepDetected: (institutionalFlow?.signals || []).some(
-          s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout'
+        score: alignment.timeframeAlignmentScore,    // 0–100 `Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`'liquidity_sweep' || s.subtype === 'failed_breakout'
         ),
         failedBreakoutDetected: (institutionalFlow?.signals || []).some(
           s => s.subtype === 'failed_breakout'
@@ -1133,7 +1077,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       totalQualified: qualified.length,
       totalRejected: rejected.length,
       minConfidence: MIN_CONFIDENCE,
-      minAlignmentScore: 55,
+      minAlignmentScore: 0,
       maxSpreadPips: MAX_SPREAD_PIPS,
       metalsMaxSpreadPips: METALS_MAX_SPREAD_PIPS,
       pairRankOrder: rankedPairs,

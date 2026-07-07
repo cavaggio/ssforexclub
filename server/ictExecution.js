@@ -23,7 +23,7 @@ import { getPipSize } from './pipMath.js';
 import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js';
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
-import { getAccountSummary, getCandles, getOpenTrades } from './oandaMarketData.js';
+import { getAccountSummary, getCandles, getOpenTrades, getPricing } from './oandaMarketData.js';
 import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
@@ -39,6 +39,55 @@ import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
 const priceDecimalsFor = (p) => (isMetal(p) ? 2 : String(p).includes('JPY') ? 3 : 5);
+
+function quoteMidPrice(q) {
+  const bid = Number(q?.closeoutBid ?? q?.bid ?? q?.bids?.[0]?.price);
+  const ask = Number(q?.closeoutAsk ?? q?.ask ?? q?.asks?.[0]?.price);
+  if (Number.isFinite(bid) && Number.isFinite(ask)) return { bid, ask, mid: (bid + ask) / 2, spread: ask - bid };
+  return { bid: null, ask: null, mid: null, spread: null };
+}
+
+function validateFreshProtectivePrices({ pair, direction, quote, stopLoss, targetProfit }) {
+  const pipSize = getPipSize(pair);
+  const bufferPips = Number(process.env.ICT_EXECUTION_PRICE_BUFFER_PIPS || 2);
+  const minBuffer = pipSize * bufferPips;
+
+  const { bid, ask, mid, spread } = quoteMidPrice(quote);
+  const executable = direction === 'long' ? ask : bid;
+
+  if (!Number.isFinite(executable)) {
+    return {
+      ok: false,
+      reason: `Could not read fresh executable ${direction === 'long' ? 'ask' : 'bid'} price for ${pair}.`,
+      bid,
+      ask,
+      mid,
+      spread,
+    };
+  }
+
+  const ok = direction === 'long'
+    ? stopLoss < executable - minBuffer && targetProfit > executable + minBuffer
+    : stopLoss > executable + minBuffer && targetProfit < executable - minBuffer;
+
+  if (!ok) {
+    return {
+      ok: false,
+      reason:
+        `Stale/invalid protective prices for ${direction} ${pair}: ` +
+        `freshExecutable=${executable.toFixed(priceDecimalsFor(pair))}, ` +
+        `SL=${stopLoss.toFixed(priceDecimalsFor(pair))}, ` +
+        `TP=${targetProfit.toFixed(priceDecimalsFor(pair))}. ` +
+        `Refusing order to avoid OANDA TAKE_PROFIT_ON_FILL_LOSS / STOP_LOSS_ON_FILL_LOSS.`,
+      bid,
+      ask,
+      mid,
+      spread,
+    };
+  }
+
+  return { ok: true, bid, ask, mid, spread };
+}
 
 function blocked(reason, extra = {}) {
   return { success: false, blocked: true, executionState: 'BLOCKED', reason, ...extra };
@@ -202,6 +251,32 @@ export async function executeIctTrade(params = {}, {
     }
   }
 
+  // ── 8d. Fresh executable price guard ───────────────────────────────────────
+  // OANDA validates SL/TP-on-fill against the actual fill-side price, not the
+  // stale signal entry shown in the UI. Recheck bid/ask immediately before submit
+  // so we block stale targets instead of sending an order OANDA will cancel.
+  let freshQuote = null;
+  try {
+    const pricing = await getPricing([pair], { client });
+    freshQuote = Array.isArray(pricing) ? pricing[0] : pricing?.prices?.[0] || pricing?.[pair] || pricing;
+  } catch (err) {
+    rec(`blocked: fresh price check failed (${err.message})`);
+    return blocked(`Fresh price check failed before execution: ${err.message}`);
+  }
+
+  const protectiveCheck = validateFreshProtectivePrices({
+    pair,
+    direction,
+    quote: freshQuote,
+    stopLoss,
+    targetProfit,
+  });
+
+  if (!protectiveCheck.ok) {
+    rec(`blocked: ${protectiveCheck.reason}`);
+    return blocked(protectiveCheck.reason, { freshPrice: protectiveCheck });
+  }
+
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
   const accountId = client.accountId || getAccountId();
   const dp = priceDecimalsFor(pair);
@@ -225,8 +300,11 @@ export async function executeIctTrade(params = {}, {
 
   if (resp?.orderCancelTransaction) {
     const reason = resp.orderCancelTransaction.reason || 'UNKNOWN';
+    const friendlyReason = reason === 'TAKE_PROFIT_ON_FILL_LOSS'
+      ? 'Order cancelled by OANDA: TAKE_PROFIT_ON_FILL_LOSS — the take-profit was no longer safely beyond the actual fill price. Signal/target was stale or too close after spread. Refresh the signal and execute only if TP is still beyond current executable price.'
+      : `Order cancelled by OANDA: ${reason}`;
     rec(`rejected: cancelled by OANDA (${reason})`);
-    return { success: false, blocked: false, executionState: 'CANCELLED', reason: `Order cancelled by OANDA: ${reason}`, sizing, oandaResponse: resp, executionLog: log };
+    return { success: false, blocked: false, executionState: 'CANCELLED', reason: friendlyReason, sizing, oandaResponse: resp, executionLog: log };
   }
   const fill = resp?.orderFillTransaction;
   if (!fill) {

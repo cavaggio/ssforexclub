@@ -1,3 +1,4 @@
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
 /**
  * server/oandaTradeInvalidation.js
  *
@@ -36,6 +37,36 @@ function getPipSize(pair) {
  *   originalSL, expectedHoldTimeMinutes, minutesElapsed, pricing, atrPipsCurrent
  *   entryContext: { mtfAuthorityScore, marketState, candleStrengthScore, atrPips, … }
  */
+
+function applyPrimaryTimeframeGate(signalLike, direction) {
+  const primary = evaluatePrimaryTimeframeAlignment(signalLike, direction);
+
+  if (!signalLike || typeof signalLike !== 'object') return primary;
+
+  signalLike.primaryTimeframeAlignment = primary;
+
+  if (!Array.isArray(signalLike.warnings)) signalLike.warnings = [];
+  if (!Array.isArray(signalLike.rejectionReasons)) signalLike.rejectionReasons = [];
+
+  if (!primary.passed) {
+    signalLike.rejectionReasons.push(primary.reason);
+  } else if (primary.contextConflicts?.length) {
+    signalLike.warnings.push(primary.reason);
+    signalLike.rejectionReasons = signalLike.rejectionReasons.filter((r) => {
+      const s = String(r || '').toLowerCase();
+      return !(
+        s.includes('alignment score') ||
+        s.includes('timeframe score') ||
+        s.includes('h1') ||
+        s.includes('m30') ||
+        s.includes('m5')
+      );
+    });
+  }
+
+  return primary;
+}
+
 export function detectInvalidation({
   side, entryPrice, currentPrice, originalSL, pair,
   macroNow, structureNow, mtfAuthorityNow, candleStrengthNow,
