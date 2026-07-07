@@ -818,7 +818,10 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       const dynamicRisk = computeDynamicTradeRisk({
         accountBalanceUSD,
         confidence,
-        score: alignment.timeframeAlignmentScore / 5,   // 0–20 scale for the sizer
+        score: alignment.timeframeAlignmentScore,    // 0–100 primary timeframe score
+        liquiditySweepDetected: (institutionalFlow?.signals || []).some(
+          s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout'
+        ),
         minConfidence: MIN_CONFIDENCE,
         spreadPips: pricing.spreadPips,
         maxSpreadPips: maxSpread,
@@ -954,7 +957,9 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         direction,
         // Signal Stack V3 execution engine evaluation (shadow/active).
         v3: v3Eval,
-        score: alignment.timeframeAlignmentScore,    // 0–100 `Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`'liquidity_sweep' || s.subtype === 'failed_breakout'
+        score: alignment.timeframeAlignmentScore,    // 0–100 primary timeframe score
+        liquiditySweepDetected: (institutionalFlow?.signals || []).some(
+          s => s.type === 'liquidity_sweep' || s.subtype === 'failed_breakout'
         ),
         failedBreakoutDetected: (institutionalFlow?.signals || []).some(
           s => s.subtype === 'failed_breakout'
