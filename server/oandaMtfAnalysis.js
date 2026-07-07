@@ -771,7 +771,7 @@ export function computeAlignment({
   if (Math.abs(directional) > 0.7 && conflictingTimeframes.length <= 1) alignmentStatus = 'strong';
   else if (conflictingTimeframes.length >= 3)                            alignmentStatus = 'conflicting';
 
-  // `Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`'ranging') {
+  if (macroDir === 'ranging') {
     rejectionReasons.push('Macro bias is ranging — no directional trade qualified');
   } else if (!momentum.executionSignal) {
     rejectionReasons.push('Momentum layer produced no execution signal');
