@@ -314,6 +314,7 @@ export async function listTradeLogsForUser(
     let q = supabase
       .from('trade_logs')
       .select(TRADE_LOG_SELECT)
+        .in('status', ['OPENED', 'CLOSED', 'ERROR', 'opened', 'closed', 'error'])
       .eq('user_id', clerkUserId);
     if (filters.instrument) q = q.eq('pair', normalizeInstrument(filters.instrument)); // prod column is `pair`
     if (filters.eventType)  q = q.eq('event_type', filters.eventType);
