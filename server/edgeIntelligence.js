@@ -59,7 +59,7 @@ function parseJsonObject(value) {
 
 function normalizeOutcome(v) {
   const s = String(v || '').trim().toLowerCase();
-  if (!s || s === 'pending' || s === 'open' || s === 'active') return null;
+  if (!s || ['pending', 'open', 'opened', 'active', 'active_trade'].includes(s)) return null;
   if (['win', 'won', 'profit', 'tp', 'take_profit', 'take profit'].includes(s)) return 'win';
   if (['loss', 'lost', 'sl', 'stop_loss', 'stop loss'].includes(s)) return 'loss';
   if (['breakeven', 'break_even', 'break even', 'flat'].includes(s)) return 'breakeven';
@@ -96,10 +96,21 @@ function normDirection(v) {
 export function buildTradeEdgeSnapshot(trade) {
   if (!trade || typeof trade !== 'object') return null;
 
-  // Supabase trade_logs commonly store the useful execution/close data inside
-  // raw_payload/rawPayload/payload instead of top-level columns. Edge Intelligence
-  // must normalize both shapes, otherwise the UI shows 0/0 resolved even when
-  // trade_logs has plenty of completed close events.
+  const eventType = String(
+    trade.status ||
+    trade.event ||
+    trade.event_type ||
+    trade.type ||
+    trade.action ||
+    ''
+  ).trim().toLowerCase();
+
+  // Ignore backend reassessment snapshots. They are unrealized mark-to-market
+  // updates, not final trade outcomes.
+  if (['reassessed', 'reassessment', 'updated', 'mark_to_market'].includes(eventType)) {
+    return null;
+  }
+
   const rawPayload = parseJsonObject(trade.raw_payload || trade.rawPayload || trade.payload);
   const rawResult = parseJsonObject(trade.result_payload || trade.resultPayload);
   const closeResult = parseJsonObject(
@@ -203,10 +214,12 @@ export function buildTradeEdgeSnapshot(trade) {
     signalScore: toNum(firstDeepDefined(sourceObjects, ['signalScore', 'signal_score', 'score'])),
     trend: firstDeepDefined(sourceObjects, ['trend']) || sig.trend || null,
     volatility: volatility || null,
-    marketRegime:
-      firstDeepDefined(sourceObjects, ['marketRegime', 'market_regime']) ||
-      sigRegime?.regime ||
-      null,
+    marketRegime: (() => {
+      const raw = firstDeepDefined(sourceObjects, ['marketRegime', 'market_regime']);
+      if (typeof raw === 'string') return raw;
+      if (raw && typeof raw === 'object') return raw.regime || raw.state || null;
+      return sigRegime?.regime || null;
+    })(),
     macroBias:
       firstDeepDefined(sourceObjects, ['macroBias', 'macro_bias']) ||
       sigMacro?.bias ||
