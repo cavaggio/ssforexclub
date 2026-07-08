@@ -238,6 +238,39 @@ function getExpectedMovementPips(atrPips, tradeDuration) {
   return Math.round(atrPips * multiplier);
 }
 
+
+// ─── 2am–4am ET liquidity sweep focus ─────────────────────────────────────────
+function nyMinutesSinceMidnight(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+
+  const hour = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10) % 24;
+  const minute = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+
+  return hour * 60 + minute;
+}
+
+function isLiquiditySweepWindow(now = new Date()) {
+  const mins = nyMinutesSinceMidnight(now);
+  return mins >= 120 && mins < 240;
+}
+
+function tradeDirectionFromBias(bias) {
+  if (bias === 'bullish') return 'long';
+  if (bias === 'bearish') return 'short';
+  return null;
+}
+
+function getLiquiditySweepSignals(institutionalFlow) {
+  const signals = Array.isArray(institutionalFlow?.signals) ? institutionalFlow.signals : [];
+  return signals.filter((s) => s?.type === 'liquidity_sweep' || s?.subtype === 'failed_breakout');
+}
+
+
 // ─── Pair ranking ─────────────────────────────────────────────────────────────
 
 function rankPairsByQuality(pairs, pricingMap, session) {
@@ -412,7 +445,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       if (!risk.safe) alignment.rejectionReasons.push(`Risk monitor: ${risk.reason}`);
 
       // ── Direction for downstream sizing ─────────────────────────────────
-      const direction = momentum.executionSignal;       // null when no signal
+      let direction = momentum.executionSignal;         // null when no signal; may be set by 2am-4am liquidity sweep mode
 
       // ── Signal Stack V3 execution engine (feature-flagged) ──────────────
       // Evaluate the liquidity/structure/session/volatility model for every
@@ -464,6 +497,64 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
                  postNewsConfirmationRequired: false, reason: 'news provider error',
                  provider: { source: null, warning: err.message } };
       });
+      const liquiditySweepWindowActive = isLiquiditySweepWindow();
+      const liquiditySweepSignals = getLiquiditySweepSignals(institutionalFlow);
+      const liquiditySweepDetected = liquiditySweepSignals.length > 0;
+      const sweepBias =
+        institutionalFlow?.direction === 'bullish' || institutionalFlow?.direction === 'bearish'
+          ? institutionalFlow.direction
+          : null;
+
+      const dailyH4Aligned =
+        macro.dailyTrend === macro.h4Trend &&
+        (macro.dailyTrend === 'bullish' || macro.dailyTrend === 'bearish');
+
+      const m15OpposesSweep =
+        sweepBias === 'bullish'
+          ? momentum.m15Trend === 'bearish'
+          : sweepBias === 'bearish'
+            ? momentum.m15Trend === 'bullish'
+            : false;
+
+      let liquiditySweepWindowOverride = false;
+
+      if (
+        liquiditySweepWindowActive &&
+        liquiditySweepDetected &&
+        dailyH4Aligned &&
+        sweepBias === macro.dailyTrend &&
+        !m15OpposesSweep
+      ) {
+        const sweepDirection = tradeDirectionFromBias(sweepBias);
+        if (!direction && sweepDirection) direction = sweepDirection;
+
+        alignment.rejectionReasons = (alignment.rejectionReasons || []).filter((reason) => {
+          const s = String(reason || '').toLowerCase();
+          return !(
+            s.includes('momentum layer produced no execution signal') ||
+            s.includes('timeframes conflict with macro') ||
+            s.includes('h1') ||
+            s.includes('m30') ||
+            s.includes('m5')
+          );
+        });
+
+        if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+        alignment.warnings.push(
+          '2am-4am liquidity sweep mode: valid sweep aligned with Daily/H4 bias; lower-timeframe conflict treated as context only.'
+        );
+
+        alignment.tradeQualified = alignment.rejectionReasons.length === 0;
+        liquiditySweepWindowOverride = true;
+      }
+
+      console.log(
+        `[LIQUIDITY_SWEEP_WINDOW] pair=${pair} active=${liquiditySweepWindowActive} ` +
+        `sweep=${liquiditySweepDetected} bias=${sweepBias ?? 'none'} ` +
+        `dailyH4Aligned=${dailyH4Aligned} m15Opposes=${m15OpposesSweep} ` +
+        `action=${liquiditySweepWindowOverride ? 'sweep_priority' : 'none'}`
+      );
+
       const entryTiming = classifyEntryTiming({
         direction, fibonacci, institutionalFlow, structure, momentum, newsRisk,
         currentPrice: pricing.mid, pair,
@@ -520,8 +611,9 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         }
       }
       if (mtfAuthority?.conflict) {
-        alignment.rejectionReasons.push(
-          `Rejected: HTF ${mtfAuthority.higherTimeframeBias} trend conflicts with ${direction} entry. ${mtfAuthority.multiTimeframeReason}`
+        if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+        alignment.warnings.push(
+          `Context only: HTF authority note — ${mtfAuthority.higherTimeframeBias} trend conflicts with ${direction ?? 'pending'} entry. ${mtfAuthority.multiTimeframeReason}`
         );
       }
       if (overextension?.lateEntryDetected) {

@@ -756,15 +756,40 @@ export function computeAlignment({
   if      (directional >  0.35) dominantBias = 'bullish';
   else if (directional < -0.35) dominantBias = 'bearish';
 
-  // Conflicting timeframes — any TF whose direction opposes the macro bias
+  // Primary directional gate:
+  // HARD gate = Daily + H4 + M15 only.
+  // CONTEXT only = H1 + M30 + M5.
   const macroDir = macro.macroBias;
-  const conflictingTimeframes = [];
+
+  const primaryTimeframes = {
+    daily: timeframes.daily,
+    h4: timeframes.h4,
+    m15: timeframes.m15,
+  };
+
+  const contextTimeframes = {
+    h1: timeframes.h1,
+    m30: timeframes.m30,
+    m5: timeframes.m5,
+  };
+
+  const primaryConflictingTimeframes = [];
+  const contextConflictingTimeframes = [];
+
   if (macroDir !== 'ranging') {
     const opp = macroDir === 'bullish' ? 'bearish' : 'bullish';
-    for (const [tfName, tfTrend] of Object.entries(timeframes)) {
-      if (tfTrend === opp) conflictingTimeframes.push(tfName);
+
+    for (const [tfName, tfTrend] of Object.entries(primaryTimeframes)) {
+      if (tfTrend === opp) primaryConflictingTimeframes.push(tfName);
+    }
+
+    for (const [tfName, tfTrend] of Object.entries(contextTimeframes)) {
+      if (tfTrend === opp) contextConflictingTimeframes.push(tfName);
     }
   }
+
+  // UI compatibility: hard conflicts only include Daily/H4/M15.
+  const conflictingTimeframes = [...primaryConflictingTimeframes];
 
   // Primary timeframe alignment score: Daily + H4 + M15 are the decision gate.
   // H1 / M30 / M5 are context only and should not define the primary score.
@@ -808,12 +833,21 @@ export function computeAlignment({
   if (momentum.executionConfidence < minExecutionConfidence) {
     rejectionReasons.push(`Execution confidence ${momentum.executionConfidence} < min ${minExecutionConfidence}`);
   }
-  if (timeframeAlignmentScore < minAlignmentScore) {
-    rejectionReasons.push(`Primary timeframe alignment failed: Daily + H4 + M15 must align. H1/M30/M5 are context only.`);
+  const effectiveMinAlignmentScore = Math.max(minAlignmentScore, 67);
+
+  if (timeframeAlignmentScore < effectiveMinAlignmentScore) {
+    rejectionReasons.push(
+      `Primary timeframe alignment failed: Daily + H4 + M15 score ${timeframeAlignmentScore}/100 < ${effectiveMinAlignmentScore}/100. H1/M30/M5 are context only.`
+    );
   }
-  if (conflictingTimeframes.length >= 2) {
-    rejectionReasons.push(`${conflictingTimeframes.length} timeframes conflict with macro: ${conflictingTimeframes.join(', ')}`);
+
+  if (primaryConflictingTimeframes.length > 0) {
+    rejectionReasons.push(
+      `Primary timeframe conflict: ${primaryConflictingTimeframes.join(', ')} opposes macro bias (${macroDir}). H1/M30/M5 are context only.`
+    );
   }
+
+  // H1/M30/M5 context conflicts are intentionally not hard rejection reasons.
   if (structure.reversalRisk === 'high') {
     rejectionReasons.push('Structure reversal risk is HIGH');
   }
@@ -833,6 +867,8 @@ export function computeAlignment({
     alignmentStatus,
     dominantBias,
     conflictingTimeframes,
+    primaryConflictingTimeframes,
+    contextConflictingTimeframes,
     tradeQualified,
     rejectionReasons,
     timeframes,
