@@ -766,6 +766,24 @@ export function computeAlignment({
     }
   }
 
+  // Primary timeframe alignment score: Daily + H4 + M15 are the decision gate.
+  // H1 / M30 / M5 are context only and should not define the primary score.
+  const primaryFrames = [timeframes.daily, timeframes.h4, timeframes.m15];
+  const bullishPrimary = primaryFrames.filter((t) => t === 'bullish').length;
+  const bearishPrimary = primaryFrames.filter((t) => t === 'bearish').length;
+  const neutralPrimary = primaryFrames.filter((t) => !t || t === 'neutral' || t === 'ranging').length;
+
+  let timeframeAlignmentScore = 0;
+  if (macroDir === 'bullish') {
+    timeframeAlignmentScore = Math.round((bullishPrimary / primaryFrames.length) * 100);
+  } else if (macroDir === 'bearish') {
+    timeframeAlignmentScore = Math.round((bearishPrimary / primaryFrames.length) * 100);
+  } else {
+    timeframeAlignmentScore = Math.round(((primaryFrames.length - neutralPrimary) / primaryFrames.length) * 50);
+  }
+
+  const rejectionReasons = [];
+
   // Alignment status
   let alignmentStatus = 'mixed';
   if (Math.abs(directional) > 0.7 && conflictingTimeframes.length <= 1) alignmentStatus = 'strong';
