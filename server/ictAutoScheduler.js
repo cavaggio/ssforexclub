@@ -22,7 +22,7 @@ export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 10 * 60 }; // 02:
 
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = parseInterval(
   'AUTO_AI_FULL_SCAN_INTERVAL_MS',
-  5 * 60 * 1000,
+  2 * 60 * 1000,
 );
 
 export const AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS = parseInterval(

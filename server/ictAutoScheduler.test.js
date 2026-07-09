@@ -26,7 +26,7 @@ test('auto-AI window: weekends are closed even mid-window', () => {
 });
 
 test('auto-AI scheduler intervals default to staged cadence', () => {
-  assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 300000);
+  assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 120000);
   assert.equal(AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS, 60000);
   assert.equal(AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS, 30000);
 });
