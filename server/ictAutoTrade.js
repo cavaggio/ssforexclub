@@ -105,3 +105,58 @@ export async function runAutoAiForUser({ client, now = new Date(), runId = null,
   log(`scan complete pairs=${analyses.length} qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
   return { scanned: analyses.length, qualified: qualified.length, executed, skipped, ...watchState };
 }
+
+
+// June 23 soft-filter scoring
+// These filters should influence confidence, not hard-reject otherwise valid trades.
+export function applyJune23SoftFilterScoring(candidate = {}) {
+  let confidenceAdjustment = 0;
+  const softReasons = [];
+
+  if (candidate.regimeAligned === true) {
+    confidenceAdjustment += 1;
+    softReasons.push("Regime aligned: +1 confidence");
+  } else if (candidate.regimeAligned === false) {
+    confidenceAdjustment -= 1;
+    softReasons.push("Regime not aligned: -1 confidence");
+  }
+
+  if (candidate.liquidityIntentStrong === true) {
+    confidenceAdjustment += 2;
+    softReasons.push("Strong liquidity intent: +2 confidence");
+  } else if (candidate.liquidityIntentStrong === false) {
+    confidenceAdjustment -= 1;
+    softReasons.push("Weak liquidity intent: -1 confidence");
+  }
+
+  if (candidate.calibrationPositive === true) {
+    confidenceAdjustment += 1;
+    softReasons.push("Positive calibration: +1 confidence");
+  } else if (candidate.calibrationPositive === false) {
+    confidenceAdjustment -= 1;
+    softReasons.push("Negative calibration: -1 confidence");
+  }
+
+  if (candidate.smtDivergence === true) {
+    confidenceAdjustment += 1;
+    softReasons.push("SMT divergence present: +1 confidence");
+  }
+
+  if (candidate.sessionNarrativeAligned === true) {
+    confidenceAdjustment += 1;
+    softReasons.push("Session narrative aligned: +1 confidence");
+  }
+
+  const baseConfidence = Number(candidate.confidence ?? 0);
+  const finalConfidence = Math.max(0, Math.min(100, baseConfidence + confidenceAdjustment));
+
+  return {
+    ...candidate,
+    baseConfidence,
+    confidence: finalConfidence,
+    confidenceAdjustment,
+    softReasons,
+  };
+}
+
+
