@@ -37,7 +37,7 @@ function safeV3Promotions(scan, log) {
   if (!envOn(process.env.FOREX_V3_PROMOTE_ONLY, false)) return [];
 
   const rejected = Array.isArray(scan?.rejected) ? scan.rejected : [];
-  const minConfidence = envNum(process.env.FOREX_V3_PROMOTE_MIN_CONFIDENCE, 70);
+  const minConfidence = envNum(process.env.FOREX_V3_PROMOTE_MIN_CONFIDENCE, 55);
   const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.5);
   const promoted = [];
 

@@ -473,6 +473,32 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         }
       }
 
+      // ── V3.5 ACTIVE-WINDOW DIRECTION BRIDGE ───────────────────────────────
+      // If legacy momentum is too slow to produce a direction, allow V3.5 to
+      // supply direction during the active opportunity window. This does NOT
+      // bypass hard execution gates; it only lets the setup reach the normal
+      // entry-quality, lifecycle, RR, sizing, margin, and execution layers.
+      if (
+        String(process.env.FOREX_ACTIVE_WINDOW_V3_BRIDGE || 'true').toLowerCase() === 'true' &&
+        isActiveOpportunityWindow(new Date()) &&
+        !direction &&
+        v3Eval?.direction &&
+        Number(v3Eval?.score ?? 0) >= Number(process.env.FOREX_ACTIVE_WINDOW_V3_MIN_SCORE || 55) &&
+        (
+          v3Eval?.qualified === true ||
+          v3Eval?.earlyTrigger === true ||
+          Number(v3Eval?.premiumDiscount?.premiumDiscountScore ?? 0) >= 0.65 ||
+          Number(v3Eval?.liquidityIntent?.intentScore ?? v3Eval?.liquidityIntent?.score ?? 0) >= 0.6
+        )
+      ) {
+        direction = v3Eval.direction;
+        console.log(
+          `[ACTIVE_WINDOW_V3_BRIDGE] ${pair} direction=${direction} ` +
+          `v3Score=${v3Eval.score} early=${v3Eval.earlyTrigger === true} ` +
+          `pd=${v3Eval?.premiumDiscount?.premiumDiscountState ?? 'n/a'}`
+        );
+      }
+
       // ── ENTRY-QUALITY LAYER ─────────────────────────────────────────────
       // Fibonacci retracement + institutional-flow proxies + news-risk +
       // composite entry-timing classifier. These attach to every signal
@@ -722,6 +748,36 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       };
 
       // ── REJECT if alignment engine says no (or hybrid gate fired) ───────
+      const activeWindowBridge = shouldUseActiveWindowV3Bridge({
+        v3Eval,
+        direction,
+        newsRisk,
+        pricing,
+        maxSpread,
+        alignment,
+      });
+
+      if (activeWindowBridge.allowed && Array.isArray(alignment.rejectionReasons)) {
+        const beforeReasons = alignment.rejectionReasons.length;
+        alignment.rejectionReasons = softenActiveWindowRejects(alignment.rejectionReasons, new Date());
+
+        if (alignment.rejectionReasons.length < beforeReasons) {
+          if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+          alignment.warnings.push(
+            `Active-window V3.5 bridge softened legacy blockers: ${activeWindowBridge.reason}`
+          );
+
+          console.log(
+            `[ACTIVE_WINDOW_V3_BRIDGE] ${pair} softened ` +
+            `${beforeReasons - alignment.rejectionReasons.length}/${beforeReasons} legacy blocker(s): ${activeWindowBridge.reason}`
+          );
+        }
+
+        if (alignment.rejectionReasons.length === 0) {
+          alignment.tradeQualified = true;
+        }
+      }
+
       const hardBlockedByEntryQuality =
         newsRisk.blocked ||
         (tradeSign && institutionalFlow.detected &&
@@ -1309,6 +1365,71 @@ function rankOpportunity(candidate = {}) {
   return { mode: "NONE", score, reject: "confidence below opportunity threshold" };
 }
 
+function envBool(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw == null) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).toLowerCase());
+}
+
+function envNumber(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function shouldUseActiveWindowV3Bridge({ v3Eval, direction, newsRisk, pricing, maxSpread, alignment } = {}) {
+  if (!envBool('FOREX_ACTIVE_WINDOW_V3_BRIDGE', true)) {
+    return { allowed: false, reason: 'bridge_disabled' };
+  }
+
+  if (!isActiveOpportunityWindow(new Date())) {
+    return { allowed: false, reason: 'outside_active_window' };
+  }
+
+  if (!direction) {
+    return { allowed: false, reason: 'missing_direction' };
+  }
+
+  if (newsRisk?.blocked) {
+    return { allowed: false, reason: 'news_blocked' };
+  }
+
+  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) {
+    return { allowed: false, reason: 'spread_blocked' };
+  }
+
+  const score = Number(v3Eval?.score ?? 0);
+  const minScore = envNumber('FOREX_ACTIVE_WINDOW_V3_MIN_SCORE', 55);
+  const pdScore = Number(v3Eval?.premiumDiscount?.premiumDiscountScore ?? 0);
+  const pdState = String(v3Eval?.premiumDiscount?.premiumDiscountState || '').toLowerCase();
+  const liqScore = Number(v3Eval?.liquidityIntent?.intentScore ?? v3Eval?.liquidityIntent?.score ?? 0);
+  const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
+
+  const favorablePremiumDiscount =
+    (direction === 'long' && pdState === 'discount') ||
+    (direction === 'short' && pdState === 'premium') ||
+    pdState === 'equilibrium';
+
+  const hasV35Opportunity =
+    v3Eval?.qualified === true ||
+    v3Eval?.earlyTrigger === true ||
+    favorablePremiumDiscount ||
+    pdScore >= 0.65 ||
+    liqScore >= 0.6 ||
+    alignScore >= 60;
+
+  if (score < minScore || !hasV35Opportunity) {
+    return {
+      allowed: false,
+      reason: `v3_not_strong_enough score=${score} min=${minScore} pd=${pdState || 'n/a'} pdScore=${pdScore} liq=${liqScore} align=${alignScore}`,
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: `v3_bridge score=${score} pd=${pdState || 'n/a'} pdScore=${pdScore} liq=${liqScore} align=${alignScore}`,
+  };
+}
+
 function softenActiveWindowRejects(reasons = [], now = new Date()) {
   if (!isActiveOpportunityWindow(now)) return reasons;
 
@@ -1326,6 +1447,16 @@ function softenActiveWindowRejects(reasons = [], now = new Date()) {
       r.includes("missing smt") ||
       r.includes("missing fvg") ||
       r.includes("mixed ema") ||
+      r.includes("structural confidence") ||
+      r.includes("execution confidence") ||
+      r.includes("structural reversal risk") ||
+      r.includes("reversal risk is high") ||
+      r.includes("candle has strong") ||
+      r.includes("candle strength") ||
+      r.includes("profile floor") ||
+      r.includes("profile does not allow reversal_risk") ||
+      r.includes("market state is reversal_risk") ||
+      r.includes("forex profile does not allow reversal_risk") ||
       r.includes("liquidity proxy")
     ) {
       return false;
