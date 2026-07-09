@@ -111,7 +111,33 @@ function safeV3Promotions(scan, log) {
 
     const pair = item?.pair || v3?.pair;
     const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
-    const confidence = envNum(item?.confidence ?? v3?.confidence ?? v3?.score, NaN);
+    const rawV3Score = envNum(v3?.score, NaN);
+    const v3Qualified = v3?.qualified === true;
+    const v3Early = v3?.earlyTrigger === true;
+    const pdScore = envNum(v3?.premiumDiscount?.premiumDiscountScore, 0);
+    const liqScore = envNum(v3?.liquidityIntent?.intentScore ?? v3?.liquidityIntent?.score, 0);
+
+    // Executable V3 confidence:
+    // V3 score is not the same as legacy confidence. For execution, convert a
+    // strong V3 setup into an execution confidence only when multiple V3 pillars agree.
+    const v3ExecutionConfidence = (() => {
+      if (!Number.isFinite(rawV3Score)) return NaN;
+
+      let c = rawV3Score;
+
+      if (v3Qualified) c += 14;
+      if (v3Early) c += 5;
+      if (pdScore >= 0.75) c += 5;
+      if (liqScore >= 0.65) c += 6;
+
+      return Math.max(0, Math.min(100, Math.round(c)));
+    })();
+
+    const confidence = envNum(
+      item?.confidence ?? v3?.confidence,
+      Number.isFinite(v3ExecutionConfidence) ? v3ExecutionConfidence : v3?.score
+    );
+
     const rr = envNum(item?.expectedRR ?? item?.rr ?? builtV3Candidate?.expectedRR ?? v3?.expectedRR ?? v3?.rr, NaN);
 
     const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
@@ -141,14 +167,17 @@ function safeV3Promotions(scan, log) {
       Number.isFinite(stopLoss) &&
       Number.isFinite(targetProfit) &&
       !news.blocked &&
-      (isActiveOpportunityWindow(new Date()) || entryStatus !== 'late_entry') &&
       !text.includes('news_block') &&
-      (isActiveOpportunityWindow(new Date()) || !text.includes('late_entry')) &&
-      !text.includes('overextended') &&
       !text.includes('spread') &&
       !text.includes('margin') &&
       !text.includes('drawdown') &&
-      !text.includes('risk cap');
+      !text.includes('risk cap') &&
+      !text.includes('daily loss') &&
+      !text.includes('duplicate') &&
+      (
+        v3Qualified ||
+        rawV3Score >= Number(process.env.FOREX_V3_EXECUTABLE_MIN_SCORE || 65)
+      );
 
     if (!safe) {
       log(
@@ -182,7 +211,12 @@ function safeV3Promotions(scan, log) {
       finalQualifiedStatus: 'v3_promoted_only',
     });
 
-    log(`v3-only promoted pair=${pair} dir=${direction} conf=${confidence} rr=${rr}`);
+    log(
+      `v3-only promoted pair=${pair} dir=${direction} ` +
+      `conf=${confidence} rawV3Score=${Number.isFinite(rawV3Score) ? rawV3Score : 'n/a'} ` +
+      `v3Qualified=${v3Qualified} early=${v3Early} ` +
+      `pdScore=${pdScore} liqScore=${liqScore} rr=${rr}`
+    );
   }
 
   return promoted;
