@@ -531,7 +531,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         alignment.rejectionReasons = (alignment.rejectionReasons || []).filter((reason) => {
           const s = String(reason || '').toLowerCase();
           return !(
-            s.includes('momentum layer produced no execution signal') ||
+            s.includes('active-window warning: weak momentum signal, scalp/swing fallback allowed') ||
             s.includes('timeframes conflict with macro') ||
             s.includes('h1') ||
             s.includes('m30') ||
