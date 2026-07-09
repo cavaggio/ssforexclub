@@ -35,7 +35,7 @@ export function riskConfig() {
   return {
     maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
     dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),
-    autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || '90'),
+    autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '76'),
   };
 }
 

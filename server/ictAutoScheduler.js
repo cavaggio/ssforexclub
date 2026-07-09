@@ -19,7 +19,7 @@ import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMo
 
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 10 * 60 }; // 02:15–11:00 ET
+export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 14 * 60 }; // 02:15–14:00 ET
 
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = parseInterval(
   'AUTO_AI_FULL_SCAN_INTERVAL_MS',
@@ -47,7 +47,7 @@ function parseInterval(name, fallbackMs) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
 }
 
-/** True only on a NY weekday within 02:15–11:00 ET. */
+/** True only on a NY weekday within 02:15–14:00 ET. */
 export function inAutoAiWindow(input = new Date()) {
   const et = etParts(input);
   if (!et || et.isWeekend) return false;
@@ -98,7 +98,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   console.log(
     `[AUTO_AI] starting staged scheduler → ${nextUrl}/api/cron/auto-ai-trading ` +
-    `(NY weekday 02:15–11:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms)`,
+    `(NY weekday 02:15–14:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms)`,
   );
 
   addTimer(setInterval(() => {
