@@ -358,6 +358,43 @@ function extractCancelTx(tx) {
  * @param {Object} [options]
  * @param {Object} [options.client]
  */
+function fitUnitsToMargin({
+  signedUnits,
+  estimatedMargin,
+  marginAvailable,
+  minFreeMarginUSD,
+} = {}) {
+  const units = Number(signedUnits);
+  const margin = Number(estimatedMargin);
+  const available = Number(marginAvailable);
+  const minFree = Number(minFreeMarginUSD);
+
+  if (!Number.isFinite(units) || !Number.isFinite(margin) || margin <= 0) {
+    return { signedUnits, changed: false, reason: 'invalid margin fit inputs' };
+  }
+
+  const maxUsableMargin = Math.max(0, available - minFree);
+  if (maxUsableMargin <= 0) {
+    return { signedUnits: 0, changed: true, reason: 'no usable margin after free-margin reserve' };
+  }
+
+  if (margin <= maxUsableMargin) {
+    return { signedUnits, changed: false, reason: 'already fits margin reserve' };
+  }
+
+  const ratio = maxUsableMargin / margin;
+  const fittedAbsUnits = Math.floor(Math.abs(units) * ratio);
+  const fittedSignedUnits = units < 0 ? -fittedAbsUnits : fittedAbsUnits;
+
+  return {
+    signedUnits: fittedSignedUnits,
+    changed: true,
+    ratio,
+    maxUsableMargin,
+    reason: `reduced units to fit usable margin $${maxUsableMargin.toFixed(2)}`,
+  };
+}
+
 export async function executeTrade(signal, options = {}) {
   const { client, autoAi = false } = options;
   const { pair, direction, score, confidence, entry, stopLoss, takeProfit, spreadPips } = signal;
@@ -659,23 +696,55 @@ export async function executeTrade(signal, options = {}) {
     accountBalanceUSD: balanceUSD,
   });
 
-  const units               = sizing.signedUnits;
-  const absUnits            = Math.abs(units);
+  let units                 = sizing.signedUnits;
+  let absUnits              = Math.abs(units);
   const slPrice             = sizing.stopLoss;
   const tpPrice             = sizing.takeProfit;
-  const estimatedMargin     = sizing.estimatedMarginRequired;
-  const notionalUSD         = sizing.notionalUSD;
+  let estimatedMargin       = sizing.estimatedMarginRequired;
+  let notionalUSD           = sizing.notionalUSD;
   const effectiveLeverage   = sizing.effectiveLeverage;
   const slDistancePips      = sizing.stopLossPips;
 
+  const minFreeMarginUSD    = balanceUSD * (MIN_FREE_MARGIN_PCT / 100);
+
+  if (autoAi) {
+    const fit = fitUnitsToMargin({
+      signedUnits: units,
+      estimatedMargin,
+      marginAvailable,
+      minFreeMarginUSD,
+    });
+
+    if (fit.changed) {
+      console.warn(
+        `[AUTO_AI_MARGIN_FIT] ${pair} ${direction} ${fit.reason}; ` +
+        `units ${units} → ${fit.signedUnits}`
+      );
+
+      units = fit.signedUnits;
+      absUnits = Math.abs(units);
+
+      if (absUnits >= 1) {
+        const unitRatio = absUnits / Math.abs(sizing.signedUnits || 1);
+        estimatedMargin = +(sizing.estimatedMarginRequired * unitRatio).toFixed(2);
+        notionalUSD = +(sizing.notionalUSD * unitRatio).toFixed(2);
+        sizing.signedUnits = units;
+        sizing.tradeUnits = absUnits;
+        sizing.estimatedMarginRequired = estimatedMargin;
+        sizing.notionalUSD = notionalUSD;
+        sizing.actualRiskUSD = +(sizing.actualRiskUSD * unitRatio).toFixed(2);
+        sizing.estimatedRewardUSD = +(sizing.estimatedRewardUSD * unitRatio).toFixed(2);
+      }
+    }
+  }
+
   if (!absUnits || absUnits < 1) {
     return blocked(
-      `Sizing produced 0 units — pip value too small for $${dynamicRisk.riskUSD} risk at ${slDistancePips}p. ` +
-      `pipValuePerLot=$${sizing.pipValuePerStandardLot}.`
+      `Sizing produced 0 units after margin fit — not enough free margin. ` +
+      `available=$${marginAvailable.toFixed(2)} minFree=$${minFreeMarginUSD.toFixed(2)}`
     );
   }
 
-  const minFreeMarginUSD    = balanceUSD * (MIN_FREE_MARGIN_PCT / 100);
   const projectedFreeMargin = marginAvailable - estimatedMargin;
 
   console.log(
