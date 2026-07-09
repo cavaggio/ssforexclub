@@ -33,7 +33,7 @@ function buildIctWatchState(analyses = [], minConfidence = 80) {
     const confidence = Number(item?.confidence ?? 0);
     const hasDirectionalSignal = item?.signal && item.signal !== 'none';
 
-    if (text.includes('late_entry') || text.includes('overextended')) {
+    if (!isActiveOpportunityWindow(new Date()) && (text.includes('late_entry') || text.includes('overextended'))) {
       lateEntryPairs.add(pair);
       continue;
     }
@@ -159,4 +159,122 @@ export function applyJune23SoftFilterScoring(candidate = {}) {
   };
 }
 
+
+
+
+
+
+// === OPPORTUNITY RANKING PATCH ===
+function getNYHour(date = new Date()) {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      hour12: false,
+    }).format(date)
+  );
+  return hour === 24 ? 0 : hour;
+}
+
+function isActiveOpportunityWindow(date = new Date()) {
+  const h = getNYHour(date);
+  return h >= 2 && h < 10;
+}
+
+function isProtectedHardBlock(reason = "") {
+  const r = String(reason).toLowerCase();
+  return (
+    r.includes("rr < 1.5") ||
+    r.includes("risk reward below") ||
+    r.includes("spread too high") ||
+    r.includes("duplicate") ||
+    r.includes("max trades") ||
+    r.includes("daily loss") ||
+    r.includes("missing stop") ||
+    r.includes("missing take profit") ||
+    r.includes("invalid broker") ||
+    r.includes("credentials") ||
+    r.includes("live trading disabled") ||
+    r.includes("execution disabled")
+  );
+}
+
+function convertLateEntryToTradableStatus(status, reason = "", now = new Date()) {
+  if (!isActiveOpportunityWindow(now)) return { status, reason };
+
+  const s = String(status || "").toLowerCase();
+  const r = String(reason || "").toLowerCase();
+
+  if (
+    s === "late_entry" ||
+    r.includes("late entry") ||
+    r.includes("overextended") ||
+    r.includes("flow opposes") ||
+    r.includes("institutional flow")
+  ) {
+    return {
+      status: "valid_entry",
+      reason: `Active-window tradable opportunity: ${reason || status}`,
+      warning: true,
+    };
+  }
+
+  return { status, reason };
+}
+
+function rankOpportunity(candidate = {}) {
+  const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
+  const confidence = Number(candidate.confidence ?? candidate.score ?? candidate.alignScore ?? 0);
+  const spreadOk = candidate.spreadOk !== false;
+  const duplicate = candidate.duplicate === true || candidate.hasDuplicate === true;
+
+  if (rr < 1.5) return { mode: "NONE", score: 0, reject: "RR < 1.5" };
+  if (!spreadOk) return { mode: "NONE", score: 0, reject: "spread too high" };
+  if (duplicate) return { mode: "NONE", score: 0, reject: "duplicate active trade" };
+
+  let score = 0;
+  score += Math.min(confidence, 100);
+  score += Math.min(rr * 12, 40);
+
+  if (candidate.entryStatus === "valid_entry") score += 15;
+  if (candidate.entryStatus === "wait_for_retest") score += 8;
+  if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
+
+  if (confidence >= 70 && rr >= 1.5) {
+    return { mode: "SCALP", score, reject: null };
+  }
+
+  if (confidence >= 76 && rr >= 1.5) {
+    return { mode: "SWING", score, reject: null };
+  }
+
+  return { mode: "NONE", score, reject: "confidence below opportunity threshold" };
+}
+
+function softenActiveWindowRejects(reasons = [], now = new Date()) {
+  if (!isActiveOpportunityWindow(now)) return reasons;
+
+  return reasons.filter((reason) => {
+    const r = String(reason).toLowerCase();
+
+    if (isProtectedHardBlock(r)) return true;
+
+    if (
+      r.includes("late_entry") ||
+      r.includes("late entry") ||
+      r.includes("overextended") ||
+      r.includes("flow opposes") ||
+      r.includes("institutional flow") ||
+      r.includes("missing smt") ||
+      r.includes("missing fvg") ||
+      r.includes("mixed ema") ||
+      r.includes("liquidity proxy")
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+// === END OPPORTUNITY RANKING PATCH ===
 
