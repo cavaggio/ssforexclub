@@ -1,3 +1,4 @@
+import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMode.js';
 /**
  * server/v3AutoTrade.js
  *
@@ -181,7 +182,7 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
   const account = maskAccount(client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} engine=v3 ${m}`);
   void now;
-  const scanPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  const scanPairs = prioritizeRetraceWatchPairs(Array.isArray(pairs) && pairs.length ? pairs : null);
   log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
   const scan = await scanForexPairs(scanPairs, { client, scanMode });
@@ -386,3 +387,9 @@ function softenActiveWindowRejects(reasons = [], now = new Date()) {
 }
 // === END OPPORTUNITY RANKING PATCH ===
 
+
+
+function prioritizeRetraceWatchPairs(pairs = []) {
+  const watched = getRetraceWatchPairs();
+  return [...new Set([...watched, ...pairs])];
+}

@@ -1,3 +1,4 @@
+import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMode.js';
 import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
 /**
  * server/oandaScanner.js
@@ -304,7 +305,7 @@ function rankPairsByQuality(pairs, pricingMap, session) {
  */
 export async function scanForexPairs(pairsOverride = null, options = {}) {
   const { client } = options;
-  const pairs = pairsOverride || ORDERED_WATCHLIST;
+  const pairs = prioritizeRetraceWatchPairs(pairsOverride || ORDERED_WATCHLIST);
   const session = getForexSession();
 
   setScanInProgress(true);
@@ -1335,3 +1336,9 @@ function softenActiveWindowRejects(reasons = [], now = new Date()) {
 }
 // === END OPPORTUNITY RANKING PATCH ===
 
+
+
+function prioritizeRetraceWatchPairs(pairs = []) {
+  const watched = getRetraceWatchPairs();
+  return [...new Set([...watched, ...pairs])];
+}

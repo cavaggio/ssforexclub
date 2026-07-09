@@ -1,3 +1,4 @@
+import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMode.js';
 /**
  * server/ictAutoScheduler.js
  *
@@ -323,3 +324,9 @@ export function pickTradeMode(candidate = {}) {
 }
 // === END ACTIVE TRADE LOGIC PATCH ===
 
+
+
+function prioritizeRetraceWatchPairs(pairs = []) {
+  const watched = getRetraceWatchPairs();
+  return [...new Set([...watched, ...pairs])];
+}

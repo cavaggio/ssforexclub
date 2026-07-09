@@ -1,3 +1,4 @@
+import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMode.js';
 /**
  * server/autoAiRouter.js
  *
@@ -43,4 +44,10 @@ export async function runAutoForUser({
     return { engine: 'v3', ...(await v3({ client, now, runId, scanMode, pairs: safePairs })) };
   }
   return { engine: 'ict', ...(await ict({ client, now, runId, scanMode, pairs: safePairs })) };
+}
+
+
+function prioritizeRetraceWatchPairs(pairs = []) {
+  const watched = getRetraceWatchPairs();
+  return [...new Set([...watched, ...pairs])];
 }
