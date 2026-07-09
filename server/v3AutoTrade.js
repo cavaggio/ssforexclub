@@ -25,6 +25,70 @@ function envNum(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function getPipSizeLocal(pair = '') {
+  return String(pair).includes('JPY') ? 0.01 : 0.0001;
+}
+
+function roundPriceLocal(price, pair = '') {
+  if (!Number.isFinite(price)) return null;
+  return Number(price.toFixed(String(pair).includes('JPY') ? 3 : 5));
+}
+
+function pickV3Target(v3 = {}, minRR = 1.5) {
+  const targets = v3?.targets || {};
+  const choices = [targets.tp1, targets.tp2, targets.tp3].filter(Boolean);
+
+  for (const t of choices) {
+    const pips = Math.abs(Number(t?.pips));
+    const sl = Math.abs(Number(v3?.slPipsEst));
+    if (Number.isFinite(pips) && Number.isFinite(sl) && sl > 0 && pips / sl >= minRR) {
+      return t;
+    }
+  }
+
+  return null;
+}
+
+function buildV3PropFirmCandidate(item = {}, v3 = {}, minRR = 1.5) {
+  const pair = item?.pair || v3?.pair;
+  const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
+  const entry = Number(item?.entry ?? item?.entryPrice ?? item?.currentPrice ?? v3?.entry ?? v3?.entryPrice);
+
+  if (!pair || !direction || !Number.isFinite(entry)) return null;
+
+  const slPips = Math.abs(Number(v3?.slPipsEst));
+  if (!Number.isFinite(slPips) || slPips <= 0) return null;
+
+  const target = pickV3Target(v3, minRR);
+  if (!target || !Number.isFinite(Number(target.price))) return null;
+
+  const pipSize = getPipSizeLocal(pair);
+  const stopLoss = direction === 'long'
+    ? roundPriceLocal(entry - slPips * pipSize, pair)
+    : roundPriceLocal(entry + slPips * pipSize, pair);
+
+  const takeProfit = roundPriceLocal(Number(target.price), pair);
+  const rewardPips = Math.abs(Number(target.pips));
+  const rr = +(rewardPips / slPips).toFixed(2);
+
+  if (!Number.isFinite(stopLoss) || !Number.isFinite(takeProfit) || rr < minRR) return null;
+
+  return {
+    pair,
+    direction,
+    entry,
+    entryPrice: entry,
+    stopLoss,
+    targetProfit: takeProfit,
+    takeProfit,
+    expectedRR: rr,
+    rr,
+    stopLossPips: +slPips.toFixed(1),
+    takeProfitPips: +rewardPips.toFixed(1),
+    targetSource: target.source || v3?.targets?.targetSource || 'v3_liquidity',
+  };
+}
+
 function normalizeV3Direction(value) {
   const v = String(value || '').toLowerCase();
   if (v === 'buy') return 'long';
@@ -48,11 +112,13 @@ function safeV3Promotions(scan, log) {
     const pair = item?.pair || v3?.pair;
     const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
     const confidence = envNum(item?.confidence ?? v3?.confidence ?? v3?.score, NaN);
-    const rr = envNum(item?.expectedRR ?? item?.rr ?? v3?.expectedRR ?? v3?.rr, NaN);
+    const rr = envNum(item?.expectedRR ?? item?.rr ?? builtV3Candidate?.expectedRR ?? v3?.expectedRR ?? v3?.rr, NaN);
 
-    const entry = Number(item?.entry ?? item?.entryPrice ?? v3?.entry ?? v3?.entryPrice);
-    const stopLoss = Number(item?.stopLoss ?? item?.sl ?? v3?.stopLoss ?? v3?.sl);
-    const targetProfit = Number(item?.targetProfit ?? item?.takeProfit ?? item?.tp ?? v3?.targetProfit ?? v3?.takeProfit ?? v3?.tp);
+    const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
+
+    const entry = Number(item?.entry ?? item?.entryPrice ?? item?.currentPrice ?? builtV3Candidate?.entry ?? v3?.entry ?? v3?.entryPrice);
+    const stopLoss = Number(item?.stopLoss ?? item?.sl ?? builtV3Candidate?.stopLoss ?? v3?.stopLoss ?? v3?.sl);
+    const targetProfit = Number(item?.targetProfit ?? item?.takeProfit ?? item?.tp ?? builtV3Candidate?.targetProfit ?? v3?.targetProfit ?? v3?.takeProfit ?? v3?.tp);
 
     const news = item?.newsRisk || v3?.newsRisk || {};
     const entryStatus = item?.entryTiming?.status || v3?.entryTiming?.status || '';
@@ -85,7 +151,16 @@ function safeV3Promotions(scan, log) {
       !text.includes('risk cap');
 
     if (!safe) {
-      log(`v3-only not promoted pair=${pair || 'unknown'} conf=${Number.isFinite(confidence) ? confidence : 'n/a'} rr=${Number.isFinite(rr) ? rr : 'n/a'} reason="${text || 'missing safe execution fields'}"`);
+      log(
+        `v3-only not promoted pair=${pair || 'unknown'} ` +
+        `conf=${Number.isFinite(confidence) ? confidence : 'n/a'} ` +
+        `rr=${Number.isFinite(rr) ? rr : 'n/a'} ` +
+        `entry=${Number.isFinite(entry) ? entry : 'n/a'} ` +
+        `sl=${Number.isFinite(stopLoss) ? stopLoss : 'n/a'} ` +
+        `tp=${Number.isFinite(targetProfit) ? targetProfit : 'n/a'} ` +
+        `targetSource=${builtV3Candidate?.targetSource || 'n/a'} ` +
+        `reason="${text || 'missing safe execution fields'}"`
+      );
       continue;
     }
 
@@ -97,6 +172,7 @@ function safeV3Promotions(scan, log) {
       confidence,
       expectedRR: rr,
       rr,
+      ...(builtV3Candidate || {}),
       entry,
       entryPrice: entry,
       stopLoss,
