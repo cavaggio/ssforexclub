@@ -187,6 +187,46 @@ function displayPair(pair: string): string {
   return pair.replace('_', '/');
 }
 
+function safeNum(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function trimText(value: unknown, max = 500): string {
+  const s = value == null ? '' : String(value);
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+function compactSignalPayload<T extends Record<string, any>>(sig: T): T {
+  return {
+    ...sig,
+    reason: trimText(sig.reason, 500),
+    rejectionReasons: Array.isArray(sig.rejectionReasons)
+      ? sig.rejectionReasons.slice(0, 8).map((r: unknown) => trimText(r, 500))
+      : sig.rejectionReasons,
+    alignment: sig.alignment
+      ? {
+          ...sig.alignment,
+          rejectionReasons: Array.isArray(sig.alignment.rejectionReasons)
+            ? sig.alignment.rejectionReasons.slice(0, 8).map((r: unknown) => trimText(r, 500))
+            : sig.alignment.rejectionReasons,
+          warnings: Array.isArray(sig.alignment.warnings)
+            ? sig.alignment.warnings.slice(0, 6).map((r: unknown) => trimText(r, 500))
+            : sig.alignment.warnings,
+        }
+      : sig.alignment,
+    institutionalFlow: sig.institutionalFlow
+      ? {
+          ...sig.institutionalFlow,
+          reason: trimText(sig.institutionalFlow.reason, 500),
+          signals: Array.isArray(sig.institutionalFlow.signals)
+            ? sig.institutionalFlow.signals.slice(0, 6)
+            : sig.institutionalFlow.signals,
+        }
+      : sig.institutionalFlow,
+  };
+}
+
 function formatPrice(price: number, pair: string): string {
   if (pair === 'XAU_USD' || pair === 'XAG_USD') return price.toFixed(2);
   if (pair.includes('JPY')) return price.toFixed(3);
@@ -821,6 +861,7 @@ function V3SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function V3LiquidityPanel({ v3, pair, compact = false }: { v3: V3Meta; pair: string; compact?: boolean }) {
+  if (!v3?.liquidity) return null;
   const liq = v3.liquidity;
   const intent = v3.liquidityIntent;
   const pd = v3.premiumDiscount;
@@ -2610,7 +2651,13 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      const raw = await res.json();
+      const rawText = await res.text();
+      let raw: any = {};
+      try {
+        raw = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        raw = { ok: false, error: rawText.slice(0, 500) || `HTTP ${res.status}` };
+      }
 
       if (!res.ok || !raw?.ok) {
         // Surface the resolver's reason (e.g. no_credentials,
@@ -2632,11 +2679,18 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       //   { ok, activeBroker, activeEnvironment, isLiveTrading, isPaperTrading,
       //     scan: { qualified, rejected, meta } }
       const scan = (raw.scan ?? {}) as Partial<ForexScanResult>;
+      const qualifiedSafe = Array.isArray(scan.qualified)
+        ? scan.qualified.slice(0, 10).map((s: any) => compactSignalPayload(s))
+        : [];
+      const rejectedSafe = Array.isArray(scan.rejected)
+        ? scan.rejected.slice(0, 20).map((s: any) => compactSignalPayload(s))
+        : [];
+
       setState({
         ok: true,
         scan: {
-          qualified: scan.qualified ?? [],
-          rejected: scan.rejected ?? [],
+          qualified: qualifiedSafe,
+          rejected: rejectedSafe,
           meta: scan.meta ?? ({} as ForexScanResult['meta']),
         },
         activeBroker: raw.activeBroker ?? 'oanda',
@@ -2942,7 +2996,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
         ) : rejected.length === 0 ? (
           <EmptyBlock>No rejections — all scanned pairs qualified.</EmptyBlock>
         ) : (
-          rejected.map((sig, i) => <RejectedRow key={`${sig.pair}_${i}`} sig={sig} />)
+          rejected.slice(0, 20).map((sig, i) => <RejectedRow key={`${sig.pair ?? 'rejected'}_${i}`} sig={sig} />)
         )}
       </section>
 
