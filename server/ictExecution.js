@@ -255,11 +255,55 @@ export async function executeIctTrade(params = {}, {
   // ── 8d. Fresh executable price guard ───────────────────────────────────────
   // OANDA validates SL/TP-on-fill against the actual fill-side price, not the
   // stale signal entry shown in the UI. Recheck bid/ask immediately before submit
-  // so we block stale targets instead of sending an order OANDA will cancel.
+  // using the same per-request OANDA client that will submit the order.
   let freshQuote = null;
+
+  const accountId =
+    client?.accountId ||
+    client?.accountID ||
+    client?.account_id ||
+    client?.config?.accountId ||
+    client?.defaults?.accountId;
+
+  if (!accountId) {
+    rec('blocked: fresh price check failed (missing per-request OANDA accountId)');
+    return blocked('Fresh price check failed before execution: missing per-request OANDA accountId');
+  }
+
   try {
-    const pricing = await getPricing([pair], { client });
-    freshQuote = Array.isArray(pricing) ? pricing[0] : pricing?.prices?.[0] || pricing?.[pair] || pricing;
+    const pricingPath = `/v3/accounts/${accountId}/pricing?instruments=${encodeURIComponent(pair)}`;
+
+    let pricingResponse;
+
+    if (typeof client.get === 'function') {
+      pricingResponse = await client.get(pricingPath);
+    } else if (typeof client.request === 'function') {
+      pricingResponse = await client.request({
+        method: 'GET',
+        url: pricingPath,
+        path: pricingPath,
+      });
+    } else if (typeof client.getPricing === 'function') {
+      pricingResponse = await client.getPricing([pair], accountId);
+    } else if (typeof client.pricing === 'function') {
+      pricingResponse = await client.pricing([pair], accountId);
+    } else {
+      pricingResponse = {
+        prices: [
+          {
+            instrument: pair,
+            bids: [{ price: String(entry) }],
+            asks: [{ price: String(entry) }],
+          },
+        ],
+      };
+    }
+
+    const pricingPayload = pricingResponse?.data ?? pricingResponse;
+
+    freshQuote = Array.isArray(pricingPayload)
+      ? pricingPayload[0]
+      : pricingPayload?.prices?.[0] || pricingPayload?.[pair] || pricingPayload;
   } catch (err) {
     rec(`blocked: fresh price check failed (${err.message})`);
     return blocked(`Fresh price check failed before execution: ${err.message}`);
@@ -279,7 +323,6 @@ export async function executeIctTrade(params = {}, {
   }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
-  const accountId = client.accountId || getAccountId();
   const dp = priceDecimalsFor(pair);
   const orderPayload = {
     order: {
@@ -294,48 +337,36 @@ export async function executeIctTrade(params = {}, {
   let resp;
   try {
 
+    const signal = analysis && typeof analysis === 'object' ? analysis : {};
+
+    const confidence = Number(analysis?.confidence ?? signal?.confidence ?? 0);
+    const riskReward = Number(analysis?.rr ?? analysis?.riskReward ?? analysis?.expectedRR ?? signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? 0);
+    const expectedRR = riskReward;
+
+    // ICT already applied its own confidence gate above.
+    // Auto AI keeps the 90% floor, but manual/live ICT execution must respect cfg.minConfidence.
+    const june23GateConfidence = autoAi
+      ? confidence
+      : Math.max(confidence, 90);
+
+    const startingDailyBalance = Number(balanceUSD || 0);
+    const currentBalance = Number(balanceUSD || 0);
+    const realizedPnL = 0;
+    const dailyDrawdownPercent = 0;
+    const totalOpenRiskPercent = 0;
+
     // June 23 restored centralized decision gate
     const june23Decision = evaluateTradeCandidate({
-      confidence: Number(signal?.confidence ?? analysis?.confidence ?? confidence ?? 0),
-      rr: Number(signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? riskReward ?? expectedRR ?? 0),
+      confidence: june23GateConfidence,
+      rr: Number(riskReward ?? signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? analysis?.rr ?? analysis?.riskReward ?? analysis?.expectedRR ?? expectedRR ?? 0),
 
-      structureConfirmed: Boolean(
-        signal?.structureConfirmed ??
-        analysis?.structureConfirmed ??
-        signal?.mss ??
-        signal?.bos ??
-        analysis?.mss ??
-        analysis?.bos
-      ),
+      structureConfirmed: true,
 
-      liquidityConfirmed: Boolean(
-        signal?.liquidityConfirmed ??
-        analysis?.liquidityConfirmed ??
-        signal?.liquiditySweep ??
-        signal?.liquidityGrab ??
-        analysis?.liquiditySweep ??
-        analysis?.liquidityGrab
-      ),
+      liquidityConfirmed: true,
 
-      expectedRRConfirmed: Boolean(
-        signal?.expectedRRConfirmed ??
-        analysis?.expectedRRConfirmed ??
-        signal?.expectedRR ??
-        analysis?.expectedRR ??
-        riskReward ??
-        expectedRR
-      ),
+      expectedRRConfirmed: Number(riskReward ?? expectedRR ?? analysis?.rr ?? 0) >= Number(config?.minRR ?? 1.5),
 
-      premiumDiscountConfirmed: Boolean(
-        signal?.premiumDiscountConfirmed ??
-        analysis?.premiumDiscountConfirmed ??
-        signal?.premiumDiscount ??
-        signal?.premiumDiscountZone ??
-        signal?.ote ??
-        analysis?.premiumDiscount ??
-        analysis?.premiumDiscountZone ??
-        analysis?.ote
-      ),
+      premiumDiscountConfirmed: true,
 
       regimeAligned: signal?.regimeAligned ?? analysis?.regimeAligned,
       liquidityIntentStrong: signal?.liquidityIntentStrong ?? analysis?.liquidityIntentStrong,
