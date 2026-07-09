@@ -178,17 +178,22 @@ function getMaxSpreadPips(pair) {
 function getOandaMaxSpreadPips(instrument, session) {
   const pair = String(instrument).replace('/', '_').toUpperCase();
 
-  if (pair === 'EUR_USD') return 3;
-  if (pair === 'GBP_USD') return 4;
-  if (pair === 'AUD_USD') return 5;
-  if (pair === 'NZD_USD') return 6;
-  if (pair === 'USD_CAD') return 6;
-  if (pair === 'USD_JPY') return 5;
+  const propFirmCap = Number.isFinite(Number(process.env.FOREX_MAX_SPREAD_PIPS))
+    ? Number(process.env.FOREX_MAX_SPREAD_PIPS)
+    : 3.5;
 
-  if (pair.includes('JPY')) return 12;
-  if (pair.includes('GBP')) return 8;
+  let pairLimit = 6;
 
-  return 6;
+  if (pair === 'EUR_USD') pairLimit = 3;
+  else if (pair === 'GBP_USD') pairLimit = 4;
+  else if (pair === 'AUD_USD') pairLimit = 5;
+  else if (pair === 'NZD_USD') pairLimit = 6;
+  else if (pair === 'USD_CAD') pairLimit = 6;
+  else if (pair === 'USD_JPY') pairLimit = 5;
+  else if (pair.includes('JPY')) pairLimit = 12;
+  else if (pair.includes('GBP')) pairLimit = 8;
+
+  return Math.min(pairLimit, propFirmCap);
 }
 
 /**
@@ -1201,6 +1206,24 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
   }
 
   console.log(`\n[SCANNER] ▶ Scan complete — ${qualified.length} qualified, ${rejected.length} rejected\n`);
+
+  for (const r of rejected.slice(0, 20)) {
+    const reasons = Array.isArray(r.rejectionReasons)
+      ? r.rejectionReasons.slice(0, 4).join(' | ')
+      : String(r.reason || 'unknown');
+
+    const v3 = r.v3 || v3ByPair?.[r.pair] || null;
+
+    console.log(
+      `[FINAL_REJECT] ${r.pair} dir=${r.direction ?? 'none'} ` +
+      `cat=${r.rejectionCategory ?? 'unknown'} ` +
+      `reason="${String(r.reason || 'unknown').slice(0, 180)}" ` +
+      `v3Score=${v3?.score ?? 'n/a'} v3Qualified=${v3?.qualified === true} ` +
+      `v3Early=${v3?.earlyTrigger === true} ` +
+      `pd=${v3?.premiumDiscount?.premiumDiscountState ?? 'n/a'} ` +
+      `reasons="${reasons.slice(0, 500)}"`
+    );
+  }
 
   // ── Signal Stack V3 shadow comparison ─────────────────────────────────────
   // Record the legacy-vs-V3 divergence for every evaluated pair (off does
