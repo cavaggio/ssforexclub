@@ -617,14 +617,12 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         );
       }
       if (overextension?.lateEntryDetected) {
-        alignment.
-if (!isActiveOpportunityWindow(new Date())) {
-  rejectionReasons.push(`Rejected: late entry after extended move. ${overextension.entryTimingReason}`);
-} else {
-  warnings = warnings || [];
-  warnings.push(`Active-window warning: late entry/overextension softened. ${overextension.entryTimingReason}`);
-}
-
+        if (!isActiveOpportunityWindow(new Date())) {
+          alignment.rejectionReasons.push(`Rejected: late entry after extended move. ${overextension.entryTimingReason}`);
+        } else {
+          if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+          alignment.warnings.push(`Active-window warning: late entry/overextension softened. ${overextension.entryTimingReason}`);
+        }
       }
       if (candleStrength.classification === 'rejection') {
         alignment.rejectionReasons.push(
