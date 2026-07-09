@@ -247,3 +247,79 @@ export function stopAutoAiScheduler() {
 
   return { stopped: true };
 }
+
+
+
+// === ACTIVE TRADE LOGIC PATCH ===
+export function getNewYorkHour(date = new Date()) {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      hour12: false,
+    }).format(date)
+  );
+  return hour === 24 ? 0 : hour;
+}
+
+export function isPrimaryTradeWindow(date = new Date()) {
+  const hour = getNewYorkHour(date);
+  return hour >= 2 && hour < 10;
+}
+
+export function isTrueHardReject(reason = "") {
+  const r = String(reason).toLowerCase();
+  return (
+    r.includes("rr") && r.includes("1.5") ||
+    r.includes("risk reward") && r.includes("below") ||
+    r.includes("max daily loss") ||
+    r.includes("daily loss") ||
+    r.includes("max trades") ||
+    r.includes("duplicate") ||
+    r.includes("spread too high") ||
+    r.includes("invalid broker") ||
+    r.includes("credentials") ||
+    r.includes("missing stop") ||
+    r.includes("missing take profit") ||
+    r.includes("live trading disabled") ||
+    r.includes("execution disabled")
+  );
+}
+
+export function softenRejectReasons(reasons = [], now = new Date()) {
+  if (!isPrimaryTradeWindow(now)) return reasons;
+
+  return reasons.filter((reason) => {
+    const r = String(reason).toLowerCase();
+
+    if (isTrueHardReject(r)) return true;
+
+    if (
+      r.includes("late_entry") ||
+      r.includes("late entry") ||
+      r.includes("flow opposes") ||
+      r.includes("institutional flow") ||
+      r.includes("missing smt") ||
+      r.includes("missing fvg") ||
+      r.includes("mixed ema") ||
+      r.includes("emaalignment=mixed") ||
+      r.includes("single opposing liquidity") ||
+      r.includes("liquidity proxy")
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+export function pickTradeMode(candidate = {}) {
+  const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
+  const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
+
+  if (rr >= 1.5 && confidence >= 70) return "SCALP";
+  if (rr >= 1.5 && confidence >= 76) return "SWING";
+  return "NONE";
+}
+// === END ACTIVE TRADE LOGIC PATCH ===
+
