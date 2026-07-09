@@ -45,7 +45,7 @@ test('ICT execution blocks stale BUY target before OANDA TAKE_PROFIT_ON_FILL_LOS
 
   const result = await executeIctTrade(baseParams(), {
     client,
-    cfg: { mode: 'live', autoTradeEnabled: true, minConfidence: 76, minRR: 1.5, maxRiskPercent: 1.25, signalTtlSec: 300 },
+    cfg: { mode: 'live', autoTradeEnabled: true, minConfidence: 80, minRR: 1.5.5, maxRiskPercent: 1.25, signalTtlSec: 300 },
     getAnalysis: async () => fakeAnalysis(),
     getAccount: async () => fakeAccount(),
     reconcile: async () => false,
