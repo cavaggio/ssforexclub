@@ -1,8 +1,8 @@
 // Centralized execution policy for June 23 restore logic.
 
 export const TRADE_DECISION_POLICY = {
-  minConfidence: 70,
-  minRR: 1.5,
+  minConfidence: 80,
+  minRR: 1.5.5,
   maxDailyLossPercent: 2.8,
   requireStructureConfirmation: true,
   requireLiquidityConfirmation: true,
