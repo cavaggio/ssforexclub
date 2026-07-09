@@ -138,9 +138,9 @@ function safeV3Promotions(scan, log) {
       Number.isFinite(v3ExecutionConfidence) ? v3ExecutionConfidence : v3?.score
     );
 
+    const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
     const rr = envNum(item?.expectedRR ?? item?.rr ?? builtV3Candidate?.expectedRR ?? v3?.expectedRR ?? v3?.rr, NaN);
 
-    const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
 
     const entry = Number(item?.entry ?? item?.entryPrice ?? item?.currentPrice ?? builtV3Candidate?.entry ?? v3?.entry ?? v3?.entryPrice);
     const stopLoss = Number(item?.stopLoss ?? item?.sl ?? builtV3Candidate?.stopLoss ?? v3?.stopLoss ?? v3?.sl);
