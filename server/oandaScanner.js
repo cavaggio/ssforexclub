@@ -1440,20 +1440,6 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
 
 
-= {}) {
-  const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
-  const requiredScore = envNumber('FOREX_PERFECT_ALIGNMENT_BYPASS_SCORE', 100);
-
-  if (alignScore < requiredScore) return { allowed: false, reason: `alignment_${alignScore}_below_${requiredScore}` };
-  if (!direction) return { allowed: false, reason: 'missing_direction' };
-  if (newsRisk?.blocked) return { allowed: false, reason: 'news_blocked' };
-  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) return { allowed: false, reason: 'spread_blocked' };
-
-  return { allowed: true, reason: `perfect_alignment_${alignScore}` };
-}
-
-
-
 
 // === PERFECT ALIGNMENT EXECUTION BYPASS PATCH ===
 function shouldForcePerfectAlignmentExecution({
