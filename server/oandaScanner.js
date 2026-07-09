@@ -1440,6 +1440,21 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
 
 
+= {}) {
+  const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
+  const requiredScore = envNumber('FOREX_PERFECT_ALIGNMENT_BYPASS_SCORE', 100);
+
+  if (alignScore < requiredScore) return { allowed: false, reason: `alignment_${alignScore}_below_${requiredScore}` };
+  if (!direction) return { allowed: false, reason: 'missing_direction' };
+  if (newsRisk?.blocked) return { allowed: false, reason: 'news_blocked' };
+  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) return { allowed: false, reason: 'spread_blocked' };
+
+  return { allowed: true, reason: `perfect_alignment_${alignScore}` };
+}
+
+
+
+
 // === PERFECT ALIGNMENT EXECUTION BYPASS PATCH ===
 function shouldForcePerfectAlignmentExecution({
   alignment,
@@ -1451,12 +1466,26 @@ function shouldForcePerfectAlignmentExecution({
   const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
   const requiredScore = envNumber('FOREX_PERFECT_ALIGNMENT_BYPASS_SCORE', 100);
 
-  if (alignScore < requiredScore) return { allowed: false, reason: `alignment_${alignScore}_below_${requiredScore}` };
-  if (!direction) return { allowed: false, reason: 'missing_direction' };
-  if (newsRisk?.blocked) return { allowed: false, reason: 'news_blocked' };
-  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) return { allowed: false, reason: 'spread_blocked' };
+  if (alignScore < requiredScore) {
+    return { allowed: false, reason: `alignment_${alignScore}_below_${requiredScore}` };
+  }
 
-  return { allowed: true, reason: `perfect_alignment_${alignScore}` };
+  if (!direction) {
+    return { allowed: false, reason: 'missing_direction' };
+  }
+
+  if (newsRisk?.blocked) {
+    return { allowed: false, reason: 'news_blocked' };
+  }
+
+  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) {
+    return { allowed: false, reason: 'spread_blocked' };
+  }
+
+  return {
+    allowed: true,
+    reason: `perfect_alignment_${alignScore}`,
+  };
 }
 
 function softenPerfectAlignmentRejects(reasons = []) {
@@ -1578,39 +1607,6 @@ function shouldBypassSoftGatesForPerfectAlignment({
     allowed: true,
     reason: `perfect_alignment_${alignScore}`,
   };
-}
-
-function softenPerfectAlignmentRejects(reasons = []) {
-  return reasons.filter((reason) => {
-    const r = String(reason || '').toLowerCase();
-
-    // Never remove true protection/broker/risk blocks.
-    if (isProtectedHardBlock(r)) return true;
-
-    // These are context/quality warnings when primary alignment is perfect.
-    if (
-      r.includes('structural confidence') ||
-      r.includes('structure reversal risk is high') ||
-      r.includes('reversal risk is high') ||
-      r.includes('late entry') ||
-      r.includes('late_entry') ||
-      r.includes('overextended') ||
-      r.includes('over-extended') ||
-      r.includes('market state is reversal_risk') ||
-      r.includes('profile does not allow reversal_risk') ||
-      r.includes('forex profile does not allow reversal_risk') ||
-      r.includes('candle strength') ||
-      r.includes('candle has strong') ||
-      r.includes('profile floor') ||
-      r.includes('institutional flow') ||
-      r.includes('flow opposes') ||
-      r.includes('flow proxy')
-    ) {
-      return false;
-    }
-
-    return true;
-  });
 }
 
 
