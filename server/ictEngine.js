@@ -48,7 +48,7 @@ export function ictExecConfig() {
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
     minConfidence: parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'),
     minRR: parseFloat(process.env.ICT_MIN_RR || '2.0'),
-    maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.25'),
+    maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.4'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
   };
 }

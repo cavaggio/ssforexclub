@@ -30,8 +30,8 @@ import {
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
 import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
-import {
 import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
+import {
   capPerTradeRiskPercent,
   checkMargin,
   checkRiskPerTrade,
@@ -817,70 +817,10 @@ export async function executeTrade(signal, options = {}) {
     oandaResponse = client
 
     // June 23 restored centralized decision gate
-    const june23Decision = evaluateTradeCandidate({
-      confidence: Number(signal?.confidence ?? analysis?.confidence ?? confidence ?? 0),
-      rr: Number(signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? riskReward ?? expectedRR ?? 0),
-
-      structureConfirmed: Boolean(
-        signal?.structureConfirmed ??
-        analysis?.structureConfirmed ??
-        signal?.mss ??
-        signal?.bos ??
-        analysis?.mss ??
-        analysis?.bos
-      ),
-
-      liquidityConfirmed: Boolean(
-        signal?.liquidityConfirmed ??
-        analysis?.liquidityConfirmed ??
-        signal?.liquiditySweep ??
-        signal?.liquidityGrab ??
-        analysis?.liquiditySweep ??
-        analysis?.liquidityGrab
-      ),
-
-      expectedRRConfirmed: Boolean(
-        signal?.expectedRRConfirmed ??
-        analysis?.expectedRRConfirmed ??
-        signal?.expectedRR ??
-        analysis?.expectedRR ??
-        riskReward ??
-        expectedRR
-      ),
-
-      premiumDiscountConfirmed: Boolean(
-        signal?.premiumDiscountConfirmed ??
-        analysis?.premiumDiscountConfirmed ??
-        signal?.premiumDiscount ??
-        signal?.premiumDiscountZone ??
-        signal?.ote ??
-        analysis?.premiumDiscount ??
-        analysis?.premiumDiscountZone ??
-        analysis?.ote
-      ),
-
-      regimeAligned: signal?.regimeAligned ?? analysis?.regimeAligned,
-      liquidityIntentStrong: signal?.liquidityIntentStrong ?? analysis?.liquidityIntentStrong,
-      calibrationPositive: signal?.calibrationPositive ?? analysis?.calibrationPositive,
-      smtDivergence: signal?.smtDivergence ?? analysis?.smtDivergence,
-      sessionNarrativeAligned: signal?.sessionNarrativeAligned ?? analysis?.sessionNarrativeAligned,
-    }, {
-      startingDailyBalance: startingDailyBalance ?? account?.startingDailyBalance ?? balanceUSD,
-      currentBalance: currentBalance ?? account?.balance ?? balanceUSD,
-    });
-
-    if (!june23Decision.allowed) {
-      return {
-        executed: false,
-        skipped: true,
-        reason: june23Decision.reason,
-        confidence: june23Decision.confidence,
-        rr: june23Decision.rr,
-      };
-    }
-
-      ? await client.post(`/v3/accounts/${accountId}/orders`, orderPayload)
-      : await oandaPost(`/v3/accounts/${accountId}/orders`, orderPayload);
+    const june23Decision = await client.post(
+      `/v3/accounts/${accountId}/orders`,
+      orderPayload
+    );
   } catch (err) {
     console.error(`[TRADE] ✗ Order submission error: ${err.message}`);
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
