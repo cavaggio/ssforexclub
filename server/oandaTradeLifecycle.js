@@ -411,10 +411,36 @@ export function computeDynamicTakeProfit({
     }
   }
 
-  // Compute final R:R and decide whether to accept
-  const riskReward = +(takeProfitPips / stopLossPips).toFixed(2);
+  // Compute final R:R and decide whether to accept.
+  // Perfect primary alignment should not be crushed by a nearby H4 level cap.
+  // If the original target had enough room for >= 1.5R, convert the H4 cap into
+  // a warning and restore the minimum valid target instead of rejecting.
+  let riskReward = +(takeProfitPips / stopLossPips).toFixed(2);
   let allowed = true;
   let rejectionReason = null;
+
+  const perfectPrimaryAlignment = Number(alignment?.timeframeAlignmentScore ?? 0) >=
+    Number(process.env.FOREX_PERFECT_ALIGNMENT_BYPASS_SCORE || 100);
+
+  if (
+    perfectPrimaryAlignment &&
+    cappedByKeyLevel &&
+    riskReward < MIN_RISK_REWARD
+  ) {
+    const minValidTpPips = Math.ceil(stopLossPips * MIN_RISK_REWARD);
+
+    takeProfitPips = minValidTpPips;
+    riskReward = +(takeProfitPips / stopLossPips).toFixed(2);
+    cappedByKeyLevel = false;
+
+    rrMultipliers.push(
+      `perfect-alignment-key-level-warning@${keyLevelDistance}p`
+    );
+
+    targetReason +=
+      ` · Perfect alignment: nearby H4 key level at ${keyLevelDistance}p treated as warning, not TP cap`;
+  }
+
   if (riskReward < MIN_RISK_REWARD) {
     allowed = false;
     rejectionReason = cappedByKeyLevel
