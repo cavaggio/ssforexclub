@@ -814,13 +814,17 @@ export async function executeTrade(signal, options = {}) {
   try {
     // Route through the per-request client when provided; legacy oandaPost
     // is only used when no client was passed (dev fallback).
-    oandaResponse = client
-
-    // June 23 restored centralized decision gate
-    const june23Decision = await client.post(
-      `/v3/accounts/${accountId}/orders`,
-      orderPayload
-    );
+    if (client) {
+      oandaResponse = await client.post(
+        `/v3/accounts/${accountId}/orders`,
+        orderPayload
+      );
+    } else {
+      oandaResponse = await oandaPost(
+        `/v3/accounts/${accountId}/orders`,
+        orderPayload
+      );
+    }
   } catch (err) {
     console.error(`[TRADE] ✗ Order submission error: ${err.message}`);
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
@@ -1204,7 +1208,7 @@ export function getNewYorkHour(date = new Date()) {
 
 export function isPrimaryTradeWindow(date = new Date()) {
   const hour = getNewYorkHour(date);
-  return hour >= 2 && hour < 10;
+  return hour >= 2 && hour < 14;
 }
 
 export function isTrueHardReject(reason = "") {

@@ -8,7 +8,7 @@
  * emits the spec'd debug-response shape per trade.
  *
  *   reassessActiveTrades()                — main entry — Parts 1, 11
- *   startReassessmentScheduler({intervalMs}) — env-guarded 30-min loop — Part 10
+ *   startReassessmentScheduler({intervalMs}) — env-guarded 15-min loop — Part 10
  *   stopReassessmentScheduler()
  *
  * Safety (Part 12):
@@ -44,13 +44,61 @@ import {
   findTradeByBrokerOrderId, updateMaxFavorableExcursion,
 } from './oandaTradeHistory.js';
 import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
+import { closeBrokerTrade } from './oandaTrade.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
 
 const AUTO_CLOSE_ENABLED =
   String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
 
-const REASSESSMENT_INTERVAL_MS = 30 * 60 * 1000;   // 30 min — Part 10
+const REASSESSMENT_INTERVAL_MS = Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 15 * 60 * 1000); // 15 min — active management cadence
 let _scheduler = null;
+
+function nyMinutesSinceMidnight(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+
+  const hour = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10) % 24;
+  const minute = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+  return hour * 60 + minute;
+}
+
+function isPostEntryManagementWindow(now = new Date()) {
+  return nyMinutesSinceMidnight(now) >= 14 * 60;
+}
+
+function shouldAutoCloseTrade(plan = {}) {
+  const action = String(plan.recommendedAction || '').toUpperCase();
+  const lifecycleAction = String(plan.lifecycleRecommendation?.action || '').toUpperCase();
+  const momentumStatus = String(plan.momentumStatus || '').toLowerCase();
+
+  if (plan.invalidationDetected === true) return true;
+
+  if (
+    plan.trendWeakeningDetected === true &&
+    String(plan.trendWeakeningSeverity || '').toLowerCase() === 'high'
+  ) {
+    return true;
+  }
+
+  if (action === 'EXIT_INVALIDATED' || action === 'EXIT_REVIEW') return true;
+  if (lifecycleAction.includes('EXIT') || lifecycleAction.includes('CLOSE')) return true;
+
+  if (
+    momentumStatus.includes('reversal') ||
+    momentumStatus.includes('reversed') ||
+    momentumStatus.includes('decay') ||
+    momentumStatus.includes('slowing')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 
 function getPipSize(pair) {
   if (pair === 'XAU_USD' || pair === 'XAG_USD') return 0.01;
@@ -484,7 +532,9 @@ export async function reassessActiveTrades(options = {}) {
         session,
         environment,
         totalActive: 0,
-        autoCloseEnabled: false,
+        autoCloseEnabled: AUTO_CLOSE_ENABLED,
+        autoCloseWindowActive: isPostEntryManagementWindow(new Date()),
+        autoCloseResults: [],
         notice: 'No open positions on broker account',
       },
     };
@@ -500,6 +550,45 @@ export async function reassessActiveTrades(options = {}) {
     ),
   );
 
+
+  const autoCloseResults = [];
+
+  if (AUTO_CLOSE_ENABLED && isPostEntryManagementWindow(new Date())) {
+    if (!client) {
+      console.warn('[REASSESSOR_AUTO_CLOSE] skipped — missing per-request client');
+    } else {
+      for (const plan of trades) {
+        if (!plan || plan.error) continue;
+        if (!shouldAutoCloseTrade(plan)) continue;
+
+        console.warn(
+          `[REASSESSOR_AUTO_CLOSE] closing tradeId=${plan.tradeId} instrument=${plan.instrument} ` +
+          `action=${plan.recommendedAction} momentum=${plan.momentumStatus} ` +
+          `trendWeakening=${plan.trendWeakeningDetected}/${plan.trendWeakeningSeverity} ` +
+          `invalidation=${plan.invalidationDetected}/${plan.invalidationSeverity}`
+        );
+
+        const closeResult = await closeBrokerTrade({
+          tradeId: plan.tradeId,
+          instrument: plan.instrument,
+          units: 'ALL',
+          client,
+        });
+
+        plan.autoCloseAttempted = true;
+        plan.autoCloseResult = closeResult;
+
+        autoCloseResults.push({
+          tradeId: plan.tradeId,
+          instrument: plan.instrument,
+          ok: closeResult.ok,
+          message: closeResult.message,
+          error: closeResult.error ?? null,
+        });
+      }
+    }
+  }
+
   const recCounts = trades.reduce((acc, t) => {
     if (t.recommendedAction) acc[t.recommendedAction] = (acc[t.recommendedAction] || 0) + 1;
     return acc;
@@ -511,7 +600,9 @@ export async function reassessActiveTrades(options = {}) {
       reassessedAt: new Date().toISOString(),
       session,
       environment,
-      autoCloseEnabled: false,        // hard-coded — Part 12 safety
+      autoCloseEnabled: AUTO_CLOSE_ENABLED,
+      autoCloseWindowActive: isPostEntryManagementWindow(new Date()),
+      autoCloseResults,
       totalActive: trades.length,
       recommendationCounts: recCounts,
       nextReassessmentDueAt: new Date(Date.now() + REASSESSMENT_INTERVAL_MS).toISOString(),
@@ -520,10 +611,10 @@ export async function reassessActiveTrades(options = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PART 10 — 30-MINUTE SCHEDULER (env-guarded, hot-reload-safe)
+// PART 10 — 15-MINUTE SCHEDULER (env-guarded, hot-reload-safe)
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
- * Start the 30-min reassessment loop. Idempotent — calling twice doesn't
+ * Start the 15-min reassessment loop. Idempotent — calling twice doesn't
  * create duplicate intervals. The env guard ENABLE_ACTIVE_TRADE_REASSESSMENT
  * MUST be 'true' or the scheduler is a no-op.
  */
@@ -536,7 +627,7 @@ export function startReassessmentScheduler({ intervalMs = REASSESSMENT_INTERVAL_
     console.log('[REASSESSOR] Scheduler already running — skipping duplicate start');
     return { started: false, reason: 'already_running' };
   }
-  console.log(`[REASSESSOR] Starting 30-min active-trade reassessment scheduler (interval ${intervalMs}ms)`);
+  console.log(`[REASSESSOR] Starting 15-min active-trade reassessment scheduler (interval ${intervalMs}ms)`);
   _scheduler = setInterval(() => {
     reassessActiveTrades()
       .then(res => console.log(`[REASSESSOR] ✓ Reassessed ${res.meta.totalActive} trade(s)`))

@@ -38,7 +38,7 @@ function safeV3Promotions(scan, log) {
 
   const rejected = Array.isArray(scan?.rejected) ? scan.rejected : [];
   const minConfidence = envNum(process.env.FOREX_V3_PROMOTE_MIN_CONFIDENCE, 70);
-  const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.75);
+  const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.5);
   const promoted = [];
 
   for (const item of rejected) {
@@ -287,7 +287,7 @@ function getNYHour(date = new Date()) {
 
 function isActiveOpportunityWindow(date = new Date()) {
   const h = getNYHour(date);
-  return h >= 2 && h < 10;
+  return h >= 2 && h < 14;
 }
 
 function isProtectedHardBlock(reason = "") {

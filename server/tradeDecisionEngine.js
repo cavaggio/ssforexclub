@@ -116,7 +116,7 @@ export function getNewYorkHour(date = new Date()) {
 
 export function isPrimaryTradeWindow(date = new Date()) {
   const hour = getNewYorkHour(date);
-  return hour >= 2 && hour < 10;
+  return hour >= 2 && hour < 14;
 }
 
 export function isTrueHardReject(reason = "") {

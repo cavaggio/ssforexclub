@@ -1236,7 +1236,7 @@ function getNYHour(date = new Date()) {
 
 function isActiveOpportunityWindow(date = new Date()) {
   const h = getNYHour(date);
-  return h >= 2 && h < 10;
+  return h >= 2 && h < 14;
 }
 
 function isProtectedHardBlock(reason = "") {

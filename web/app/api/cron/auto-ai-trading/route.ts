@@ -7,7 +7,7 @@
  * (/api/internal/oanda/auto) plus recommend-only ICT lifecycle reassessment.
  *
  * Auth: shared X-Cron-Secret (AUTO_AI_CRON_SECRET). Gates: platform live flag +
- * NY weekday 02:15–10:00 ET window + per-user (ready, live) resolution. Never
+ * NY weekday 02:15–14:00 ET window + per-user (ready, live) resolution. Never
  * falls back to platform-default creds.
  */
 
@@ -52,7 +52,7 @@ function addPairs(target: Set<string>, value: unknown) {
   }
 }
 
-// NY weekday 02:15–10:00 ET (DST-aware, defense in depth — the Railway loop also checks).
+// NY weekday 02:15–14:00 ET (DST-aware, defense in depth — the Railway loop also checks).
 function inWindow(now: Date): boolean {
   const p = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -68,7 +68,7 @@ function inWindow(now: Date): boolean {
   if (wd === 'Sat' || wd === 'Sun') return false;
 
   const mins = (parseInt(get('hour'), 10) % 24) * 60 + parseInt(get('minute'), 10);
-  return mins >= 135 && mins < 600; // 02:15–10:00 ET
+  return mins >= 135 && mins < 840; // 02:15–14:00 ET
 }
 
 // Build the reassessment context from a user's recent ICT 'opened' trade logs.
