@@ -86,6 +86,22 @@ function buildV3PropFirmCandidate(item = {}, v3 = {}, minRR = 1.5) {
     stopLossPips: +slPips.toFixed(1),
     takeProfitPips: +rewardPips.toFixed(1),
     targetSource: target.source || v3?.targets?.targetSource || 'v3_liquidity',
+    lifecycle: {
+      allowed: true,
+      sl: {
+        stopLossPips: +slPips.toFixed(1),
+        stopLossPrice: stopLoss,
+        invalidationReason: 'V3 promoted liquidity/invalidation stop',
+      },
+      tp: {
+        allowed: true,
+        takeProfitPips: +rewardPips.toFixed(1),
+        takeProfitPrice: takeProfit,
+        targetReason: `V3 promoted target from ${target.source || 'liquidity'}`,
+        targetSource: target.source || v3?.targets?.targetSource || 'v3_liquidity',
+      },
+      source: 'v3_promoted_lifecycle',
+    },
   };
 }
 
@@ -95,6 +111,16 @@ function normalizeV3Direction(value) {
   if (v === 'sell') return 'short';
   if (v === 'long' || v === 'short') return v;
   return null;
+}
+
+function institutionalFlowOpposesV3(item = {}, direction = null) {
+  const flow = item?.institutionalFlow || {};
+  if (!direction || !flow?.detected || !flow?.direction || flow.direction === 'neutral') return false;
+
+  const tradeSign = direction === 'long' ? 'bullish' : direction === 'short' ? 'bearish' : null;
+  if (!tradeSign) return false;
+
+  return flow.direction !== tradeSign;
 }
 
 function safeV3Promotions(scan, log) {
@@ -133,10 +159,10 @@ function safeV3Promotions(scan, log) {
       return Math.max(0, Math.min(100, Math.round(c)));
     })();
 
-    const confidence = envNum(
-      item?.confidence ?? v3?.confidence,
-      Number.isFinite(v3ExecutionConfidence) ? v3ExecutionConfidence : v3?.score
-    );
+    const legacyConfidence = envNum(item?.confidence ?? v3?.confidence, NaN);
+    const confidence = Number.isFinite(v3ExecutionConfidence)
+      ? Math.max(Number.isFinite(legacyConfidence) ? legacyConfidence : 0, v3ExecutionConfidence)
+      : legacyConfidence;
 
     const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
     const rr = envNum(item?.expectedRR ?? item?.rr ?? builtV3Candidate?.expectedRR ?? v3?.expectedRR ?? v3?.rr, NaN);
@@ -148,6 +174,7 @@ function safeV3Promotions(scan, log) {
 
     const news = item?.newsRisk || v3?.newsRisk || {};
     const entryStatus = item?.entryTiming?.status || v3?.entryTiming?.status || '';
+    const flowOpposes = institutionalFlowOpposesV3(item, direction);
 
     const text = [
       item?.reason,
@@ -167,6 +194,7 @@ function safeV3Promotions(scan, log) {
       Number.isFinite(stopLoss) &&
       Number.isFinite(targetProfit) &&
       !news.blocked &&
+      !flowOpposes &&
       !text.includes('news_block') &&
       !text.includes('spread') &&
       !text.includes('margin') &&
@@ -188,7 +216,8 @@ function safeV3Promotions(scan, log) {
         `sl=${Number.isFinite(stopLoss) ? stopLoss : 'n/a'} ` +
         `tp=${Number.isFinite(targetProfit) ? targetProfit : 'n/a'} ` +
         `targetSource=${builtV3Candidate?.targetSource || 'n/a'} ` +
-        `reason="${text || 'missing safe execution fields'}"`
+        `flowOpposes=${flowOpposes} ` +
+        `reason="${flowOpposes ? 'institutional flow opposes V3 direction' : (text || 'missing safe execution fields')}"`
       );
       continue;
     }
