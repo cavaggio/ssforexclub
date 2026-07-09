@@ -182,7 +182,9 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
   const account = maskAccount(client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} engine=v3 ${m}`);
   void now;
-  const scanPairs = prioritizeRetraceWatchPairs(Array.isArray(pairs) && pairs.length ? pairs : []);
+  const requestedPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  const scanPairs = requestedPairs ? prioritizeRetraceWatchPairs(requestedPairs) : null;
+
   log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
   const scan = await scanForexPairs(scanPairs, { client, scanMode });
