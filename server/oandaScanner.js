@@ -783,14 +783,53 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         }
       }
 
+      const perfectAlignmentBypass = shouldBypassSoftGatesForPerfectAlignment({
+        alignment,
+        direction,
+        newsRisk,
+        pricing,
+        maxSpread,
+      });
+
+      if (perfectAlignmentBypass.allowed && Array.isArray(alignment.rejectionReasons)) {
+        const beforeReasons = alignment.rejectionReasons.length;
+        const removedSoftReasons = alignment.rejectionReasons.filter((reason) => {
+          return softenPerfectAlignmentRejects([reason]).length === 0;
+        });
+
+        alignment.rejectionReasons = softenPerfectAlignmentRejects(alignment.rejectionReasons);
+
+        if (alignment.rejectionReasons.length < beforeReasons) {
+          if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+
+          alignment.warnings.push(
+            `Perfect-alignment bypass: secondary soft blockers converted to warnings. ` +
+            `${removedSoftReasons.join(' | ')}`
+          );
+
+          console.log(
+            `[PERFECT_ALIGNMENT_BYPASS] ${pair} ${direction ?? '—'} ` +
+            `softened=${beforeReasons - alignment.rejectionReasons.length}/${beforeReasons} ` +
+            `remaining=${alignment.rejectionReasons.length} reason=${perfectAlignmentBypass.reason}`
+          );
+        }
+
+        if (alignment.rejectionReasons.length === 0) {
+          alignment.tradeQualified = true;
+        }
+      }
+
+      const bypassEntryQualitySoftBlocks = perfectAlignmentBypass.allowed && !newsRisk.blocked;
+
       const hardBlockedByEntryQuality =
         newsRisk.blocked ||
-        (tradeSign && institutionalFlow.detected &&
+        (!bypassEntryQualitySoftBlocks &&
+          tradeSign && institutionalFlow.detected &&
           institutionalFlow.direction !== 'neutral' &&
           institutionalFlow.direction !== tradeSign) ||
-        (ENTRY_TIMING_STRICT && entryTiming.status === 'too_early');
+        (!bypassEntryQualitySoftBlocks && ENTRY_TIMING_STRICT && entryTiming.status === 'too_early');
 
-      if (!alignment.tradeQualified || !direction || hardBlockedByEntryQuality) {
+      if (!alignment.tradeQualified || !direction || (hardBlockedByEntryQuality && !(perfectAlignmentBypass?.allowed && !newsRisk.blocked))) {
         const rejectionCategory = categorizeRejection();
         rejected.push({
           pair,
@@ -826,9 +865,20 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         session,
         newsRisk: newsRisk.riskLevel,
       });
-      const confidence = Math.max(0, Math.min(100,
+      let confidence = Math.max(0, Math.min(100,
         baseConfidence + (institutionalFlow.confidenceImpact || 0)
       ));
+
+      if (perfectAlignmentBypass?.allowed && confidence < MIN_CONFIDENCE) {
+        if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+        alignment.warnings.push(
+          `Perfect-alignment confidence floor: raw confidence ${confidence}% raised to min ${MIN_CONFIDENCE}% for execution sizing.`
+        );
+        console.log(
+          `[PERFECT_ALIGNMENT_CONFIDENCE_FLOOR] ${pair} ${direction} raw=${confidence} floor=${MIN_CONFIDENCE}`
+        );
+        confidence = MIN_CONFIDENCE;
+      }
 
       if (confidence < MIN_CONFIDENCE) {
         alignment.rejectionReasons.push(`Aggregate confidence ${confidence}% < min ${MIN_CONFIDENCE}%`);
@@ -963,7 +1013,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       // alignment, trend, market state, flow, volatility, candle strength)
       // into a realistic `expectedRR`. Tiers: standard / preferred / premium;
       // tier === 'reject' (expectedRR < 1.75) rejects the signal here.
-      const rrQual = computeExpectedRR({
+      let rrQual = computeExpectedRR({
         stopLossPips:   lifecycle.sl.stopLossPips,
         takeProfitPips: lifecycle.tp.takeProfitPips,
         confidence,
@@ -982,6 +1032,28 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         `geomRR=${rrQual.factors.geometricRR} quality=${rrQual.qualityFactor} ` +
         `expectedRR=${rrQual.expectedRR} tier=${rrQual.rrTier}`
       );
+      if (
+        !rrQual.accepted &&
+        perfectAlignmentBypass?.allowed &&
+        Number(rrQual?.factors?.geometricRR ?? 0) >= 1.5
+      ) {
+        if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+        alignment.warnings.push(
+          `Perfect-alignment RR bypass: geometric RR ${rrQual.factors.geometricRR} >= 1.5, expected-R warning only. ${rrQual.rejectionReason}`
+        );
+        console.log(
+          `[PERFECT_ALIGNMENT_RR_BYPASS] ${pair} ${direction} ` +
+          `geometricRR=${rrQual.factors.geometricRR} expectedRR=${rrQual.expectedRR}`
+        );
+
+        rrQual = {
+          ...rrQual,
+          accepted: true,
+          rrTier: rrQual.rrTier === 'reject' ? 'standard' : rrQual.rrTier,
+          rejectionReason: null,
+        };
+      }
+
       if (!rrQual.accepted) {
         rejected.push({
           pair, direction, confidence,
@@ -1138,13 +1210,18 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         slog('debug', `[SCANNER] regime layer skipped for ${pair}: ${regimeErr.message}`);
       }
 
-      // ── V3 'active' mode — conservative gate ────────────────────────────
-      // When explicitly switched to 'active', V3 acts as an ADDITIONAL filter
-      // on legacy-qualified setups: a legacy signal that V3 deems a late /
-      // low-opportunity entry is rejected. It NEVER promotes a setup the legacy
-      // model rejected (full V3-native entry generation is gated behind shadow
-      // validation). off/shadow do nothing here.
-      if (V3_MODE === 'active' && v3Eval && !v3Eval.qualified) {
+      // ── V3 'active' mode — warning-only by default ───────────────────────
+      // V3 can still be used as a hard gate by setting:
+      // FOREX_V3_ACTIVE_HARD_GATE=true
+      //
+      // Default behavior: if legacy/perfect-alignment qualification passes,
+      // a V3 disagreement becomes a warning, not an execution denial.
+      if (
+        V3_MODE === 'active' &&
+        envBool('FOREX_V3_ACTIVE_HARD_GATE', false) &&
+        v3Eval &&
+        !v3Eval.qualified
+      ) {
         rejected.push({
           pair,
           reason: `V3 gate: ${v3Eval.rejectionReasons?.[0] || 'V3 did not qualify (late/low-opportunity entry)'}`,
@@ -1153,6 +1230,18 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         });
         slog('debug', `[SCANNER] ✗ ${pair} —[v3_gate] ${v3Eval.rejectionReasons?.[0] || 'V3 rejected'}`);
         continue;
+      }
+
+      if (
+        V3_MODE === 'active' &&
+        !envBool('FOREX_V3_ACTIVE_HARD_GATE', false) &&
+        v3Eval &&
+        !v3Eval.qualified
+      ) {
+        if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
+        alignment.warnings.push(
+          `V3 warning only: ${v3Eval.rejectionReasons?.[0] || 'V3 did not qualify, but hard gate is disabled'}`
+        );
       }
 
       qualified.push({
@@ -1349,6 +1438,78 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
 
 
 
+
+
+// === PERFECT ALIGNMENT EXECUTION BYPASS PATCH ===
+function shouldForcePerfectAlignmentExecution({
+  alignment,
+  direction,
+  newsRisk,
+  pricing,
+  maxSpread,
+} = {}) {
+  const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
+  const requiredScore = envNumber('FOREX_PERFECT_ALIGNMENT_BYPASS_SCORE', 100);
+
+  if (alignScore < requiredScore) return { allowed: false, reason: `alignment_${alignScore}_below_${requiredScore}` };
+  if (!direction) return { allowed: false, reason: 'missing_direction' };
+  if (newsRisk?.blocked) return { allowed: false, reason: 'news_blocked' };
+  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) return { allowed: false, reason: 'spread_blocked' };
+
+  return { allowed: true, reason: `perfect_alignment_${alignScore}` };
+}
+
+function softenPerfectAlignmentRejects(reasons = []) {
+  return reasons.filter((reason) => {
+    const r = String(reason || '').toLowerCase();
+
+    // Keep real safety/protection blocks hard.
+    if (typeof isProtectedHardBlock === 'function' && isProtectedHardBlock(r)) return true;
+    if (r.includes('news block')) return true;
+    if (r.includes('high-impact') && r.includes('news')) return true;
+    if (r.includes('spread too wide')) return true;
+    if (r.includes('spread too high')) return true;
+    if (r.includes('rr < 1.5')) return true;
+    if (r.includes('risk reward below')) return true;
+    if (r.includes('missing stop')) return true;
+    if (r.includes('missing take profit')) return true;
+    if (r.includes('duplicate')) return true;
+    if (r.includes('max trades')) return true;
+    if (r.includes('daily loss')) return true;
+    if (r.includes('credentials')) return true;
+    if (r.includes('live trading disabled')) return true;
+    if (r.includes('execution disabled')) return true;
+
+    // Convert these to warnings for 100/100 alignment.
+    if (
+      r.includes('structural confidence') ||
+      r.includes('execution confidence') ||
+      r.includes('structure reversal risk is high') ||
+      r.includes('reversal risk is high') ||
+      r.includes('market state is reversal_risk') ||
+      r.includes('profile does not allow reversal_risk') ||
+      r.includes('forex profile does not allow reversal_risk') ||
+      r.includes('late entry') ||
+      r.includes('late_entry') ||
+      r.includes('overextended') ||
+      r.includes('over-extended') ||
+      r.includes('risk monitor: last candle body') ||
+      r.includes('candle strength') ||
+      r.includes('candle has strong') ||
+      r.includes('profile floor') ||
+      r.includes('institutional flow') ||
+      r.includes('flow opposes') ||
+      r.includes('flow proxy') ||
+      r.includes('impulse invalidated')
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+// === END PERFECT ALIGNMENT EXECUTION BYPASS PATCH ===
+
 // === OPPORTUNITY RANKING PATCH ===
 function getNYHour(date = new Date()) {
   const hour = Number(
@@ -1372,6 +1533,8 @@ function isProtectedHardBlock(reason = "") {
     r.includes("rr < 1.5") ||
     r.includes("risk reward below") ||
     r.includes("spread too high") ||
+    r.includes("spread too wide") ||
+    (r.includes("spread") && r.includes("exceeds")) ||
     r.includes("duplicate") ||
     r.includes("max trades") ||
     r.includes("daily loss") ||
@@ -1383,6 +1546,73 @@ function isProtectedHardBlock(reason = "") {
     r.includes("execution disabled")
   );
 }
+
+function shouldBypassSoftGatesForPerfectAlignment({
+  alignment,
+  direction,
+  newsRisk,
+  pricing,
+  maxSpread,
+} = {}) {
+  const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
+
+  if (alignScore < 100) {
+    return { allowed: false, reason: `alignment_${alignScore}_below_100` };
+  }
+
+  if (!direction) {
+    return { allowed: false, reason: 'missing_direction' };
+  }
+
+  // News remains a real hard block.
+  if (newsRisk?.blocked) {
+    return { allowed: false, reason: 'news_blocked' };
+  }
+
+  // Spread remains a real hard block.
+  if (Number(pricing?.spreadPips ?? 999) > Number(maxSpread ?? 0)) {
+    return { allowed: false, reason: 'spread_blocked' };
+  }
+
+  return {
+    allowed: true,
+    reason: `perfect_alignment_${alignScore}`,
+  };
+}
+
+function softenPerfectAlignmentRejects(reasons = []) {
+  return reasons.filter((reason) => {
+    const r = String(reason || '').toLowerCase();
+
+    // Never remove true protection/broker/risk blocks.
+    if (isProtectedHardBlock(r)) return true;
+
+    // These are context/quality warnings when primary alignment is perfect.
+    if (
+      r.includes('structural confidence') ||
+      r.includes('structure reversal risk is high') ||
+      r.includes('reversal risk is high') ||
+      r.includes('late entry') ||
+      r.includes('late_entry') ||
+      r.includes('overextended') ||
+      r.includes('over-extended') ||
+      r.includes('market state is reversal_risk') ||
+      r.includes('profile does not allow reversal_risk') ||
+      r.includes('forex profile does not allow reversal_risk') ||
+      r.includes('candle strength') ||
+      r.includes('candle has strong') ||
+      r.includes('profile floor') ||
+      r.includes('institutional flow') ||
+      r.includes('flow opposes') ||
+      r.includes('flow proxy')
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 
 function convertLateEntryToTradableStatus(status, reason = "", now = new Date()) {
   if (!isActiveOpportunityWindow(now)) return { status, reason };
