@@ -171,9 +171,51 @@ export async function logTradeEvent(input: TradeLogInput): Promise<TradeLogResul
       .single();
     if (error || !data) {
       console.warn(
-        `[TRADE_LOG] insert failed user=${input.userId} event=${input.eventType}: ${error?.message ?? 'no row'}`,
+        `[TRADE_LOG] insert failed user=${input.userId} event=${input.eventType}: ${error?.message ?? 'no row'} — trying production-safe fallback`,
       );
-      return { ok: false, error: error?.message ?? 'no row returned' };
+
+      const fallbackRow = {
+        user_id: input.userId,
+        event_type: input.eventType,
+        status: input.eventType === 'error' ? 'error' : 'ok',
+        pair: normalizeInstrument(input.instrument ?? input.edge?.pair ?? null),
+        direction: input.side ?? input.edge?.direction ?? null,
+        entry_price: numeric(input.entryPrice),
+        exit_price: numeric(input.exitPrice),
+        realized_pl: numeric(input.realizedPL ?? input.edge?.pnl),
+        unrealized_pl: numeric(input.unrealizedPL),
+        payload: sanitizePayload({
+          broker: input.broker,
+          broker_account_id: input.brokerAccountId ?? null,
+          environment: input.environment,
+          trade_id: input.tradeId ?? null,
+          broker_order_id: input.brokerOrderId ?? null,
+          units: numeric(input.units),
+          units_closed: numeric(input.unitsClosed),
+          tp: numeric(input.tp),
+          sl: numeric(input.sl),
+          recommendation: input.recommendation ?? null,
+          confidence: numeric(input.confidence),
+          reason: input.reason ?? null,
+          edge: input.edge ?? null,
+        }) as Record<string, unknown>,
+        raw_payload: input.rawPayload == null ? null : (sanitizePayload(input.rawPayload) as Record<string, unknown>),
+      };
+
+      const fallback = await supabase
+        .from('trade_logs')
+        .insert(fallbackRow)
+        .select('id')
+        .single();
+
+      if (fallback.error || !fallback.data) {
+        console.warn(
+          `[TRADE_LOG] fallback insert failed user=${input.userId} event=${input.eventType}: ${fallback.error?.message ?? 'no row'}`,
+        );
+        return { ok: false, error: fallback.error?.message ?? error?.message ?? 'no row returned' };
+      }
+
+      return { ok: true, id: String(fallback.data.id) };
     }
     return { ok: true, id: String(data.id) };
   } catch (err) {

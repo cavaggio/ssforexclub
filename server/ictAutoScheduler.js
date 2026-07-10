@@ -36,6 +36,11 @@ export const AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS = parseInterval(
   30 * 1000,
 );
 
+export const OANDA_TRANSACTION_SYNC_INTERVAL_MS = parseInterval(
+  'OANDA_TRANSACTION_SYNC_INTERVAL_MS',
+  30 * 60 * 1000,
+);
+
 const nearQualifiedPairs = new Set();
 const hotPairs = new Set();
 
@@ -125,6 +130,13 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
     });
   }, hotWatchMs));
 
+  // Sync broker-side OANDA TP/SL closes into trade_logs for Edge Intelligence.
+  // This is intentionally NOT gated by the Auto AI entry window.
+  addTimer(setInterval(() => {
+    void transactionSyncTick(nextUrl, secret);
+  }, OANDA_TRANSACTION_SYNC_INTERVAL_MS));
+  void transactionSyncTick(nextUrl, secret);
+
   return {
     started: true,
     intervalMs: fullScanMs,
@@ -191,6 +203,35 @@ export async function tick(nextUrl, secret, options = {}) {
     return { ok: true, status: res.status, body: text };
   } catch (err) {
     console.log(`${tag} cron unreachable: ${err?.message || err}`);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+async function transactionSyncTick(nextUrl, secret) {
+  const syncUrl = `${String(nextUrl).replace(/\/$/, '')}/api/cron/oanda-transaction-sync`;
+  const tag = '[OANDA_TX_SYNC][SCHEDULER]';
+
+  try {
+    const res = await fetch(syncUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cron-Secret': secret,
+      },
+      body: JSON.stringify({ source: 'railway-scheduler' }),
+    });
+
+    const text = await res.text();
+
+    if (!res.ok) {
+      console.log(`${tag} failed ${res.status}: ${text.slice(0, 300)}`);
+      return { ok: false, status: res.status, body: text };
+    }
+
+    console.log(`${tag} complete ${text.slice(0, 300)}`);
+    return { ok: true, status: res.status, body: text };
+  } catch (err) {
+    console.log(`${tag} unreachable: ${err?.message || err}`);
     return { ok: false, error: err?.message || String(err) };
   }
 }
