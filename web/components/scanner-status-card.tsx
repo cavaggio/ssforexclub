@@ -243,6 +243,61 @@ function formatAmount(amount: number): string {
   return `$${amount.toFixed(0)}`;
 }
 
+function rrGuardNum(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function rrFromDisplayedSignal(sig: any): number | null {
+  const direct =
+    rrGuardNum(sig?.expectedRR) ??
+    rrGuardNum(sig?.rr) ??
+    rrGuardNum(sig?.riskReward) ??
+    rrGuardNum(sig?.riskRewardRatio) ??
+    null;
+
+  const sl = Number(sig?.lifecycle?.sl?.stopLossPips);
+  const tp = Number(sig?.lifecycle?.tp?.takeProfitPips);
+  if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
+    return +(tp / sl).toFixed(2);
+  }
+
+  return direct;
+}
+
+function hasSubMinRrText(sig: any, minRR = 1.5): boolean {
+  let text = '';
+  try {
+    text = JSON.stringify(sig || {}).toLowerCase();
+  } catch {
+    text = String(sig || '').toLowerCase();
+  }
+
+  const patterns = [
+    /final\s*r\s*:?\s*r\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*min\s*([0-9]+(?:\.[0-9]+)?)/i,
+    /r\s*:?\s*r\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*min\s*([0-9]+(?:\.[0-9]+)?)/i,
+    /risk\s*reward\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*(?:minimum|min)\s*([0-9]+(?:\.[0-9]+)?)/i,
+  ];
+
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const actual = Number(m[1]);
+    const floor = Number(m[2] || minRR);
+    if (Number.isFinite(actual) && Number.isFinite(floor) && actual < Math.max(minRR, floor)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isSubMinRrDisplay(sig: any, minRR = 1.5): boolean {
+  const rr = rrFromDisplayedSignal(sig);
+  if (rr !== null && Number.isFinite(rr) && rr < minRR) return true;
+  return hasSubMinRrText(sig, minRR);
+}
+
 // ─── Badge ────────────────────────────────────────────────────────────────────
 
 type BadgeType = 'good' | 'warn' | 'bad' | 'neutral' | 'info' | 'metal';
@@ -2802,7 +2857,13 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
   }, [refreshActiveTrades, refreshReassess, refreshTradeLogs, tradeLogsFilter]);
 
   const scan = state?.scan;
-  const qualified = scan?.qualified ?? [];
+  const qualifiedRaw = scan?.qualified ?? [];
+  const rejectedRaw = scan?.rejected ?? [];
+
+  // Universal display rule: never populate dashboard trade cards below 1.5R.
+  // They are still hard-blocked server-side, but hiding them avoids treating
+  // non-executable setups as actionable trade candidates.
+  const qualified = qualifiedRaw.filter((sig: any) => !isSubMinRrDisplay(sig));
   // Trade execution is only offered when the scanner response confirms live
   // mode AND the call succeeded (state.ok). Anything less surfaces an inline
   // blocker on each signal card so the user knows what to fix.
@@ -2818,7 +2879,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
     : !executionEnabled
       ? `Active environment is "${state.activeEnvironment ?? 'practice'}" — connect a broker for this mode (or switch to OANDA Live) to execute trades.`
       : null;
-  const rejected = scan?.rejected ?? [];
+  const rejected = rejectedRaw.filter((sig: any) => !isSubMinRrDisplay(sig));
   const meta = scan?.meta;
 
   return (
