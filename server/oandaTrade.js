@@ -122,10 +122,7 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
   const key = `${pair}_${direction}`;
   console.log(`[TRADE LOCK CHECK] ${key}`);
 
-  if (!activeTrades.has(key)) {
-    // No local lock — nothing to reconcile.
-    return false;
-  }
+  const hadLocalLock = activeTrades.has(key);
 
   let brokerTrades;
   try {
@@ -142,12 +139,18 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
   );
 
   if (existsOnBroker) {
+    activeTrades.add(key);
     console.log(`[BROKER POSITION VERIFIED] ${key} — broker confirms an open position`);
     return true;
   }
 
-  console.warn(`[STALE LOCK REMOVED] ${key} — broker has no matching open position; releasing in-memory lock`);
-  activeTrades.delete(key);
+  if (hadLocalLock) {
+    console.warn(`[STALE LOCK REMOVED] ${key} — broker has no matching open position; releasing in-memory lock`);
+    activeTrades.delete(key);
+  } else {
+    console.log(`[BROKER POSITION CLEAR] ${key} — no broker position exists`);
+  }
+
   return false;
 }
 
@@ -398,6 +401,11 @@ function fitUnitsToMargin({
 export async function executeTrade(signal, options = {}) {
   const { client, autoAi = false } = options;
   const { pair, direction, score, confidence, entry, stopLoss, takeProfit, spreadPips } = signal;
+  const pureV3Execution =
+    signal?.source === 'v3_pure_auto_ai' ||
+    signal?.selectedLogicType === 'v3_pure' ||
+    signal?.strategy === 'V3';
+
   const tradeKey = `${pair}_${direction}`;
   const metals   = isMetalsPair(pair);
   const maxSpread = metals ? METALS_MAX_SPREAD_PIPS : MAX_SPREAD_PIPS;
@@ -455,9 +463,9 @@ export async function executeTrade(signal, options = {}) {
   }
 
   // ── Guard 3.5: Multi-timeframe trend alignment ────────────────────────────
-  // Defensive check — scanner already validates these, but signals can arrive
-  // from direct API calls or after scanner threshold changes.
-  {
+  // Defensive check for legacy/waterfall signals only.
+  // Pure V3 signals are gated by V3 structure/liquidity/session logic instead.
+  if (!pureV3Execution) {
     const signalTrend     = signal.trend;
     const signalAlignment = signal.emaAlignment;
     const signalMtf       = signal.mtfAlignment;
@@ -473,6 +481,10 @@ export async function executeTrade(signal, options = {}) {
       });
       return blocked(`MTF conflict: ${direction} vs H1=${signalMtf.h1Trend} H4=${signalMtf.h4Trend}`);
     }
+  }
+
+  if (pureV3Execution) {
+    console.log(`[V3_PURE] ${pair} ${direction} — skipping legacy EMA/MTF gate; V3 liquidity/structure/session owns qualification.`);
   }
 
   // ── Guard 3.6: Entry-quality gates (HYBRID, configurable to STRICT) ──────
@@ -504,6 +516,7 @@ export async function executeTrade(signal, options = {}) {
     }
 
     if (
+      !pureV3Execution &&
       flow?.detected &&
       flow.direction !== 'neutral' &&
       flow.direction !== tradeSign
@@ -517,7 +530,7 @@ export async function executeTrade(signal, options = {}) {
       return blocked(reason);
     }
 
-    if (ENTRY_TIMING_STRICT && timing?.status === 'too_early') {
+    if (!pureV3Execution && ENTRY_TIMING_STRICT && timing?.status === 'too_early') {
       const fibLabel = fib?.entryZone
         ? `${fib.entryZone.lower}–${fib.entryZone.upper}`
         : 'the 38.2–78.6% retracement band';
@@ -525,12 +538,12 @@ export async function executeTrade(signal, options = {}) {
         `Rejected: price has not retraced into H1/H4 Fibonacci entry zone (${fibLabel}). ${timing.reason}`
       );
     }
-    if (ENTRY_TIMING_STRICT && timing?.status === 'wait_for_retest') {
+    if (!pureV3Execution && ENTRY_TIMING_STRICT && timing?.status === 'wait_for_retest') {
       return blocked(
         `Rejected: breakout occurred but retest not confirmed. ${timing.reason}`
       );
     }
-    if (timing && timing.status !== 'valid_entry') {
+    if (!pureV3Execution && timing && timing.status !== 'valid_entry') {
       // Hybrid mode — log only, but flag prominently.
       console.warn(
         `[ENTRY_TIMING] ⚠ ${pair} ${direction.toUpperCase()} — status=${timing.status}: ${timing.reason}. ` +
@@ -695,6 +708,11 @@ export async function executeTrade(signal, options = {}) {
     accountMarginRate,
     accountBalanceUSD: balanceUSD,
   });
+
+  const finalRiskReward = Number(sizing?.riskReward ?? 0);
+  if (!Number.isFinite(finalRiskReward) || finalRiskReward < 1.5) {
+    return blocked(`Risk reward ${Number.isFinite(finalRiskReward) ? finalRiskReward : 'n/a'} < minimum 1.5 after execution sizing`);
+  }
 
   let units                 = sizing.signedUnits;
   let absUnits              = Math.abs(units);

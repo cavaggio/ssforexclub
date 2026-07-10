@@ -126,7 +126,10 @@ function institutionalFlowOpposesV3(item = {}, direction = null) {
 function safeV3Promotions(scan, log) {
   if (!envOn(process.env.FOREX_V3_PROMOTE_ONLY, false)) return [];
 
-  const rejected = Array.isArray(scan?.rejected) ? scan.rejected : [];
+  const rejected = [
+    ...(Array.isArray(scan?.qualified) ? scan.qualified : []),
+    ...(Array.isArray(scan?.rejected) ? scan.rejected : []),
+  ];
   const minConfidence = envNum(process.env.FOREX_V3_PROMOTE_MIN_CONFIDENCE, 55);
   const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.5);
   const promoted = [];
@@ -328,8 +331,21 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
 
   const scan = await scanForexPairs(scanPairs, { client, scanMode });
   const legacyQualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
-  const promoted = safeV3Promotions(scan, log);
-  const qualified = [...legacyQualified, ...promoted];
+
+  const promoted = safeV3Promotions(scan, log).map((sig) => ({
+    ...sig,
+    source: 'v3_pure_auto_ai',
+    strategy: 'V3',
+    selectedLogicType: 'v3_pure',
+  }));
+
+  const useLegacyQualified = envOn(process.env.FOREX_V3_AUTO_USE_LEGACY_QUALIFIED, false);
+  const qualified = useLegacyQualified ? [...legacyQualified, ...promoted] : promoted;
+
+  if (!useLegacyQualified && legacyQualified.length) {
+    log(`pure-v3 mode ignored legacyQualified=${legacyQualified.length}; set FOREX_V3_AUTO_USE_LEGACY_QUALIFIED=true only for hybrid testing`);
+  }
+
   const watchState = buildV3WatchState(scan, qualified);
 
   if (!qualified.length) {
@@ -345,7 +361,20 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
     sig.environment = client?.environment || sig.environment;
     const res = await executeTrade(sig, { client, autoAi: true });
     if (res?.success) {
-      executed.push({ pair: sig.pair, direction: sig.direction, tradeId: res.tradeId });
+      executed.push({
+        pair: sig.pair,
+        direction: sig.direction,
+        tradeId: res.tradeId,
+        fillPrice: res.fillPrice,
+        units: res.units,
+        stopLoss: res.sizing?.stopLoss ?? sig.stopLoss,
+        takeProfit: res.sizing?.takeProfit ?? sig.takeProfit,
+        confidence: sig.confidence,
+        expectedRR: sig.expectedRR ?? sig.rr,
+        source: sig.source,
+        strategy: sig.strategy ?? 'V3',
+        signal: sig,
+      });
       log(`trade executed pair=${sig.pair} dir=${sig.direction} id=${res.tradeId}`);
     } else {
       skipped.push({ pair: sig.pair, reason: res?.reason || res?.rejectReason || 'not executed' });

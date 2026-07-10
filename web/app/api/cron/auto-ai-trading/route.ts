@@ -14,8 +14,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
-import { listTradeLogsForUser } from '@/lib/tradeLogs';
+import { listTradeLogsForUser, logTradeEvent } from '@/lib/tradeLogs';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
+import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -196,6 +197,33 @@ export async function POST(req: Request) {
 
       const q = autoData?.qualified ?? 0, e = autoData?.executed?.length ?? 0, s = autoData?.skipped?.length ?? 0;
       totalQualified += q; totalExecuted += e; totalSkipped += s; totalRecs += recs;
+
+      for (const executed of (autoData?.executed ?? []) as Array<Record<string, unknown>>) {
+        const sig = (executed.signal && typeof executed.signal === 'object')
+          ? executed.signal as Record<string, unknown>
+          : executed;
+
+        await logTradeEvent({
+          userId,
+          broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+          brokerAccountId: creds.accountId,
+          environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+          eventType: 'opened',
+          instrument: typeof executed.pair === 'string' ? executed.pair : null,
+          tradeId: typeof executed.tradeId === 'string' ? executed.tradeId : null,
+          brokerOrderId: typeof executed.tradeId === 'string' ? executed.tradeId : null,
+          side: executed.direction === 'long' || executed.direction === 'short' ? executed.direction : null,
+          units: typeof executed.units === 'number' ? Math.abs(executed.units) : null,
+          entryPrice: typeof executed.fillPrice === 'number' ? executed.fillPrice : null,
+          sl: typeof executed.stopLoss === 'number' ? executed.stopLoss : null,
+          tp: typeof executed.takeProfit === 'number' ? executed.takeProfit : null,
+          confidence: typeof executed.confidence === 'number' ? executed.confidence : null,
+          recommendation: typeof executed.expectedRR === 'number' ? `RR ${executed.expectedRR}` : 'V3_AUTO',
+          reason: `Auto AI ${engine.toUpperCase()} opened trade during run ${runId}`,
+          rawPayload: { runId, scanMode, engine, executed },
+          edge: edgeSnapshotFromSignal(sig),
+        });
+      }
 
       addPairs(nearQualifiedPairs, autoData?.nearQualifiedPairs);
       addPairs(hotPairs, autoData?.hotPairs);
