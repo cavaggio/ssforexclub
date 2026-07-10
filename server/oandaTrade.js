@@ -43,6 +43,13 @@ import {
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
 const MIN_SCORE             = parseInt(process.env.FOREX_MIN_SCORE     || '8',   10);
 const MIN_CONFIDENCE        = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
+
+// High-edge Auto AI gate. R:R alone is not enough; Auto AI must have probability edge.
+const AUTO_AI_MIN_ENTRY_CONFIDENCE = parseFloat(process.env.AUTO_AI_MIN_ENTRY_CONFIDENCE || '90');
+const AUTO_AI_MIN_ALIGNMENT_SCORE  = parseFloat(process.env.AUTO_AI_MIN_ALIGNMENT_SCORE  || '70');
+const AUTO_AI_MIN_V3_SCORE         = parseFloat(process.env.AUTO_AI_MIN_V3_SCORE         || '70');
+const AUTO_AI_MIN_TP_PROBABILITY   = parseFloat(process.env.AUTO_AI_MIN_TP_PROBABILITY   || '0.60');
+const AUTO_AI_MIN_TP_SL_EDGE       = parseFloat(process.env.AUTO_AI_MIN_TP_SL_EDGE       || '0.15');
 // Auto AI daily trade cap — env-driven, read at call time so it can be tuned
 // without a rebuild. Prefers AUTO_AI_DAILY_TRADE_CAP; falls back to the legacy
 // FOREX_MAX_DAILY_TRADES; safe default 10. This caps trade COUNT only — every
@@ -55,6 +62,7 @@ export function isDailyTradeCapReached(count) {
 }
 const MAX_DAILY_LOSS_PERCENT= parseFloat(process.env.FOREX_MAX_DAILY_LOSS_PERCENT || '2');
 const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS       || '5.0');
+const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
 const FIXED_LOT_SIZE        = parseFloat(process.env.FOREX_FIXED_LOT_SIZE        || '0.01');
 const MIN_FREE_MARGIN_PCT        = parseFloat(process.env.FOREX_MIN_FREE_MARGIN_PCT   || '25');
@@ -295,6 +303,216 @@ function estimateMarginRequired(pair, absUnits, price, accountMarginRate) {
 
 function logEntry(phase, extra = {}) {
   return { phase, timestamp: new Date().toISOString(), ...extra };
+}
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pickFirstNumber(...values) {
+  for (const v of values) {
+    const n = numOrNull(v);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function estimateTpProbability(signal = {}) {
+  // Prefer explicit model output if available.
+  const explicit = pickFirstNumber(
+    signal.tpProbability,
+    signal.tpProb,
+    signal.lifecycle?.tpProbability,
+    signal.v3?.tpProbability,
+    signal.v3Eval?.tpProbability,
+  );
+  if (explicit !== null) return explicit > 1 ? explicit / 100 : explicit;
+
+  // Conservative fallback from score/confidence/V3. This prevents "unknown"
+  // probability from being treated as safe.
+  const confidence = pickFirstNumber(signal.confidence, 0) ?? 0;
+  const v3Score = pickFirstNumber(signal.v3?.score, signal.v3Eval?.score, signal.score, 0) ?? 0;
+  const alignment = pickFirstNumber(
+    signal.alignment?.timeframeAlignmentScore,
+    signal.multiTimeframeAlignmentScore,
+    signal.currentAlignmentScore,
+    50,
+  ) ?? 50;
+
+  const p =
+    0.25 +
+    Math.max(0, Math.min(100, confidence)) * 0.0025 +
+    Math.max(0, Math.min(100, v3Score)) * 0.0020 +
+    Math.max(0, Math.min(100, alignment)) * 0.0015;
+
+  return Math.max(0.05, Math.min(0.85, +p.toFixed(3)));
+}
+
+function estimateSlProbability(signal = {}) {
+  const explicit = pickFirstNumber(
+    signal.slProbability,
+    signal.slProb,
+    signal.lifecycle?.slProbability,
+    signal.v3?.slProbability,
+    signal.v3Eval?.slProbability,
+  );
+  if (explicit !== null) return explicit > 1 ? explicit / 100 : explicit;
+  return +(1 - estimateTpProbability(signal)).toFixed(3);
+}
+
+function hasV3EarlyTrigger(signal = {}) {
+  const v3 = signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || {};
+  const early = signal.earlyTrigger ?? v3.earlyTrigger;
+  if (early === true) return true;
+
+  const liq = v3.liquidity || signal.liquidity || {};
+  const structure = v3.structure || signal.structure || {};
+  const vol = v3.volatility || signal.volatility || {};
+
+  return (
+    liq.liquiditySweepDetected === true ||
+    liq.sweepDetected === true ||
+    structure.chochDetected === true ||
+    structure.bosDetected === true ||
+    vol.volatilityState === 'expanding' ||
+    vol.volatilityState === 'compressed'
+  );
+}
+
+function highEdgeAutoAiGate(signal = {}, sizing = null) {
+  const reasons = [];
+
+  const confidence = pickFirstNumber(signal.confidence, 0) ?? 0;
+  const alignment = pickFirstNumber(
+    signal.alignment?.timeframeAlignmentScore,
+    signal.multiTimeframeAlignmentScore,
+    signal.currentAlignmentScore,
+    0,
+  ) ?? 0;
+
+  const v3 = signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || {};
+  const v3Score = pickFirstNumber(v3.score, signal.v3Score, signal.score, 0) ?? 0;
+
+  const tpProb = estimateTpProbability(signal);
+  const slProb = estimateSlProbability(signal);
+  const tpEdge = +(tpProb - slProb).toFixed(3);
+
+  const timeDecay = String(
+    signal.timeDecayRisk ??
+    signal.lifecycle?.timeDecayRisk ??
+    signal.management?.timeDecayRisk ??
+    ''
+  ).toLowerCase();
+
+  const v3Targets = v3.targets || signal.targets || {};
+  const remainingOpportunityOk =
+    v3Targets.accepted !== false &&
+    signal.lifecycle?.tp?.allowed !== false;
+
+  const earlyTrigger = hasV3EarlyTrigger(signal);
+
+  if (confidence < AUTO_AI_MIN_ENTRY_CONFIDENCE) {
+    reasons.push(`confidence ${confidence} < ${AUTO_AI_MIN_ENTRY_CONFIDENCE}`);
+  }
+
+  if (alignment < AUTO_AI_MIN_ALIGNMENT_SCORE) {
+    reasons.push(`alignment ${alignment} < ${AUTO_AI_MIN_ALIGNMENT_SCORE}`);
+  }
+
+  if (v3Score < AUTO_AI_MIN_V3_SCORE) {
+    reasons.push(`V3 score ${v3Score} < ${AUTO_AI_MIN_V3_SCORE}`);
+  }
+
+  if (tpProb < AUTO_AI_MIN_TP_PROBABILITY) {
+    reasons.push(`TP probability ${(tpProb * 100).toFixed(0)}% < ${(AUTO_AI_MIN_TP_PROBABILITY * 100).toFixed(0)}%`);
+  }
+
+  if (tpEdge < AUTO_AI_MIN_TP_SL_EDGE) {
+    reasons.push(`TP-SL edge ${(tpEdge * 100).toFixed(0)}% < ${(AUTO_AI_MIN_TP_SL_EDGE * 100).toFixed(0)}%`);
+  }
+
+  if (timeDecay === 'high') {
+    reasons.push('time decay is high');
+  }
+
+  if (!earlyTrigger) {
+    reasons.push('missing V3 early trigger');
+  }
+
+  if (!remainingOpportunityOk) {
+    reasons.push('remaining opportunity rejected');
+  }
+
+  if (sizing) {
+    const rr = Number(sizing?.riskReward ?? 0);
+    if (!Number.isFinite(rr) || rr < 1.5) {
+      reasons.push(`R:R ${Number.isFinite(rr) ? rr : 'n/a'} < 1.5`);
+    }
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    metrics: {
+      confidence,
+      alignment,
+      v3Score,
+      tpProb,
+      slProb,
+      tpEdge,
+      timeDecay: timeDecay || null,
+      earlyTrigger,
+      remainingOpportunityOk,
+    },
+  };
+}
+
+function rrNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function computePriceRiskReward({ direction, entry, stopLoss, takeProfit } = {}) {
+  const e = Number(entry);
+  const sl = Number(stopLoss);
+  const tp = Number(takeProfit);
+
+  if (!Number.isFinite(e) || !Number.isFinite(sl) || !Number.isFinite(tp)) {
+    return null;
+  }
+
+  const risk = direction === 'long'
+    ? e - sl
+    : direction === 'short'
+      ? sl - e
+      : null;
+
+  const reward = direction === 'long'
+    ? tp - e
+    : direction === 'short'
+      ? e - tp
+      : null;
+
+  if (!Number.isFinite(risk) || !Number.isFinite(reward) || risk <= 0 || reward <= 0) {
+    return null;
+  }
+
+  return +(reward / risk).toFixed(2);
+}
+
+function computeExecutableRiskReward(signal, { direction, entry, stopLoss, takeProfit } = {}) {
+  const priceRR = computePriceRiskReward({ direction, entry, stopLoss, takeProfit });
+
+  const directRR =
+    rrNumber(signal?.expectedRR) ??
+    rrNumber(signal?.rr) ??
+    rrNumber(signal?.riskReward) ??
+    rrNumber(signal?.riskRewardRatio) ??
+    null;
+
+  // Geometric price RR is the authority because it reflects the actual order.
+  return priceRR ?? directRR;
 }
 
 function extractCreateTx(tx) {
@@ -557,6 +775,21 @@ export async function executeTrade(signal, options = {}) {
     return blocked('stopLoss or takeProfit not set on signal');
   }
 
+  // Universal hard R:R gate. No scanner, V3 promotion, dashboard signal, or
+  // direct API call may execute a trade below 1.5R.
+  const preSizingRR = computeExecutableRiskReward(signal, {
+    direction,
+    entry,
+    stopLoss,
+    takeProfit,
+  });
+
+  if (!Number.isFinite(preSizingRR) || preSizingRR < MIN_EXECUTABLE_RR) {
+    return blocked(
+      `Risk reward ${Number.isFinite(preSizingRR) ? preSizingRR : 'n/a'} < minimum ${MIN_EXECUTABLE_RR}`
+    );
+  }
+
   // ── Guard 5: Spread ───────────────────────────────────────────────────────
   console.log(`[OANDA_SPREAD_CHECK] instrument=${pair} spreadPips=${spreadPips} max=${maxSpread}`);
   if (spreadPips > maxSpread) {
@@ -712,6 +945,22 @@ export async function executeTrade(signal, options = {}) {
   const finalRiskReward = Number(sizing?.riskReward ?? 0);
   if (!Number.isFinite(finalRiskReward) || finalRiskReward < 1.5) {
     return blocked(`Risk reward ${Number.isFinite(finalRiskReward) ? finalRiskReward : 'n/a'} < minimum 1.5 after execution sizing`);
+  }
+
+  const finalSizingRR = Number(sizing?.riskReward ?? 0);
+  if (!Number.isFinite(finalSizingRR) || finalSizingRR < MIN_EXECUTABLE_RR) {
+    return blocked(
+      `Risk reward ${Number.isFinite(finalSizingRR) ? finalSizingRR : 'n/a'} < minimum ${MIN_EXECUTABLE_RR} after sizing`
+    );
+  }
+
+  if (autoAi) {
+    const edgeGate = highEdgeAutoAiGate(signal, sizing);
+    executionLog.push(logEntry('HIGH_EDGE_GATE', edgeGate.metrics));
+
+    if (!edgeGate.allowed) {
+      return blocked(`High-edge Auto AI gate rejected: ${edgeGate.reasons.join('; ')}`);
+    }
   }
 
   let units                 = sizing.signedUnits;
