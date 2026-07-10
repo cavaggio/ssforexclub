@@ -17,7 +17,9 @@
  */
 
 import { getAccountId, oandaPost, oandaPut, getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
-import { getAccountSummary, getOpenTrades } from './oandaMarketData.js';
+import { getAccountSummary, getOpenTrades,
+  getPricing
+} from './oandaMarketData.js';
 import { recordTrade } from './oandaTradeHistory.js';
 import {
   RISK_MODE,
@@ -38,6 +40,7 @@ import {
   checkDailyRiskLock,
   checkAutoExecutionConfidence,
 } from './riskManager.js';
+import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
 
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
@@ -954,12 +957,77 @@ export async function executeTrade(signal, options = {}) {
     );
   }
 
-  if (autoAi) {
-    const edgeGate = highEdgeAutoAiGate(signal, sizing);
-    executionLog.push(logEntry('HIGH_EDGE_GATE', edgeGate.metrics));
+  // Stage 3: fetch a fresh executable price immediately before submission.
+  // The old synthetic TP-probability gate reused confidence/score/alignment and
+  // added strict thresholds without new market information. This gate instead
+  // validates age, price drift, live R:R, spread, first-target status, and the
+  // already-confirmed Stage-2 price-action trigger.
+  if (autoAi && pureV3Execution) {
+    let freshPricing;
+    try {
+      const pricingPayload = await getPricing([pair], { client });
+      freshPricing =
+        pricingPayload?.[pair] ??
+        pricingPayload?.[String(pair).replace('_', '/')] ??
+        (Array.isArray(pricingPayload)
+          ? pricingPayload.find((row) =>
+              row?.instrument === pair ||
+              row?.pair === pair ||
+              row?.symbol === pair
+            )
+          : null);
+    } catch (err) {
+      return blocked(`Stage-3 fresh-price validation failed: ${err.message}`);
+    }
 
-    if (!edgeGate.allowed) {
-      return blocked(`High-edge Auto AI gate rejected: ${edgeGate.reasons.join('; ')}`);
+    const freshPrice = Number(
+      freshPricing?.mid ??
+      freshPricing?.midPrice ??
+      freshPricing?.price ??
+      (
+        Number.isFinite(Number(freshPricing?.bid)) &&
+        Number.isFinite(Number(freshPricing?.ask))
+          ? (Number(freshPricing.bid) + Number(freshPricing.ask)) / 2
+          : NaN
+      )
+    );
+
+    const freshSpreadPips = Number(
+      freshPricing?.spreadPips ??
+      (
+        Number.isFinite(Number(freshPricing?.bid)) &&
+        Number.isFinite(Number(freshPricing?.ask))
+          ? (Number(freshPricing.ask) - Number(freshPricing.bid)) / pipSize
+          : NaN
+      )
+    );
+
+    const executionSignalForFreshness = {
+      ...signal,
+      stopLoss: sizing?.stopLoss ?? signal.stopLoss,
+      takeProfit: sizing?.takeProfit ?? signal.takeProfit ?? signal.targetProfit,
+      targetProfit: sizing?.takeProfit ?? signal.targetProfit ?? signal.takeProfit,
+    };
+
+    const freshnessGate = evaluateV3FreshExecutionStage(executionSignalForFreshness, {
+      currentPrice: freshPrice,
+      currentSpreadPips: freshSpreadPips,
+      maxSpreadPips: maxSpread,
+      now: new Date(),
+    });
+
+    executionLog.push(logEntry('V3_QUALITY_STAGE_3', freshnessGate.metrics));
+
+    console.log(
+      `[V3_QUALITY_STAGE_3] ${pair} ${direction} allowed=${freshnessGate.allowed} ` +
+      `ageSec=${freshnessGate.metrics.ageSec ?? 'n/a'} ` +
+      `driftAtr=${freshnessGate.metrics.driftAtr ?? 'n/a'} ` +
+      `liveRR=${freshnessGate.metrics.liveRR ?? 'n/a'} ` +
+      `spread=${freshnessGate.metrics.currentSpreadPips ?? 'n/a'}`
+    );
+
+    if (!freshnessGate.allowed) {
+      return blocked(`Stage-3 fresh execution rejected: ${freshnessGate.reasons.join('; ')}`);
     }
   }
 

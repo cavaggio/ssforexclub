@@ -484,7 +484,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       // bypass hard execution gates; it only lets the setup reach the normal
       // entry-quality, lifecycle, RR, sizing, margin, and execution layers.
       if (
-        String(process.env.FOREX_ACTIVE_WINDOW_V3_BRIDGE || 'true').toLowerCase() === 'true' &&
+        String(process.env.FOREX_ACTIVE_WINDOW_V3_BRIDGE || 'false').toLowerCase() === 'true' &&
         isActiveOpportunityWindow(new Date()) &&
         !direction &&
         v3Eval?.direction &&
@@ -1569,6 +1569,10 @@ function shouldBypassSoftGatesForPerfectAlignment({
   pricing,
   maxSpread,
 } = {}) {
+  if (!envBool('FOREX_PERFECT_ALIGNMENT_BYPASS_ENABLED', false)) {
+    return { allowed: false, reason: 'perfect_alignment_bypass_disabled' };
+  }
+
   const alignScore = Number(alignment?.timeframeAlignmentScore ?? 0);
 
   if (alignScore < 100) {
@@ -1660,7 +1664,7 @@ function envNumber(name, fallback) {
 }
 
 function shouldUseActiveWindowV3Bridge({ v3Eval, direction, newsRisk, pricing, maxSpread, alignment } = {}) {
-  if (!envBool('FOREX_ACTIVE_WINDOW_V3_BRIDGE', true)) {
+  if (!envBool('FOREX_ACTIVE_WINDOW_V3_BRIDGE', false)) {
     return { allowed: false, reason: 'bridge_disabled' };
   }
 
