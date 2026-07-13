@@ -42,13 +42,14 @@ import {
 } from './riskManager.js';
 import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
 
+import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
 const MIN_SCORE             = parseInt(process.env.FOREX_MIN_SCORE     || '8',   10);
-const MIN_CONFIDENCE        = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
+const MIN_CONFIDENCE        = Math.max(HARD_SCALP_CONFIDENCE_FLOOR, parseFloat(process.env.FOREX_MIN_CONFIDENCE || '85'));
 
 // High-edge Auto AI gate. R:R alone is not enough; Auto AI must have probability edge.
-const AUTO_AI_MIN_ENTRY_CONFIDENCE = parseFloat(process.env.AUTO_AI_MIN_ENTRY_CONFIDENCE || '90');
+const AUTO_AI_MIN_ENTRY_CONFIDENCE = parseFloat(process.env.AUTO_AI_MIN_ENTRY_CONFIDENCE || '85');
 const AUTO_AI_MIN_ALIGNMENT_SCORE  = parseFloat(process.env.AUTO_AI_MIN_ALIGNMENT_SCORE  || '70');
 const AUTO_AI_MIN_V3_SCORE         = parseFloat(process.env.AUTO_AI_MIN_V3_SCORE         || '70');
 const AUTO_AI_MIN_TP_PROBABILITY   = parseFloat(process.env.AUTO_AI_MIN_TP_PROBABILITY   || '0.60');
@@ -677,6 +678,9 @@ export async function executeTrade(signal, options = {}) {
   if (confidence < MIN_CONFIDENCE) {
     return blocked(`Confidence ${confidence}% < minimum ${MIN_CONFIDENCE}%`);
   }
+  if (isExplicitSwingSignal(signal)) {
+    return blocked('Scalp-only execution: swing trade signals are disabled.');
+  }
   // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
   if (autoAi) {
     const confCheck = checkAutoExecutionConfidence(confidence);
@@ -931,6 +935,37 @@ export async function executeTrade(signal, options = {}) {
     tpPips               = lifecycle.tp.takeProfitPips;
     tpPriceFromLifecycle = lifecycle.tp.takeProfitPrice;
   }
+
+  const scalpLifecycle = normalizeScalpLifecycle({
+    pair,
+    direction,
+    entryPrice: entry,
+    atrPips: signal.atrPips ?? signal.momentum?.atrPips,
+    lifecycle: {
+      allowed: true,
+      sl: {
+        ...(signal.lifecycle?.sl || {}),
+        stopLossPips: slPips,
+        stopLossPrice: slPriceFromLifecycle,
+      },
+      tp: {
+        ...(signal.lifecycle?.tp || {}),
+        allowed: true,
+        takeProfitPips: tpPips,
+        takeProfitPrice: tpPriceFromLifecycle,
+      },
+      hold: signal.lifecycle?.hold || null,
+    },
+  });
+
+  if (!scalpLifecycle.allowed) {
+    return blocked(scalpLifecycle.reason);
+  }
+
+  slPips = scalpLifecycle.lifecycle.sl.stopLossPips;
+  slPriceFromLifecycle = scalpLifecycle.lifecycle.sl.stopLossPrice;
+  tpPips = scalpLifecycle.lifecycle.tp.takeProfitPips;
+  tpPriceFromLifecycle = scalpLifecycle.lifecycle.tp.takeProfitPrice;
 
   const sizing = computeFixedDollarSizing({
     pair,
@@ -1665,8 +1700,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 70) return "SCALP";
-  if (rr >= 1.5 && confidence >= 76) return "SWING";
+  if (rr >= 1.5 && confidence >= 85) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

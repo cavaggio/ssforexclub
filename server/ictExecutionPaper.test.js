@@ -12,7 +12,7 @@ delete process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT;
 const { executeIctTrade } = await import('./ictExecution.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
-const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 80, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
+const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 85, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
 const freshId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 30_000}`;
 
 const validParams = (over = {}) => ({
@@ -21,7 +21,7 @@ const validParams = (over = {}) => ({
   ...over,
 });
 
-// Confidence ≥ 90 so the central auto-execution floor passes; tests that need a
+// Confidence ≥ 85 so the central auto-execution floor passes; tests that need a
 // rejection override it explicitly.
 const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 92, rr: 2.5, signalId: freshId(), ...over });
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });
@@ -54,10 +54,10 @@ test('paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION', async ()
   assert.equal(client.calls.length, 1);
 });
 
-test('auto execution rejects confidence below the 90 floor', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 85 }) }));
+test('auto execution rejects confidence below the 85 threshold', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 84 }) }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /floor 90%/);
+  assert.match(r.reason, /84 < 85/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {

@@ -17,7 +17,7 @@ function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
 
-function buildIctWatchState(analyses = [], minConfidence = 80) {
+function buildIctWatchState(analyses = [], minConfidence = 85) {
   const nearQualifiedPairs = new Set();
   const hotPairs = new Set();
   const lateEntryPairs = new Set();
@@ -240,12 +240,8 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 70 && rr >= 1.5) {
+  if (confidence >= 85 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
-  }
-
-  if (confidence >= 76 && rr >= 1.5) {
-    return { mode: "SWING", score, reject: null };
   }
 
   return { mode: "NONE", score, reject: "confidence below opportunity threshold" };

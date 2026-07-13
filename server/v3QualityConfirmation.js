@@ -191,7 +191,7 @@ export function evaluateV3SetupStage(signal = {}) {
   const rr = getSignalRR(signal);
 
   const minScore = envNumber('V3_QUALITY_SETUP_MIN_SCORE', 65);
-  const minConfidence = envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 80);
+  const minConfidence = Math.max(85, envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 85));
   const minRR = envNumber('FOREX_MIN_EXECUTABLE_RR', 1.5);
   const maxSpread = pair === 'XAU_USD' || pair === 'XAG_USD'
     ? envNumber('METALS_MAX_SPREAD_PIPS', 50)

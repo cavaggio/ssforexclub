@@ -263,8 +263,7 @@ export function scoreV3({
     (liquidity?.liquiditySweepDetected && liquidity.liquiditySweep?.direction === sign) ||
     (structure?.chochDetected && structure.choch?.direction === sign) ||
     (structure?.bosDetected && structure.bos?.direction === sign) ||
-    volatility?.volatilityState === 'expanding' ||
-    volatility?.volatilityState === 'compressed';
+    volatility?.volatilityState === 'expanding';
 
   // Qualification gates (behaviour unchanged from V3).
   const rejectionReasons = [];

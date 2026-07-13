@@ -1,7 +1,7 @@
 // Centralized execution policy for June 23 restore logic.
 
 export const TRADE_DECISION_POLICY = {
-  minConfidence: 80,
+  minConfidence: 85,
   minRR: 1.5,
   maxDailyLossPercent: 2.8,
   requireStructureConfirmation: true,
@@ -169,8 +169,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 70) return "SCALP";
-  if (rr >= 1.5 && confidence >= 76) return "SWING";
+  if (rr >= 1.5 && confidence >= 85) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

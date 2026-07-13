@@ -276,15 +276,15 @@ export function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 70 && rr >= 1.5) {
+  if (confidence >= 85 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
   }
 
-  if (confidence >= 76 && rr >= 1.5) {
-    return { mode: "SWING", score, reject: null };
-  }
-
-  return { mode: "NONE", score, reject: "confidence below opportunity threshold" };
+  return {
+    mode: "NONE",
+    score,
+    reject: "confidence below 85% scalp-only threshold",
+  };
 }
 
 export function softenActiveWindowRejects(reasons = [], now = new Date()) {

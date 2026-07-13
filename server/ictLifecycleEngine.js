@@ -20,7 +20,14 @@ import { detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
 import { detectMSS } from './ictConcepts.js';
 
 export const REASSESS_INTERVAL_MIN = 30;
-const HOLD_DEFAULT = () => parseFloat(process.env.ICT_HOLD_MINUTES_DEFAULT || '120');
+const SCALP_MAX_HOLD_MINUTES = () => Math.max(
+  15,
+  parseFloat(process.env.SCALP_MAX_HOLD_MINUTES || '120'),
+);
+const HOLD_DEFAULT = () => Math.min(
+  SCALP_MAX_HOLD_MINUTES(),
+  parseFloat(process.env.ICT_HOLD_MINUTES_DEFAULT || '120'),
+);
 
 // Projected hold by setup archetype, nudged by killzone quality.
 const SETUP_HOLD = {
@@ -28,14 +35,14 @@ const SETUP_HOLD = {
   'Turtle Soup': 90,
   'Judas Reversal': 120,
   'OTE Continuation': 120,
-  'MSS Reversal': 180,
+  'MSS Reversal': 120,
 };
 
 export function estimateHoldMinutes(setupType, killzone = null) {
   let base = SETUP_HOLD[setupType] ?? HOLD_DEFAULT();
   // Lower-quality session → shorter expected runway.
   if (killzone && killzone.killzoneQuality != null && killzone.killzoneQuality < 80) base = Math.round(base * 0.75);
-  return base;
+  return Math.min(base, SCALP_MAX_HOLD_MINUTES());
 }
 
 const opposes = (dir, structDir) =>

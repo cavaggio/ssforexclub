@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the central caps to their documented defaults (1.4% / 2.8% / 90).
+// Pin the central caps to their documented defaults (1.4% / 2.8% / 85).
 delete process.env.RISK_MAX_PER_TRADE_PERCENT;
 delete process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT;
 delete process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE;
@@ -21,11 +21,11 @@ const {
 
 const NOW = new Date('2026-06-10T15:00:00Z');
 
-test('defaults are 1.4% per trade, 2.8% daily drawdown, 90 confidence', () => {
+test('defaults are 1.4% per trade, 2.8% daily drawdown, 85 confidence', () => {
   const cfg = riskConfig();
   assert.equal(cfg.maxRiskPerTradePercent, 1.4);
   assert.equal(cfg.dailyMaxDrawdownPercent, 2.8);
-  assert.equal(cfg.autoExecutionMinConfidence, 90);
+  assert.equal(cfg.autoExecutionMinConfidence, 85);
 });
 
 // ── 1. Risk per trade (1.4% hard cap) ───────────────────────────────────────
@@ -95,16 +95,16 @@ test('daily baseline resets at the New York day rollover', () => {
   assert.equal(day2Status.startingBalance, 9600);
 });
 
-// ── 3. Auto execution confidence floor (90) ─────────────────────────────────
+// ── 3. Auto execution confidence floor (85) ─────────────────────────────────
 
-test('confidence at 90 passes the auto-execution floor', () => {
-  assert.equal(checkAutoExecutionConfidence(90).passed, true);
+test('confidence at 85 passes the auto-execution floor', () => {
+  assert.equal(checkAutoExecutionConfidence(85).passed, true);
 });
 
-test('confidence below 90 fails the auto-execution floor', () => {
-  const r = checkAutoExecutionConfidence(89);
+test('confidence below 85 fails the auto-execution floor', () => {
+  const r = checkAutoExecutionConfidence(84);
   assert.equal(r.passed, false);
-  assert.match(r.reason, /floor 90%/);
+  assert.match(r.reason, /floor 85%/);
 });
 
 // ── 4. Margin ───────────────────────────────────────────────────────────────
@@ -126,6 +126,6 @@ test('getRiskStatus surfaces the documented panel fields', () => {
   assert.equal(s.riskAmountUSD, 140);
   assert.equal(s.dailyLossLimitPercent, 2.8);
   assert.equal(s.dailyLossLimitUSD, 280);
-  assert.equal(s.autoExecutionConfidenceThreshold, 90);
+  assert.equal(s.autoExecutionConfidenceThreshold, 85);
   assert.equal(s.tradingLocked, false);
 });

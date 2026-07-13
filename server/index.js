@@ -2436,7 +2436,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA env:    ${process.env.OANDA_ENV || 'practice'}`);
   console.log(`Auto-trade:   ${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}`);
   console.log(`Min score:    ${process.env.FOREX_MIN_SCORE || '15'}/20`);
-  console.log(`Min conf:     ${process.env.FOREX_MIN_CONFIDENCE || '70'}%`);
+  console.log(`Min conf:     ${process.env.FOREX_MIN_CONFIDENCE || '85'}%`);
   console.log(`Max spread:   ${process.env.FOREX_MAX_SPREAD_PIPS || '2.0'} pips`);
 
   // Startup reconciliation — wipe any stale in-memory trade locks that no longer

@@ -16,6 +16,7 @@ import { scanForexPairs } from './oandaScanner.js';
 import { executeTrade } from './oandaTrade.js';
 import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
 
+import { applyScalpMetadata, scalpMinConfidence } from './scalpOnlyPolicy.js';
 function envOn(value, fallback = false) {
   const raw = value == null ? String(fallback) : String(value);
   return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
@@ -359,6 +360,8 @@ function safeV3Promotions(scan, log) {
       Number.isFinite(entry) &&
       Number.isFinite(stopLoss) &&
       Number.isFinite(targetProfit) &&
+      Number.isFinite(confidence) &&
+      confidence >= scalpMinConfidence() &&
       !hardTextBlock;
 
     if (!safe) {
@@ -442,7 +445,7 @@ function buildV3WatchState(scan, qualified = []) {
     }
 
     if (
-      confidence >= 70 ||
+      confidence >= scalpMinConfidence() ||
       text.includes('near') ||
       text.includes('valid_entry') ||
       text.includes('liquidity_sweep') ||
@@ -484,10 +487,12 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
     ? promotionBatch.watchCandidates
     : [];
 
-  const promoted = promotionBatch.map((sig) => ({
+  const promoted = promotionBatch.map((sig) => applyScalpMetadata({
     ...sig,
     source: 'v3_pure_auto_ai',
     strategy: 'V3',
+    tradeStyle: 'SCALP',
+    scalpOnly: true,
     selectedLogicType: 'v3_pure',
   }));
 
@@ -681,12 +686,8 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 70 && rr >= 1.5) {
+  if (confidence >= 85 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
-  }
-
-  if (confidence >= 76 && rr >= 1.5) {
-    return { mode: "SWING", score, reject: null };
   }
 
   return { mode: "NONE", score, reject: "confidence below opportunity threshold" };

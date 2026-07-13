@@ -8,7 +8,7 @@ const base = { pair: 'EUR_USD', direction: 'long', entryPrice: 1.1000, candles: 
 
 test('estimateHoldMinutes: by setup, with killzone nudge and default fallback', () => {
   assert.equal(estimateHoldMinutes('Silver Bullet'), 60);
-  assert.equal(estimateHoldMinutes('MSS Reversal'), 180);
+  assert.equal(estimateHoldMinutes('MSS Reversal'), 120); // scalp-only hold cap
   assert.equal(estimateHoldMinutes('Unknown Setup'), 120); // ICT_HOLD_MINUTES_DEFAULT
   assert.ok(estimateHoldMinutes('OTE Continuation', { killzoneQuality: 50 }) < estimateHoldMinutes('OTE Continuation'));
 });

@@ -12,7 +12,7 @@
  *   2. Daily max-drawdown circuit breaker — RISK_DAILY_MAX_DRAWDOWN_PERCENT
  *      (2.8%) of the day's starting balance. When hit, new entries are locked
  *      (open-position management is unaffected). Resets at New York midnight.
- *   3. Auto-execution confidence floor — RISK_AUTO_EXECUTION_MIN_CONFIDENCE (90).
+ *   3. Auto-execution confidence floor — RISK_AUTO_EXECUTION_MIN_CONFIDENCE (85).
  *   4. Margin availability — never submit an order whose required margin exceeds
  *      available margin (never bypasses the broker's own restriction).
  *
@@ -35,7 +35,7 @@ export function riskConfig() {
   return {
     maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
     dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),
-    autoExecutionMinConfidence: parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '76'),
+    autoExecutionMinConfidence: Math.max(85, parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '85')),
   };
 }
 

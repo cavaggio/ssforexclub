@@ -46,7 +46,7 @@ export function ictExecConfig() {
   return {
     mode: ICT_MODE,
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
-    minConfidence: parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'),
+    minConfidence: Math.max(85, parseFloat(process.env.ICT_MIN_CONFIDENCE || '85')),
     minRR: parseFloat(process.env.ICT_MIN_RR || '2.0'),
     maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.4'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
@@ -133,7 +133,7 @@ function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote
 // ─── Confidence scoring (soft confluence) ────────────────────────────────────
 // PURE. Base from the required Daily+4H alignment + killzone, then additive
 // bonuses for every confluence factor. Nothing here rejects — the hard gates do
-// that. Display qualifies at >=70; auto-execution is separately gated at >=80.
+// that. Display and auto-execution qualify only at >=85.
 export function computeIctConfidence(p = {}) {
   if (!p.htfAligned) return 0;
   let c = 40;                                          // Daily+4H aligned (hard-gated base)
@@ -312,7 +312,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   });
 
   // ── DECISION — display qualifies at >=70 with all hard gates clear ──────────
-  const DISPLAY_MIN = 70;
+  const DISPLAY_MIN = 85;
   if (hardFails.length === 0 && want && setup?.ok && confidence >= DISPLAY_MIN) {
     signal = want === 'bullish' ? 'buy' : 'sell';
     setupType = silverBulletWindow ? 'Silver Bullet'
@@ -359,6 +359,11 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
 
   return {
     pair, timestamp, signalId, generatedAtMs,
+    strategy: 'SCALP',
+    tradeStyle: 'SCALP',
+    tradeDuration: 'Scalp',
+    timeframeEstimate: 'Scalp',
+    scalpOnly: true,
     ictBias,
     ictNarrative,
     setupType,

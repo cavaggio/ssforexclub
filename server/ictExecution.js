@@ -37,6 +37,7 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 
+import { isExplicitSwingSignal } from './scalpOnlyPolicy.js';
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
 const priceDecimalsFor = (p) => (isMetal(p) ? 2 : String(p).includes('JPY') ? 3 : 5);
@@ -153,6 +154,9 @@ export async function executeIctTrade(params = {}, {
   }
   if (!(analysis.confidence >= config.minConfidence)) {
     return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
+  }
+  if (isExplicitSwingSignal(analysis)) {
+    return blocked('Scalp-only execution: ICT swing trade signals are disabled.');
   }
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
@@ -494,8 +498,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 70) return "SCALP";
-  if (rr >= 1.5 && confidence >= 76) return "SWING";
+  if (rr >= 1.5 && confidence >= 85) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

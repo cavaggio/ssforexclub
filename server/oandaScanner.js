@@ -59,8 +59,9 @@ import { detectMarketRegime } from './marketRegimeEngine.js';
 import { evaluateV3, isV3Enabled, V3_MODE } from './v3Engine.js';
 import { recordV3Shadow, generateV3ComparisonReport } from './v3ShadowLog.js';
 
+import { HARD_SCALP_CONFIDENCE_FLOOR, applyScalpMetadata, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config ───────────────────────────────────────────────────────────────────
-const MIN_CONFIDENCE = parseFloat(process.env.FOREX_MIN_CONFIDENCE || '20');
+const MIN_CONFIDENCE = Math.max(HARD_SCALP_CONFIDENCE_FLOOR, parseFloat(process.env.FOREX_MIN_CONFIDENCE || '85'));
 const MAX_SPREAD_PIPS = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS || '5.0');
 const METALS_MAX_SPREAD_PIPS = parseFloat(process.env.METALS_MAX_SPREAD_PIPS || '50');
 // Strict mode hard-blocks setups with entryTiming.status==='too_early'.
@@ -216,32 +217,20 @@ function calculateDisplayNotional(pair, units, entryPrice) {
 }
 
 /**
- * Trade duration label based on macro volatility regime and session — display only.
- * Macro/structure/momentum layers handle the actual qualification.
+ * Scalp-only classification. Higher timeframes remain context; they no longer
+ * produce intraday/swing trade labels or longer-duration execution candidates.
  */
-function getTradeDuration(session, atrPips, pair) {
-  const metals = isMetalsPair(pair);
-  const lowAtr = metals ? (!atrPips || atrPips < 30) : (!atrPips || atrPips < 4);
-  const goodAtr = metals ? (atrPips >= 50) : (atrPips >= 6);
-  const highVolSession = session === 'London/NewYork Overlap' || session === 'London' || session === 'NewYork';
-  const lowLiqSession = session === 'Sydney' || session === 'Sydney/Tokyo Overlap';
-
-  if (lowLiqSession || lowAtr) return 'Scalp';
-  if (highVolSession && goodAtr) return 'Intraday';
-  if (session === 'Tokyo/London Overlap' && goodAtr) return 'Intraday';
-  return 'Swing';
+function getTradeDuration(_session, _atrPips, _pair) {
+  return 'Scalp';
 }
 
-function getEstimatedHoldMinutes(tradeDuration) {
-  if (tradeDuration === 'Scalp') return 20;
-  if (tradeDuration === 'Intraday') return 90;
-  return 240;
+function getEstimatedHoldMinutes(_tradeDuration) {
+  return 60;
 }
 
-function getExpectedMovementPips(atrPips, tradeDuration) {
+function getExpectedMovementPips(atrPips, _tradeDuration) {
   if (!atrPips) return null;
-  const multiplier = tradeDuration === 'Scalp' ? 0.5 : tradeDuration === 'Intraday' ? 1.5 : 2.5;
-  return Math.round(atrPips * multiplier);
+  return Math.round(atrPips * 0.75);
 }
 
 
@@ -872,12 +861,11 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       if (perfectAlignmentBypass?.allowed && confidence < MIN_CONFIDENCE) {
         if (!Array.isArray(alignment.warnings)) alignment.warnings = [];
         alignment.warnings.push(
-          `Perfect-alignment confidence floor: raw confidence ${confidence}% raised to min ${MIN_CONFIDENCE}% for execution sizing.`
+          `Perfect alignment does not override scalp confidence: ${confidence}% remains below ${MIN_CONFIDENCE}%.`
         );
         console.log(
-          `[PERFECT_ALIGNMENT_CONFIDENCE_FLOOR] ${pair} ${direction} raw=${confidence} floor=${MIN_CONFIDENCE}`
+          `[SCALP_CONFIDENCE_HARD_FLOOR] ${pair} ${direction} raw=${confidence} required=${MIN_CONFIDENCE}`
         );
-        confidence = MIN_CONFIDENCE;
       }
 
       if (confidence < MIN_CONFIDENCE) {
@@ -914,7 +902,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
       // ── Dynamic SL / TP / hold-window (trade lifecycle engine) ──────────
       const entry = pricing.mid;
 
-      const lifecycle = computeTradeLifecycle({
+      let lifecycle = computeTradeLifecycle({
         pair, direction, entryPrice: entry,
         atrPips: momentum.atrPips,
         m15Candles, h1Candles,
@@ -925,6 +913,40 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         fibonacci, institutionalFlow,
         marketState, profile, candleStrength,   // NEW — state-aware TP/SL
       });
+
+      if (lifecycle.allowed) {
+        const scalpLifecycle = normalizeScalpLifecycle({
+          pair,
+          direction,
+          entryPrice: entry,
+          atrPips: momentum.atrPips ?? atrPips,
+          lifecycle,
+        });
+
+        if (!scalpLifecycle.allowed) {
+          const reason = scalpLifecycle.reason;
+          alignment.rejectionReasons.push(reason);
+          rejected.push({
+            pair, direction, confidence, reason,
+            rejectionReasons: alignment.rejectionReasons,
+            rejectionCategory: 'scalp_only',
+            macro, structure, momentum, alignment,
+            fibonacci, institutionalFlow, newsRisk, entryTiming,
+            candleStrength, marketState, mtfAuthority, overextension, profile,
+            spreadPips: pricing.spreadPips, session,
+            entry: pricing.mid,
+            entryPrice: pricing.mid,
+            currentPrice: pricing.mid,
+            v3: v3Eval,
+            lifecycle,
+            finalQualifiedStatus: 'rejected_scalp_only',
+          });
+          console.log(`[SCALP_ONLY] ✗ ${pair} ${direction} — ${reason}`);
+          continue;
+        }
+
+        lifecycle = scalpLifecycle.lifecycle;
+      }
 
       if (!lifecycle.allowed) {
         const category = lifecycle.rejectionReason.startsWith('Required SL')
@@ -1244,11 +1266,14 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         );
       }
 
-      qualified.push({
+      qualified.push(applyScalpMetadata({
         pair,
         instrumentName,
         assetClass,
         direction,
+        strategy: 'SCALP',
+        tradeStyle: 'SCALP',
+        scalpOnly: true,
         // Signal Stack V3 execution engine evaluation (shadow/active).
         v3: v3Eval,
         score: alignment.timeframeAlignmentScore,    // 0–100 primary timeframe score
@@ -1333,7 +1358,7 @@ export async function scanForexPairs(pairsOverride = null, options = {}) {
         macroAnalysis,
         marketRegime,
         generatedAt: new Date().toISOString(),
-      });
+      }));
       console.log(`[SCANNER] ✓ ${pair} ${direction.toUpperCase()} — QUALIFIED (alignment ${alignment.timeframeAlignmentScore}/100, conf ${confidence}%)`);
 
     } catch (err) {
@@ -1641,15 +1666,15 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 70 && rr >= 1.5) {
+  if (confidence >= 85 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
   }
 
-  if (confidence >= 76 && rr >= 1.5) {
-    return { mode: "SWING", score, reject: null };
-  }
-
-  return { mode: "NONE", score, reject: "confidence below opportunity threshold" };
+  return {
+    mode: "NONE",
+    score,
+    reject: "confidence below 85% scalp-only threshold",
+  };
 }
 
 function envBool(name, fallback = false) {

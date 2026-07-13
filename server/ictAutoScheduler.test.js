@@ -16,7 +16,7 @@ test('auto-AI window: NY weekday 02:15–14:00 ET is open', () => {
 
 test('auto-AI window: before 02:15 / at-or-after 14:00 ET is closed', () => {
   assert.equal(inAutoAiWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), false); // 14:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T18:00:00Z')), false); // 14:00 ET Tue (EDT)
   assert.equal(inAutoAiWindow(new Date('2026-06-09T19:00:00Z')), false); // 14:00 ET Tue
 });
 
