@@ -46,3 +46,4 @@ server/data/v3-shadow-log.json
 .vercel
 .env*.local
 .env*
+diagnostics/
