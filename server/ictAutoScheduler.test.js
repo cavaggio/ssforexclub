@@ -8,16 +8,16 @@ import {
   inAutoAiWindow,
 } from './ictAutoScheduler.js';
 
-test('auto-AI window: NY weekday 02:15–14:00 ET is open', () => {
+test('auto-AI window: NY weekday 02:15–11:00 ET is open', () => {
   assert.equal(inAutoAiWindow(new Date('2026-06-09T06:15:00Z')), true); // 02:15 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), true); // 06:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), true); // 10:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:59:00Z')), true); // 10:59 ET Tue
 });
 
-test('auto-AI window: before 02:15 / at-or-after 14:00 ET is closed', () => {
+test('auto-AI window: before 02:15 / at-or-after 11:00 ET is closed', () => {
   assert.equal(inAutoAiWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T18:00:00Z')), false); // 14:00 ET Tue (EDT)
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T19:00:00Z')), false); // 14:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T15:00:00Z')), false); // 11:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T16:00:00Z')), false); // 12:00 ET Tue
 });
 
 test('auto-AI window: weekends are closed even mid-window', () => {

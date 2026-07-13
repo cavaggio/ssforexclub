@@ -1551,20 +1551,24 @@ function softenPerfectAlignmentRejects(reasons = []) {
 // === END PERFECT ALIGNMENT EXECUTION BYPASS PATCH ===
 
 // === OPPORTUNITY RANKING PATCH ===
-function getNYHour(date = new Date()) {
-  const hour = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      hour: "2-digit",
-      hour12: false,
-    }).format(date)
-  );
-  return hour === 24 ? 0 : hour;
+function getNYMinutes(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+
+  const hour = get("hour") === 24 ? 0 : get("hour");
+  return hour * 60 + get("minute");
 }
 
 function isActiveOpportunityWindow(date = new Date()) {
-  const h = getNYHour(date);
-  return h >= 2 && h < 14;
+  const minutes = getNYMinutes(date);
+  return minutes >= 2 * 60 + 15 && minutes < 11 * 60;
 }
 
 function isProtectedHardBlock(reason = "") {

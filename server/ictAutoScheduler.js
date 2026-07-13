@@ -9,7 +9,7 @@ import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMo
  * user's creds, and calls back into the Railway internal Auto AI endpoints.
  *
  * Off by default (ICT_AUTO_AI_SCHEDULER_ENABLED=false). Only fires on NY
- * weekdays between 02:15 and 14:00 ET (DST-aware via ictTime).
+ * weekdays between 02:15 and 11:00 ET (DST-aware via ictTime).
  *
  * Cadence:
  * - Full scan: every 5 minutes
@@ -19,7 +19,7 @@ import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMo
 
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 14 * 60 }; // 02:15–14:00 ET
+export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 11 * 60 }; // 02:15–11:00 ET
 
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = parseInterval(
   'AUTO_AI_FULL_SCAN_INTERVAL_MS',
@@ -52,7 +52,7 @@ function parseInterval(name, fallbackMs) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
 }
 
-/** True only on a NY weekday within 02:15–14:00 ET. */
+/** True only on a NY weekday within 02:15–11:00 ET. */
 export function inAutoAiWindow(input = new Date()) {
   const et = etParts(input);
   if (!et || et.isWeekend) return false;
@@ -103,7 +103,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   console.log(
     `[AUTO_AI] starting staged scheduler → ${nextUrl}/api/cron/auto-ai-trading ` +
-    `(NY weekday 02:15–14:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms)`,
+    `(NY weekday 02:15–11:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms)`,
   );
 
   addTimer(setInterval(() => {
@@ -293,20 +293,28 @@ export function stopAutoAiScheduler() {
 
 
 // === ACTIVE TRADE LOGIC PATCH ===
+export function getNewYorkMinutes(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+
+  const hour = get("hour") === 24 ? 0 : get("hour");
+  return hour * 60 + get("minute");
+}
+
 export function getNewYorkHour(date = new Date()) {
-  const hour = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      hour: "2-digit",
-      hour12: false,
-    }).format(date)
-  );
-  return hour === 24 ? 0 : hour;
+  return Math.floor(getNewYorkMinutes(date) / 60);
 }
 
 export function isPrimaryTradeWindow(date = new Date()) {
-  const hour = getNewYorkHour(date);
-  return hour >= 2 && hour < 10;
+  const minutes = getNewYorkMinutes(date);
+  return minutes >= 2 * 60 + 15 && minutes < 11 * 60;
 }
 
 export function isTrueHardReject(reason = "") {
