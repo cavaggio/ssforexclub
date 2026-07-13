@@ -41,6 +41,7 @@ import {
   checkAutoExecutionConfidence,
 } from './riskManager.js';
 import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
+import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -387,7 +388,8 @@ function hasV3EarlyTrigger(signal = {}) {
 function highEdgeAutoAiGate(signal = {}, sizing = null) {
   const reasons = [];
 
-  const confidence = pickFirstNumber(signal.confidence, 0) ?? 0;
+  const pureV3 = isPureV3ExecutionSignal(signal);
+  const confidence = pickFirstNumber(signal.tpHitConfidence, signal.confidence, 0) ?? 0;
   const alignment = pickFirstNumber(
     signal.alignment?.timeframeAlignmentScore,
     signal.multiTimeframeAlignmentScore,
@@ -420,7 +422,7 @@ function highEdgeAutoAiGate(signal = {}, sizing = null) {
     reasons.push(`confidence ${confidence} < ${AUTO_AI_MIN_ENTRY_CONFIDENCE}`);
   }
 
-  if (alignment < AUTO_AI_MIN_ALIGNMENT_SCORE) {
+  if (!pureV3 && alignment < AUTO_AI_MIN_ALIGNMENT_SCORE) {
     reasons.push(`alignment ${alignment} < ${AUTO_AI_MIN_ALIGNMENT_SCORE}`);
   }
 
@@ -561,6 +563,15 @@ function extractCancelTx(tx) {
   };
 }
 
+function isPureV3ExecutionSignal(signal = {}) {
+  return (
+    signal?.source === 'v3_pure_auto_ai' ||
+    signal?.selectedLogicType === 'v3_pure' ||
+    String(signal?.strategy || '').toUpperCase() === 'V3' ||
+    signal?.engine === 'v3'
+  );
+}
+
 // ─── Main execution function ──────────────────────────────────────────────────
 
 /**
@@ -622,22 +633,41 @@ function fitUnitsToMargin({
 
 export async function executeTrade(signal, options = {}) {
   const { client, autoAi = false } = options;
-  const { pair, direction, score, confidence, entry, stopLoss, takeProfit, spreadPips } = signal;
-  const pureV3Execution =
-    signal?.source === 'v3_pure_auto_ai' ||
-    signal?.selectedLogicType === 'v3_pure' ||
-    signal?.strategy === 'V3';
+  const {
+    pair, direction, score, confidence: signalConfidence,
+    entry, stopLoss, takeProfit, spreadPips,
+  } = signal;
+  const pureV3Execution = isPureV3ExecutionSignal(signal);
+  const entryQualityConfidence = Number(
+    signal.entryQualityConfidence ?? signalConfidence ?? signal.v3?.confidence ?? 0
+  );
+  const tpHitConfidence = pureV3Execution
+    ? computeV3EntryTpHitConfidence(signal)
+    : null;
+  const confidence = pureV3Execution ? tpHitConfidence : Number(signalConfidence);
+
+  if (pureV3Execution) {
+    signal.entryQualityConfidence = Number.isFinite(entryQualityConfidence) ? entryQualityConfidence : null;
+    signal.tpHitConfidence = tpHitConfidence;
+    signal.tpProbability = +(tpHitConfidence / 100).toFixed(3);
+    signal.slProbability = +(1 - signal.tpProbability).toFixed(3);
+    // Generic confidence remains a compatibility alias only.
+    signal.confidence = tpHitConfidence;
+  }
 
   const tradeKey = `${pair}_${direction}`;
   const metals   = isMetalsPair(pair);
   const maxSpread = metals ? METALS_MAX_SPREAD_PIPS : MAX_SPREAD_PIPS;
   const pipSize   = getPipSize(pair);
-  const priceDecimals = metals ? 2 : 5;
+  const priceDecimals = metals ? 2 : (pair.includes('JPY') ? 3 : 5);
 
   const executionLog = [];
 
   console.log(`\n[TRADE] ▶ Execution request: ${pair} ${direction.toUpperCase()}`);
-  console.log(`[TRADE]   Score: ${score}/20, Conf: ${confidence}%, Spread: ${spreadPips} pips`);
+  console.log(
+    `[TRADE]   Score: ${score}/20, ${pureV3Execution ? 'TP Hit Conf' : 'Conf'}: ${confidence}%, ` +
+    `Spread: ${spreadPips} pips`
+  );
 
   // ── Guard 0: Paper-trading safety (2026-05-27) ────────────────────────────
   // Resolve the active environment and refuse live execution unless explicitly
@@ -674,9 +704,18 @@ export async function executeTrade(signal, options = {}) {
     return blocked(`Score ${score} < minimum ${MIN_SCORE}`);
   }
 
-  // ── Guard 3: Confidence ───────────────────────────────────────────────────
-  if (confidence < MIN_CONFIDENCE) {
-    return blocked(`Confidence ${confidence}% < minimum ${MIN_CONFIDENCE}%`);
+  // ── Guard 3: Entry execution probability ─────────────────────────────────
+  const configuredV3TpFloor = Number(
+    process.env.V3_MIN_TP_HIT_CONFIDENCE || process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || 85
+  );
+  const executionConfidenceFloor = pureV3Execution
+    ? Math.max(85, Number.isFinite(configuredV3TpFloor) ? configuredV3TpFloor : 85)
+    : MIN_CONFIDENCE;
+  if (!Number.isFinite(confidence) || confidence < executionConfidenceFloor) {
+    return blocked(
+      `${pureV3Execution ? 'TP-hit confidence' : 'Confidence'} ${Number.isFinite(confidence) ? confidence : 'n/a'}% ` +
+      `< minimum ${executionConfidenceFloor}%`
+    );
   }
   if (isExplicitSwingSignal(signal)) {
     return blocked('Scalp-only execution: swing trade signals are disabled.');
@@ -1326,7 +1365,8 @@ export async function executeTrade(signal, options = {}) {
     };
   }
 
-  // Fill confirmed — SL/TP are already attached atomically by OANDA.
+  // Fill confirmed — SL/TP were attached atomically. Revalidate using the ACTUAL
+  // broker fill because market slippage can change geometric R:R after submission.
   const fillInfo        = extractFillTx(orderFillTransaction);
   const tradeId         = fillInfo.tradeId;
   const fillPrice       = parseFloat(fillInfo.price || entry);
@@ -1334,9 +1374,258 @@ export async function executeTrade(signal, options = {}) {
     fillInfo.initialMarginRequired || fillInfo.marginRequired || 0
   );
 
+  // Count and lock every confirmed broker fill immediately. A successful emergency
+  // flatten removes only the active lock; the daily fill count remains accurate.
+  lastTradeTime = Date.now();
+  dailyTradeTimestamps.push(lastTradeTime);
+  activeTrades.add(tradeKey);
+
+  let effectiveTpPrice = tpPrice;
+  let postFillTpAdjusted = false;
+  let actualFillRR = computePostFillRiskReward({
+    direction,
+    entry: fillPrice,
+    stopLoss: slPrice,
+    takeProfit: effectiveTpPrice,
+  });
+
+  const flattenPostFillTrade = async (reason) => {
+    const closePath = tradeId
+      ? `/v3/accounts/${accountId}/trades/${tradeId}/close`
+      : `/v3/accounts/${accountId}/positions/${pair}/close`;
+    const closeBody = tradeId
+      ? { units: 'ALL' }
+      : (direction === 'long' ? { longUnits: 'ALL' } : { shortUnits: 'ALL' });
+    const response = client
+      ? await client.put(closePath, closeBody)
+      : await oandaPut(closePath, closeBody);
+    activeTrades.delete(tradeKey);
+    return response;
+  };
+
+  if (!Number.isFinite(actualFillRR) || actualFillRR < MIN_EXECUTABLE_RR) {
+    const repairedTp = priceForMinimumRR({
+      direction,
+      fillPrice,
+      stopLoss: slPrice,
+      minRR: MIN_EXECUTABLE_RR,
+      priceDecimals,
+    });
+
+    try {
+      if (!tradeId || !Number.isFinite(repairedTp)) {
+        throw new Error('missing tradeId or valid repaired TP');
+      }
+      const dependentOrderPath = `/v3/accounts/${accountId}/trades/${tradeId}/orders`;
+      const dependentOrderBody = {
+        takeProfit: { price: repairedTp.toFixed(priceDecimals), timeInForce: 'GTC' },
+      };
+      if (client) await client.put(dependentOrderPath, dependentOrderBody);
+      else await oandaPut(dependentOrderPath, dependentOrderBody);
+
+      effectiveTpPrice = repairedTp;
+      actualFillRR = computePostFillRiskReward({
+        direction,
+        entry: fillPrice,
+        stopLoss: slPrice,
+        takeProfit: effectiveTpPrice,
+      });
+      postFillTpAdjusted = true;
+      executionLog.push(logEntry('POST_FILL_RR_REPAIRED', {
+        fillPrice,
+        stopLoss: slPrice,
+        previousTakeProfit: tpPrice,
+        repairedTakeProfit: effectiveTpPrice,
+        actualFillRR,
+        minimumRR: MIN_EXECUTABLE_RR,
+      }));
+    } catch (repairError) {
+      let closedAfterFill = false;
+      let closeError = null;
+      try {
+        await flattenPostFillTrade(repairError.message);
+        closedAfterFill = true;
+      } catch (err) {
+        closeError = err?.message || String(err);
+      }
+
+      console.error(
+        `[POST_FILL_RR] ${pair} ${direction} fill=${fillPrice} RR=${actualFillRR ?? 'n/a'} ` +
+        `repair failed (${repairError.message}); closed=${closedAfterFill}`
+      );
+      return {
+        success: false,
+        blocked: false,
+        executionState: 'POST_FILL_RR_REJECTED',
+        reason:
+          `Actual fill R:R ${Number.isFinite(actualFillRR) ? actualFillRR : 'n/a'} < ${MIN_EXECUTABLE_RR}; ` +
+          `TP repair failed and the fill was ${closedAfterFill ? 'closed immediately' : 'NOT closed automatically'}.`,
+        tradeId,
+        fillPrice,
+        actualFillRR,
+        minimumRR: MIN_EXECUTABLE_RR,
+        closedAfterFill,
+        closeError,
+        sizing,
+        executionLog,
+        oandaResponse,
+      };
+    }
+  }
+
+  // A rounded dependent-order price must still pass the universal hard floor.
+  if (!Number.isFinite(actualFillRR) || actualFillRR < MIN_EXECUTABLE_RR) {
+    let closedAfterFill = false;
+    let closeError = null;
+    try {
+      await flattenPostFillTrade('repaired TP still below minimum RR');
+      closedAfterFill = true;
+    } catch (err) {
+      closeError = err?.message || String(err);
+    }
+    return {
+      success: false,
+      blocked: false,
+      executionState: 'POST_FILL_RR_REJECTED',
+      reason: `Actual fill R:R remained ${actualFillRR ?? 'n/a'} < ${MIN_EXECUTABLE_RR} after repair.`,
+      tradeId,
+      fillPrice,
+      actualFillRR,
+      closedAfterFill,
+      closeError,
+      sizing,
+      executionLog,
+      oandaResponse,
+    };
+  }
+
+  // Reprice V3 TP-hit confidence using actual broker geometry. When slippage makes
+  // the attached target less probable, first try the nearest legal 1.5R TP. If the
+  // position still cannot maintain the 85% TP-hit floor, flatten it immediately.
+  let postFillTpHitConfidence = pureV3Execution
+    ? repriceV3TpHitConfidence({
+        baseConfidence: tpHitConfidence,
+        originalRR: finalSizingRR,
+        actualRR: actualFillRR,
+      })
+    : null;
+
+  if (
+    pureV3Execution &&
+    (!Number.isFinite(postFillTpHitConfidence) || postFillTpHitConfidence < executionConfidenceFloor)
+  ) {
+    const minimumTp = priceForMinimumRR({
+      direction,
+      fillPrice,
+      stopLoss: slPrice,
+      minRR: MIN_EXECUTABLE_RR,
+      priceDecimals,
+    });
+
+    // A farther-than-minimum TP may be pulled in, but never below the universal RR floor.
+    if (
+      Number.isFinite(minimumTp) &&
+      Number.isFinite(actualFillRR) &&
+      actualFillRR > MIN_EXECUTABLE_RR + 0.0001 &&
+      minimumTp !== effectiveTpPrice
+    ) {
+      try {
+        if (!tradeId) throw new Error('missing tradeId for TP-confidence repair');
+        const dependentOrderPath = `/v3/accounts/${accountId}/trades/${tradeId}/orders`;
+        const dependentOrderBody = {
+          takeProfit: { price: minimumTp.toFixed(priceDecimals), timeInForce: 'GTC' },
+        };
+        if (client) await client.put(dependentOrderPath, dependentOrderBody);
+        else await oandaPut(dependentOrderPath, dependentOrderBody);
+
+        const previousTp = effectiveTpPrice;
+        effectiveTpPrice = minimumTp;
+        actualFillRR = computePostFillRiskReward({
+          direction,
+          entry: fillPrice,
+          stopLoss: slPrice,
+          takeProfit: effectiveTpPrice,
+        });
+        postFillTpAdjusted = true;
+        postFillTpHitConfidence = repriceV3TpHitConfidence({
+          baseConfidence: tpHitConfidence,
+          originalRR: finalSizingRR,
+          actualRR: actualFillRR,
+        });
+        executionLog.push(logEntry('POST_FILL_TP_CONFIDENCE_REPAIRED', {
+          previousTakeProfit: previousTp,
+          repairedTakeProfit: effectiveTpPrice,
+          actualFillRR,
+          postFillTpHitConfidence,
+          minimumTpHitConfidence: executionConfidenceFloor,
+        }));
+      } catch (confidenceRepairError) {
+        executionLog.push(logEntry('POST_FILL_TP_CONFIDENCE_REPAIR_FAILED', {
+          error: confidenceRepairError?.message || String(confidenceRepairError),
+        }));
+      }
+    }
+
+    if (!Number.isFinite(postFillTpHitConfidence) || postFillTpHitConfidence < executionConfidenceFloor) {
+      let closedAfterFill = false;
+      let closeError = null;
+      try {
+        await flattenPostFillTrade('post-fill TP-hit confidence below execution floor');
+        closedAfterFill = true;
+      } catch (err) {
+        closeError = err?.message || String(err);
+      }
+      return {
+        success: false,
+        blocked: false,
+        executionState: 'POST_FILL_TP_CONFIDENCE_REJECTED',
+        reason:
+          `Post-fill TP-hit confidence ${Number.isFinite(postFillTpHitConfidence) ? postFillTpHitConfidence : 'n/a'}% ` +
+          `< ${executionConfidenceFloor}%; fill was ${closedAfterFill ? 'closed immediately' : 'NOT closed automatically'}.`,
+        tradeId,
+        fillPrice,
+        actualFillRR,
+        tpHitConfidence: postFillTpHitConfidence,
+        minimumTpHitConfidence: executionConfidenceFloor,
+        closedAfterFill,
+        closeError,
+        sizing,
+        executionLog,
+        oandaResponse,
+      };
+    }
+  }
+
+  if (pureV3Execution) {
+    signal.preFillTpHitConfidence = tpHitConfidence;
+    signal.tpHitConfidence = postFillTpHitConfidence;
+    signal.entryTpHitConfidence = postFillTpHitConfidence;
+    signal.tpProbability = +(postFillTpHitConfidence / 100).toFixed(3);
+    signal.slProbability = +(1 - signal.tpProbability).toFixed(3);
+    signal.confidence = postFillTpHitConfidence;
+  }
+
+  // Make the persisted sizing/history reflect broker reality, not the pre-fill quote.
+  const actualRiskPips = Math.abs(fillPrice - slPrice) / pipSize;
+  const actualRewardPips = Math.abs(effectiveTpPrice - fillPrice) / pipSize;
+  sizing.stopLoss = slPrice;
+  sizing.takeProfit = effectiveTpPrice;
+  sizing.stopLossPips = +actualRiskPips.toFixed(2);
+  sizing.takeProfitPips = +actualRewardPips.toFixed(2);
+  sizing.riskReward = +actualFillRR.toFixed(2);
+  signal.originalSignalEntry = entry;
+  signal.entry = fillPrice;
+  signal.entryPrice = fillPrice;
+  signal.stopLoss = slPrice;
+  signal.takeProfit = effectiveTpPrice;
+  signal.targetProfit = effectiveTpPrice;
+  signal.actualFillRR = +actualFillRR.toFixed(2);
+  signal.postFillTpAdjusted = postFillTpAdjusted;
+
   console.log(
-    `[TRADE] ✓ FILLED + SL/TP attached atomically — tradeId=${tradeId}, ` +
-    `price=${fillPrice}, marginRequired=$${tradeMarginUsed.toFixed(2)}`
+    `[TRADE] ✓ FILLED + SL/TP attached — tradeId=${tradeId}, price=${fillPrice}, ` +
+    `actualRR=${actualFillRR.toFixed(2)}, tpAdjusted=${postFillTpAdjusted}, ` +
+    `marginRequired=$${tradeMarginUsed.toFixed(2)}`
   );
 
   executionLog.push(logEntry('ORDER_FILL', {
@@ -1345,13 +1634,11 @@ export async function executeTrade(signal, options = {}) {
     fillPrice,
     marginRequired: tradeMarginUsed,
     stopLoss: slPrice,
-    takeProfit: tpPrice,
+    takeProfit: effectiveTpPrice,
+    actualFillRR,
+    postFillTpAdjusted,
     atomicSlTp: true,
   }));
-
-  lastTradeTime = Date.now();
-  dailyTradeTimestamps.push(lastTradeTime);
-  activeTrades.add(tradeKey);
 
   return buildResult({
     executionState: 'TP_ATTACHED', // SL+TP both attached on fill — terminal state
@@ -1368,9 +1655,9 @@ export async function executeTrade(signal, options = {}) {
     riskAmount,
     sizing,
     signal,
-    entry,
+    entry: fillPrice,
     stopLoss: slPrice,
-    takeProfit: tpPrice,
+    takeProfit: effectiveTpPrice,
     score,
     confidence,
   });
@@ -1406,11 +1693,15 @@ function buildResult({
     timeframe:       'M15',
     score,
     confidence,
+    entryQualityConfidence: signal.entryQualityConfidence ?? null,
+    entryTpHitConfidence: signal.tpHitConfidence ?? null,
+    entryStrategy: signal.strategy ?? (signal.selectedLogicType === 'v3_pure' ? 'V3' : null),
+    actualFillRR: signal.actualFillRR ?? sizing?.riskReward ?? null,
     scoreBreakdown:  signal.scoreBreakdown || {},
     entry,
     stopLoss,
     takeProfit,
-    riskReward:      sizing?.riskReward ?? signal.riskReward,
+    riskReward:      signal.actualFillRR ?? sizing?.riskReward ?? signal.riskReward,
     atrPips:         signal.atrPips   || null,
     trend:           signal.trend     || null,
     mtfAlignment:    signal.mtfAlignment    || null,
@@ -1463,6 +1754,10 @@ function buildResult({
     tradeHistoryId,
     environment: getEnvironment(),
     isPaperTrading: getEnvironment() !== 'live',
+    tpHitConfidence: signal.tpHitConfidence ?? null,
+    entryQualityConfidence: signal.entryQualityConfidence ?? null,
+    actualFillRR: signal.actualFillRR ?? sizing?.riskReward ?? null,
+    postFillTpAdjusted: signal.postFillTpAdjusted === true,
   };
 }
 
@@ -1704,4 +1999,3 @@ export function pickTradeMode(candidate = {}) {
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===
-

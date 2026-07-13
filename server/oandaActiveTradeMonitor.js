@@ -18,6 +18,8 @@ import {
 import {
   computeHoldWindow, computeTradeProbabilities, classifyTradeState,
 } from './oandaTradeLifecycle.js';
+import { findTradeByBrokerOrderId } from './oandaTradeHistory.js';
+import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 
 function getPipSize(pair) {
   if (pair.includes('JPY'))                      return 0.01;
@@ -94,7 +96,7 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     maxSpreadPips: maxSpreadFor(pair),
   });
   const alignment = computeAlignment({ macro, structure, momentum });
-  const currentConfidence = computeConfidenceScore({
+  const legacyCurrentConfidence = computeConfidenceScore({
     macro, structure, momentum, alignment,
     spreadPips: pricing?.spreadPips,
     maxSpreadPips: maxSpreadFor(pair),
@@ -125,6 +127,36 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     holdWindow: updatedHoldWindow,
   });
 
+
+  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  const pureV3Trade = isPureV3TradeRecord(historyRecord || {});
+  const tradeSign = side === 'long' ? 'bullish' : 'bearish';
+  const macroBias = String(macro?.macroBias || macro?.h4Trend || '').toLowerCase();
+  const macroOpposes = Boolean(macroBias && macroBias !== 'neutral' && !macroBias.includes(tradeSign));
+  const m15Trend = String(momentum?.m15Trend || momentum?.trend || '').toLowerCase();
+  const m15TrendReversed =
+    (side === 'long' && m15Trend === 'bearish') ||
+    (side === 'short' && m15Trend === 'bullish');
+
+  const liveV3Confidence = pureV3Trade
+    ? computeLiveV3TpHitConfidence({
+        side,
+        entryPrice,
+        currentPrice,
+        stopLoss,
+        takeProfit,
+        entryTpHitConfidence: historyRecord?.entryTpHitConfidence,
+        historyRecord,
+        tpProgress: classification.tpProgress,
+        entryAlignmentScore: historyRecord?.entryMtfAlignmentScore,
+        currentAlignmentScore: alignment.timeframeAlignmentScore,
+        mtfConflict: alignment.conflicting === true || alignment.conflict === true,
+        macroOpposes,
+        m15TrendReversed,
+      })
+    : null;
+  const currentConfidence = liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
+
   // Live probabilities given current alignment + R:R-to-go
   const remainingRR = (stopLoss != null && takeProfit != null && currentPrice !== entryPrice)
     ? Math.abs((takeProfit - currentPrice) / (currentPrice - stopLoss))
@@ -151,17 +183,23 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     tpProgress: classification.tpProgress,
     currentAlignmentScore: alignment.timeframeAlignmentScore,
     currentConfidence,
-    tradeState: classification.tradeState,
-    exitRecommendation: classification.exitRecommendation,
-    exitReason: classification.exitReason,
+    tradeState: pureV3Trade ? liveV3Confidence.state : classification.tradeState,
+    exitRecommendation: pureV3Trade ? liveV3Confidence.exitRecommendation : classification.exitRecommendation,
+    exitReason: pureV3Trade
+      ? `V3 live TP-hit confidence ${liveV3Confidence.tpHitConfidence}% (${liveV3Confidence.state})`
+      : classification.exitReason,
     timeDecayRisk: classification.timeDecayRisk,
     updatedHoldWindow: {
       minMinutes: updatedHoldWindow.minMinutes,
       maxMinutes: updatedHoldWindow.maxMinutes,
       holdConfidence: updatedHoldWindow.holdConfidence,
     },
-    tpProbability: probs.tpProbability,
-    slProbability: probs.slProbability,
+    tpProbability: pureV3Trade ? liveV3Confidence.tpProbability : probs.tpProbability,
+    slProbability: pureV3Trade ? liveV3Confidence.slProbability : probs.slProbability,
+    confidenceModel: pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
+    entryTpHitConfidence: historyRecord?.entryTpHitConfidence ?? null,
+    entryQualityConfidence: historyRecord?.entryQualityConfidence ?? null,
+    liveTpConfidence: liveV3Confidence,
     macroOpposes: classification.macroOpposes,
     conflictingTfCount: classification.conflictingTfCount,
     alignmentDropped: classification.alignmentDropped,

@@ -15,6 +15,7 @@ import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMo
 import { scanForexPairs } from './oandaScanner.js';
 import { executeTrade } from './oandaTrade.js';
 import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
+import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
 
 import { applyScalpMetadata, scalpMinConfidence } from './scalpOnlyPolicy.js';
 function envOn(value, fallback = false) {
@@ -232,9 +233,19 @@ function safeV3Promotions(scan, log) {
     })();
 
     const legacyConfidence = envNum(item?.confidence ?? v3?.confidence, NaN);
-    const confidence = Number.isFinite(v3ExecutionConfidence)
+    const entryQualityConfidence = Number.isFinite(v3ExecutionConfidence)
       ? Math.max(Number.isFinite(legacyConfidence) ? legacyConfidence : 0, v3ExecutionConfidence)
       : legacyConfidence;
+    const tpHitConfidence = computeV3EntryTpHitConfidence({
+      ...item,
+      ...v3,
+      confidence: entryQualityConfidence,
+      entryQualityConfidence,
+      v3,
+    });
+    // Downstream generic confidence fields remain as a compatibility alias,
+    // but for pure V3 they now mean TP-hit confidence, not legacy entry quality.
+    const confidence = tpHitConfidence;
 
     const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
     const rr = envNum(
@@ -278,6 +289,8 @@ function safeV3Promotions(scan, log) {
       pair,
       direction,
       confidence,
+      tpHitConfidence,
+      entryQualityConfidence,
       expectedRR: rr,
       rr,
       entry,
@@ -433,7 +446,7 @@ function buildV3WatchState(scan, qualified = []) {
     if (!pair) continue;
 
     const text = textOf(item);
-    const confidence = Number(item?.confidence ?? item?.score ?? item?.v3?.score ?? 0);
+    const confidence = Number(item?.tpHitConfidence ?? item?.confidence ?? item?.score ?? item?.v3?.score ?? 0);
 
     if (isSubMinRrCandidate(item)) {
       continue;
@@ -536,7 +549,11 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
         units: res.units,
         stopLoss: res.sizing?.stopLoss ?? sig.stopLoss,
         takeProfit: res.sizing?.takeProfit ?? sig.takeProfit,
-        confidence: sig.confidence,
+        confidence: res.tpHitConfidence ?? sig.tpHitConfidence ?? sig.confidence,
+        tpHitConfidence: res.tpHitConfidence ?? sig.tpHitConfidence ?? sig.confidence,
+        entryQualityConfidence: sig.entryQualityConfidence ?? null,
+        actualFillRR: res.actualFillRR ?? res.sizing?.riskReward ?? null,
+        postFillTpAdjusted: res.postFillTpAdjusted === true,
         expectedRR: sig.expectedRR ?? sig.rr,
         source: sig.source,
         strategy: sig.strategy ?? 'V3',

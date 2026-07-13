@@ -46,6 +46,7 @@ import {
 import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
 import { closeBrokerTrade } from './oandaTrade.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
+import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 
 const AUTO_CLOSE_ENABLED =
   String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
@@ -174,7 +175,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     maxSpreadPips: maxSpreadFor(pair),
   });
   const alignment = computeAlignment({ macro, structure, momentum });
-  const currentConfidence = computeConfidenceScore({
+  const legacyCurrentConfidence = computeConfidenceScore({
     macro, structure, momentum, alignment,
     spreadPips: pricing?.spreadPips,
     maxSpreadPips: maxSpreadFor(pair),
@@ -222,7 +223,11 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     entryExpectedHoldTimeMinutes: historyRecord.entryExpectedHoldTimeMinutes,
     originalRecommendedTP:     historyRecord.originalRecommendedTP,
     originalRecommendedSL:     historyRecord.originalRecommendedSL,
+    entryTpHitConfidence:      historyRecord.entryTpHitConfidence,
+    entryQualityConfidence:    historyRecord.entryQualityConfidence,
+    entryStrategy:             historyRecord.entryStrategy,
   } : {};
+  const pureV3Trade = isPureV3TradeRecord(historyRecord || entryContext);
   const originalSL = entryContext.originalRecommendedSL ?? currentSL;
   const originalTP = entryContext.originalRecommendedTP ?? currentTP;
   const expectedHoldTimeMinutes = entryContext.entryExpectedHoldTimeMinutes ?? null;
@@ -380,6 +385,49 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     (side === 'short' && momentum.m15Trend === 'bullish');
   const marketStateAllowed = profile.allowedMarketStates?.includes(marketState.marketState) ?? true;
 
+
+  // Pure V3 positions must never be re-scored by the legacy entry-confidence model.
+  // Entry V3 score is only the starting probability; there is deliberately no floor.
+  const liveV3Confidence = pureV3Trade
+    ? computeLiveV3TpHitConfidence({
+        side,
+        entryPrice,
+        currentPrice,
+        stopLoss: currentSL ?? originalSL,
+        takeProfit: currentTP ?? originalTP,
+        entryTpHitConfidence: entryContext.entryTpHitConfidence,
+        historyRecord,
+        profitR,
+        tpProgress,
+        entryAlignmentScore: entryContext.entryMtfAlignmentScore,
+        currentAlignmentScore: alignment.timeframeAlignmentScore,
+        entryMtfScore: entryContext.entryMtfAlignmentScore,
+        currentMtfScore: mtfAuthority.multiTimeframeAlignmentScore,
+        mtfConflict: mtfAuthority.conflict,
+        flowOpposes,
+        flowMatchesDirection,
+        m15TrendReversed,
+        volatilityCollapsed: volatilityCollapse.volatilityCollapsed,
+        invalidationDetected: invalidation.invalidationDetected,
+        trendWeakeningDetected: trendWeakening.trendWeakeningDetected,
+        trendWeakeningSeverity: trendWeakening.trendWeakeningSeverity,
+      })
+    : null;
+  const currentConfidence = liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
+
+  if (
+    pureV3Trade &&
+    liveV3Confidence &&
+    (liveV3Confidence.exitRecommendation === 'EXIT_NOW' || liveV3Confidence.exitRecommendation === 'EXIT_REVIEW') &&
+    recommendedAction === 'HOLD'
+  ) {
+    recommendedAction = 'EXIT_REVIEW';
+    managementReasons.push(
+      `V3 live TP-hit confidence fell to ${liveV3Confidence.tpHitConfidence}% ` +
+      `(${liveV3Confidence.state}); entry V3 score is not used as a post-entry floor.`
+    );
+  }
+
   const originalSlPips = Number.isFinite(originalSL)
     ? Math.abs(entryPrice - originalSL) / pipSize
     : null;
@@ -461,6 +509,10 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     classicReviewAction: classification.reviewAction,
     currentAlignmentScore: alignment.timeframeAlignmentScore,
     currentConfidence,
+    confidenceModel: pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
+    entryTpHitConfidence: entryContext.entryTpHitConfidence ?? null,
+    entryQualityConfidence: entryContext.entryQualityConfidence ?? null,
+    liveTpConfidence: liveV3Confidence,
     minutesElapsed,
     tpProgress: +tpProgress.toFixed(2),
     lastReassessedAt: reassessedAt,

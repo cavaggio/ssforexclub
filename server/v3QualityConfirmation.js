@@ -1,3 +1,7 @@
+import {
+  computeV3EntryTpHitConfidence,
+  computeV3TpHitConfidence,
+} from './v3TpConfidence.js';
 
 /**
  * Three-stage V3 quality confirmation.
@@ -187,11 +191,15 @@ export function evaluateV3SetupStage(signal = {}) {
   const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
   const pair = signal.pair || v3.pair || null;
   const score = firstNumber(v3.score, signal.v3Score, signal.score, 0) ?? 0;
-  const confidence = firstNumber(signal.confidence, v3.confidence, 0) ?? 0;
+  const entryQualityConfidence = firstNumber(signal.entryQualityConfidence, signal.confidence, v3.confidence, 0) ?? 0;
+  const tpHitConfidence = computeV3EntryTpHitConfidence(signal);
   const rr = getSignalRR(signal);
 
   const minScore = envNumber('V3_QUALITY_SETUP_MIN_SCORE', 65);
-  const minConfidence = Math.max(85, envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 85));
+  const minTpHitConfidence = Math.max(85, envNumber(
+    'V3_QUALITY_SETUP_MIN_TP_HIT_CONFIDENCE',
+    envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 85),
+  ));
   const minRR = envNumber('FOREX_MIN_EXECUTABLE_RR', 1.5);
   const maxSpread = pair === 'XAU_USD' || pair === 'XAG_USD'
     ? envNumber('METALS_MAX_SPREAD_PIPS', 50)
@@ -210,7 +218,7 @@ export function evaluateV3SetupStage(signal = {}) {
   if (!pair) reasons.push('missing pair');
   if (!direction) reasons.push('missing V3 direction');
   if (score < minScore) reasons.push(`V3 score ${score} < ${minScore}`);
-  if (confidence < minConfidence) reasons.push(`confidence ${confidence} < ${minConfidence}`);
+  if (tpHitConfidence < minTpHitConfidence) reasons.push(`TP-hit confidence ${tpHitConfidence} < ${minTpHitConfidence}`);
   if (!Number.isFinite(rr) || rr < minRR) reasons.push(`geometric R:R ${rr ?? 'n/a'} < ${minRR}`);
   if (!targetsAccepted) reasons.push('remaining opportunity rejected');
   if (newsBlocked) reasons.push('news block active');
@@ -226,10 +234,13 @@ export function evaluateV3SetupStage(signal = {}) {
       pair,
       direction,
       score,
-      confidence,
+      confidence: tpHitConfidence, // compatibility alias; this is TP-hit confidence for V3
+      tpHitConfidence,
+      entryQualityConfidence,
       rr,
       minScore,
-      minConfidence,
+      minConfidence: minTpHitConfidence,
+      minTpHitConfidence,
       minRR,
       spread,
       maxSpread,
@@ -387,6 +398,29 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
     );
 
   const stage2 = evaluateV3TriggerStage(signal);
+  const tpConfidence = computeV3TpHitConfidence({
+    mode: 'entry',
+    direction,
+    entryPrice: sourceEntry,
+    currentPrice,
+    stopLoss,
+    takeProfit,
+    liveRR,
+    stage2Allowed: stage2.allowed,
+    primaryTriggerCount: stage2.primaryTriggers.length,
+    supportCount: stage2.supports.length,
+    confirmedSweep: stage2.metrics.confirmedSweep,
+    alignedChoch: stage2.metrics.alignedChoch,
+    alignedBos: stage2.metrics.alignedBos,
+    compressionExpansion: stage2.metrics.compressionExpansion,
+    currentSpreadPips,
+    maxSpreadPips,
+    driftAtr,
+    maxPriceDriftAtr,
+    firstTargetReached,
+    structureOpposes: structureOpposes(v3, direction),
+    newsBlocked: signal?.newsRisk?.blocked === true || v3?.newsRisk?.blocked === true,
+  });
   const reasons = [];
 
   if (currentPrice === null) reasons.push('fresh executable price unavailable');
@@ -410,6 +444,12 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
     reasons.push(`fresh spread ${currentSpreadPips} > ${maxSpreadPips}`);
   }
   if (!stage2.allowed) reasons.push(`stage-2 trigger no longer valid: ${stage2.reasons.join('; ')}`);
+  if (!tpConfidence.allowed) {
+    reasons.push(
+      `TP-hit confidence ${tpConfidence.tpHitConfidence}% < ` +
+      `${tpConfidence.minimumEntryConfidence}%`
+    );
+  }
 
   return {
     stage: 3,
@@ -437,6 +477,9 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
       firstTargetReached,
       currentSpreadPips,
       maxSpreadPips,
+      tpHitConfidence: tpConfidence.tpHitConfidence,
+      minimumTpHitConfidence: tpConfidence.minimumEntryConfidence,
+      tpConfidence,
     },
     checkedAt: new Date(nowMs).toISOString(),
   };
