@@ -1,10 +1,15 @@
 import { executeTrade } from './oandaTrade.js';
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
-import { scanV3Watchlist } from './v3NativeScanner.js';
+import { DEFAULT_V3_FOREX_WATCHLIST, scanV3Watchlist } from './v3NativeScanner.js';
 import { V3_PRIMARY_ALIGNMENT_MIN_SCORE } from './v3PrimaryAlignment.js';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
+}
+
+function ensureDedicatedV3Watchlist() {
+  if (String(process.env.V3_FOREX_WATCHLIST || '').trim()) return;
+  process.env.V3_FOREX_WATCHLIST = DEFAULT_V3_FOREX_WATCHLIST.join(',');
 }
 
 /**
@@ -20,6 +25,8 @@ export async function runAutoV3ForUser({
   scanMode = 'full',
   pairs = null,
 } = {}) {
+  ensureDedicatedV3Watchlist();
+
   const tag = `[AUTO_AI][V3_NATIVE][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (message) => console.log(`${tag} account=${account} ${message}`);
