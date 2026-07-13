@@ -45,3 +45,4 @@ server/data/v3-shadow-log.json
 *.sw?
 .vercel
 .env*.local
+.env*
