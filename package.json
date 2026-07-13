@@ -10,13 +10,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test:lifecycle":   "node --test server/oandaTradeLifecycleEngine.test.js",
+    "test:lifecycle": "node --test server/oandaTradeLifecycleEngine.test.js",
     "test:calibration": "node --test server/oandaCalibration.test.js",
-    "test:close":       "node --test server/oandaClose.test.js",
-    "test:sanitize":    "node --test web/lib/sanitizePayload.test.js",
-    "test:v3":          "node --test server/liquidityEngine.test.js server/liquidityIntent.test.js server/premiumDiscount.test.js server/marketStructureEngine.test.js server/sessionEngine.test.js server/volatilityExpansionEngine.test.js server/liquidityTargeting.test.js server/v3ExecutionModel.test.js server/v3ShadowLog.test.js",
-    "test:ict":         "node --test server/ictConcepts.test.js server/ictEngine.test.js server/ictExecution.test.js server/ictExecutionPaper.test.js server/ictIndependence.test.js server/forexFactoryNews.test.js server/ictLifecycleEngine.test.js server/ictAutoScheduler.test.js server/autoAiRouter.test.js server/autoAiRiskLimits.test.js server/autoAiGating.test.js server/riskManager.test.js",
-    "test":             "node --test server/oandaTradeLifecycleEngine.test.js server/oandaCalibration.test.js server/oandaClose.test.js web/lib/sanitizePayload.test.js server/liquidityEngine.test.js server/liquidityIntent.test.js server/premiumDiscount.test.js server/marketStructureEngine.test.js server/sessionEngine.test.js server/volatilityExpansionEngine.test.js server/liquidityTargeting.test.js server/v3ExecutionModel.test.js server/v3ShadowLog.test.js server/ictConcepts.test.js server/ictEngine.test.js server/ictExecution.test.js server/ictExecutionPaper.test.js server/ictIndependence.test.js server/forexFactoryNews.test.js server/ictLifecycleEngine.test.js server/ictAutoScheduler.test.js server/autoAiRouter.test.js server/autoAiRiskLimits.test.js server/autoAiGating.test.js server/riskManager.test.js server/providerRouting.test.js server/futuresSymbols.test.js server/ninjatraderClient.test.js server/topstepClient.test.js server/futuresNoSecretLeak.test.js server/oandaTradeCap.test.js web/lib/futuresStatus.test.js web/lib/brokerDisplay.test.js"
+    "test:close": "node --test server/oandaClose.test.js",
+    "test:sanitize": "node --test web/lib/sanitizePayload.test.js",
+    "test:v3": "node --test server/liquidityEngine.test.js server/liquidityIntent.test.js server/premiumDiscount.test.js server/marketStructureEngine.test.js server/sessionEngine.test.js server/volatilityExpansionEngine.test.js server/liquidityTargeting.test.js server/v3ExecutionModel.test.js server/v3ShadowLog.test.js",
+    "test:ict": "node --test server/ictConcepts.test.js server/ictEngine.test.js server/ictExecution.test.js server/ictExecutionPaper.test.js server/ictIndependence.test.js server/forexFactoryNews.test.js server/ictLifecycleEngine.test.js server/ictAutoScheduler.test.js server/autoAiRouter.test.js server/autoAiRiskLimits.test.js server/autoAiGating.test.js server/riskManager.test.js",
+    "test:v3-boundary": "node --test server/v3LegacyBoundary.test.js",
+    "test": "node --test server/oandaTradeLifecycleEngine.test.js server/oandaCalibration.test.js server/oandaClose.test.js web/lib/sanitizePayload.test.js server/liquidityEngine.test.js server/liquidityIntent.test.js server/premiumDiscount.test.js server/marketStructureEngine.test.js server/sessionEngine.test.js server/volatilityExpansionEngine.test.js server/liquidityTargeting.test.js server/v3ExecutionModel.test.js server/v3ShadowLog.test.js server/ictConcepts.test.js server/ictEngine.test.js server/ictExecution.test.js server/ictExecutionPaper.test.js server/ictIndependence.test.js server/forexFactoryNews.test.js server/ictLifecycleEngine.test.js server/ictAutoScheduler.test.js server/autoAiRouter.test.js server/autoAiRiskLimits.test.js server/autoAiGating.test.js server/riskManager.test.js server/providerRouting.test.js server/futuresSymbols.test.js server/ninjatraderClient.test.js server/topstepClient.test.js server/futuresNoSecretLeak.test.js server/oandaTradeCap.test.js web/lib/futuresStatus.test.js web/lib/brokerDisplay.test.js server/v3LegacyBoundary.test.js"
   },
   "dependencies": {
     "@alpacahq/alpaca-trade-api": "^3.1.3",
@@ -35,8 +36,6 @@
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
