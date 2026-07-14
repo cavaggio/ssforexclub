@@ -20,6 +20,11 @@ on:
       - 'server/ictAutoScheduler.js'
       - 'server/ictAutoScheduler.test.js'
       - 'server/autoAiRouter.js'
+      - 'web/lib/autoAiActiveTradePolicy.js'
+      - 'web/lib/autoAiActiveTradePolicy.test.js'
+      - 'web/app/api/cron/auto-ai-trading/route.ts'
+      - 'web/app/api/cron/oanda-active-trade-management/route.ts'
+      - '.env.example'
       - '.github/workflows/v3-native-scanner-ci.yml'
   push:
     branches:
@@ -28,6 +33,7 @@ on:
       - fix/v3-retest-hot-watch
       - fix/v3-stage1-min-score-62
       - fix/v3-retest-execution-path
+      - feature/auto-ai-entry-2pm-exit-5pm
     paths:
       - 'server/v3Engine.js'
       - 'server/v3QualityConfirmation.js'
@@ -46,6 +52,11 @@ on:
       - 'server/ictAutoScheduler.js'
       - 'server/ictAutoScheduler.test.js'
       - 'server/autoAiRouter.js'
+      - 'web/lib/autoAiActiveTradePolicy.js'
+      - 'web/lib/autoAiActiveTradePolicy.test.js'
+      - 'web/app/api/cron/auto-ai-trading/route.ts'
+      - 'web/app/api/cron/oanda-active-trade-management/route.ts'
+      - '.env.example'
       - '.github/workflows/v3-native-scanner-ci.yml'
 
 permissions:
@@ -73,7 +84,8 @@ jobs:
           node --check server/v3NativeAutoTrade.js
           node --check server/ictAutoScheduler.js
           node --check server/autoAiRouter.js
-      - name: Focused V3 tests
+          node --check web/lib/autoAiActiveTradePolicy.js
+      - name: Focused V3 and Auto AI policy tests
         run: >-
           node --test
           server/v3QualityConfirmation.test.js
@@ -84,3 +96,4 @@ jobs:
           server/v3NativeScanner.test.js
           server/ictAutoScheduler.test.js
           server/autoAiRouter.test.js
+          web/lib/autoAiActiveTradePolicy.test.js
