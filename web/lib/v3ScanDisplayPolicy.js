@@ -160,6 +160,10 @@ export function normalizeSignalForV3Display(signal = {}) {
   ];
 
   const direction = signal.direction || primary.direction || signal?.v3?.direction || null;
+  const displayQualification = primary.passed && retainedReasons.length === 0
+    ? 'primary_alignment_passed_legacy_diagnostics_only'
+    : 'additional_valid_gate_failed';
+
   const alignment = {
     ...(signal.alignment || {}),
     timeframeAlignmentScore: primary.score,
@@ -168,7 +172,7 @@ export function normalizeSignalForV3Display(signal = {}) {
     conflictingTimeframes: primary.opposingTimeframes,
     primaryConflictingTimeframes: primary.opposingTimeframes,
     contextConflictingTimeframes: primary.contextConflicts,
-    tradeQualified: primary.passed && retainedReasons.length === 0,
+    tradeQualified: displayQualification === 'primary_alignment_passed_legacy_diagnostics_only',
     rejectionReasons: retainedReasons,
     warnings,
     primaryPolicy: primary,
@@ -190,9 +194,7 @@ export function normalizeSignalForV3Display(signal = {}) {
     reason: retainedReasons[0] || primary.reason,
     policyVersion: V3_PROVISIONING_POLICY_VERSION,
     legacyDiagnosticsRemoved: removedDiagnostics,
-    displayQualification: primary.passed && retainedReasons.length === 0
-      ? 'primary_alignment_passed_legacy_diagnostics_only'
-      : 'additional_valid_gate_failed',
+    displayQualification,
   };
 }
 
@@ -200,14 +202,30 @@ export function normalizeScanForV3Display(scan = {}) {
   const qualified = Array.isArray(scan.qualified)
     ? scan.qualified.map(normalizeSignalForV3Display)
     : [];
-  const rejected = Array.isArray(scan.rejected)
+  const normalizedRejected = Array.isArray(scan.rejected)
     ? scan.rejected.map(normalizeSignalForV3Display)
     : [];
+
+  // Never promote a legacy dashboard result into the executable qualified list.
+  // A pair that only failed obsolete legacy confidence/directional checks is
+  // removed from the red Rejected section and returned separately for audit.
+  // Native V3 Auto AI remains the only authority that can qualify it to trade.
+  const v3PrimaryPassedContext = normalizedRejected.filter(
+    (signal) =>
+      signal.displayQualification ===
+      'primary_alignment_passed_legacy_diagnostics_only',
+  );
+  const rejected = normalizedRejected.filter(
+    (signal) =>
+      signal.displayQualification !==
+      'primary_alignment_passed_legacy_diagnostics_only',
+  );
 
   return {
     ...scan,
     qualified,
     rejected,
+    v3PrimaryPassedContext,
     meta: {
       ...(scan.meta || {}),
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
@@ -216,6 +234,7 @@ export function normalizeScanForV3Display(scan = {}) {
       legacyLayerConfidencePolicy: 'diagnostic_only_for_v3',
       executionEngine: 'v3_native_auto_ai',
       dashboardAnalysisEngine: 'legacy_context_normalized_to_v3_policy',
+      v3PrimaryPassedContextCount: v3PrimaryPassedContext.length,
     },
   };
 }
