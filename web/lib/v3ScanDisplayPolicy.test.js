@@ -84,6 +84,34 @@ test('legacy macro structural and execution confidence reasons become diagnostic
   assert.equal(signal.alignment.legacyConfidenceDiagnostics.gateStatus, 'diagnostic_only_for_v3');
 });
 
+test('legacy candle strength profile floor is diagnostic but exhaustion risk remains blocking', () => {
+  const signal = normalizeSignalForV3Display({
+    direction: 'short',
+    macro: { dailyTrend: 'bearish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bearish' },
+    profile: { minCandleStrength: 50 },
+    rejectionReasons: [
+      'Rejected: candle strength 47 < profile floor 50. strong candle: body 64% of range, close 88% to low, bearish engulfing',
+      'Risk monitor: Last candle body is over-extended — possible exhaustion, avoid chasing',
+    ],
+    alignment: {
+      rejectionReasons: [
+        'Rejected: candle strength 47 < profile floor 50. strong candle: body 64% of range, close 88% to low, bearish engulfing',
+        'Risk monitor: Last candle body is over-extended — possible exhaustion, avoid chasing',
+      ],
+    },
+  });
+
+  assert.equal(signal.primaryTimeframeAlignment.score, 67);
+  assert.deepEqual(signal.rejectionReasons, [
+    'Risk monitor: Last candle body is over-extended — possible exhaustion, avoid chasing',
+  ]);
+  assert.equal(signal.legacyDiagnosticsRemoved.length, 1);
+  assert.match(signal.legacyDiagnosticsRemoved[0], /candle strength 47 < profile floor 50/i);
+  assert.equal(signal.alignment.tradeQualified, false);
+  assert.equal(signal.alignment.legacyConfidenceDiagnostics.candleStrengthFloor, 50);
+});
+
 test('valid news or risk rejection is retained', () => {
   const signal = normalizeSignalForV3Display({
     direction: 'short',
