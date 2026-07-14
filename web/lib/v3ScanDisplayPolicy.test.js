@@ -112,6 +112,51 @@ test('legacy candle strength profile floor is diagnostic but exhaustion risk rem
   assert.equal(signal.alignment.legacyConfidenceDiagnostics.candleStrengthFloor, 50);
 });
 
+test('ranging profile rejection becomes diagnostic after V3 primary alignment passes', () => {
+  const signal = normalizeSignalForV3Display({
+    direction: 'long',
+    macro: { dailyTrend: 'bearish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bullish' },
+    rejectionReasons: [
+      'Rejected: Forex profile does not allow RANGING state (allowed: TRENDING, BREAKOUT)',
+    ],
+    alignment: {
+      rejectionReasons: [
+        'Rejected: Forex profile does not allow RANGING state (allowed: TRENDING, BREAKOUT)',
+      ],
+    },
+  });
+
+  assert.equal(signal.primaryTimeframeAlignment.score, 67);
+  assert.deepEqual(signal.rejectionReasons, []);
+  assert.equal(signal.alignment.tradeQualified, true);
+  assert.equal(signal.legacyDiagnosticsRemoved.length, 1);
+  assert.match(signal.legacyDiagnosticsRemoved[0], /does not allow ranging/i);
+});
+
+test('choppy market rejection remains blocking even when primary alignment passes', () => {
+  const signal = normalizeSignalForV3Display({
+    direction: 'short',
+    macro: { dailyTrend: 'bearish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bearish' },
+    rejectionReasons: [
+      'Rejected: market is CHOPPY with whipsaw risk and overlapping price action',
+    ],
+    alignment: {
+      rejectionReasons: [
+        'Rejected: market is CHOPPY with whipsaw risk and overlapping price action',
+      ],
+    },
+  });
+
+  assert.equal(signal.primaryTimeframeAlignment.score, 67);
+  assert.deepEqual(signal.rejectionReasons, [
+    'Rejected: market is CHOPPY with whipsaw risk and overlapping price action',
+  ]);
+  assert.equal(signal.alignment.tradeQualified, false);
+  assert.deepEqual(signal.legacyDiagnosticsRemoved, []);
+});
+
 test('valid news or risk rejection is retained', () => {
   const signal = normalizeSignalForV3Display({
     direction: 'short',
