@@ -32,7 +32,7 @@ function retestSignal() {
       checkedAt: new Date().toISOString(),
     },
     v3: {
-      score: 72,
+      score: 73,
       direction: 'long',
       qualified: false,
       earlyTrigger: false,
