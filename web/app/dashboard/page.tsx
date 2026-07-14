@@ -1,16 +1,8 @@
 /**
  * web/app/dashboard/page.tsx
  *
- * Main trading dashboard. Shows the user's active environment summary at the
- * top and renders the rich scanner panel for the rest of the page.
- *
- * The scanner panel calls authenticated relative routes (/api/scanner/scan,
- * /api/scanner/active-trades/analysis, /api/scanner/active-trades/reassess);
- * each route resolves the caller's broker credentials server-side via Clerk +
- * Supabase and forwards a server-to-server request to Railway. The browser
- * never sees Railway's URL or the user's broker token.
- *
- * Broker / environment management lives at /dashboard/settings.
+ * Main trading dashboard. Shows the user's active environment summary, trade
+ * activity, risk controls, Auto AI controls, and the rich scanner panel.
  */
 
 import Link from 'next/link';
@@ -20,6 +12,7 @@ import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brok
 import { ScannerStatusCard } from '@/components/scanner-status-card';
 import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
+import { TradeActivityLog } from '@/components/trade-activity-log';
 
 export default async function DashboardPage() {
   const { userId } = await auth();
@@ -31,13 +24,9 @@ export default async function DashboardPage() {
   } catch {
     // Surface the error in the active-mode card below; don't bring the page down.
   }
-  // Strip the server-only `getCredentials` callback before any client-bound
-  // read. Even though this page doesn't pass the whole object to a client
-  // component today, using the client-safe projection keeps the boundary
-  // explicit and prevents a future regression.
-  const resolvedBroker = await resolveActiveBrokerForUser(userId);
-  const brokerStatus   = toClientSafeBrokerStatus(resolvedBroker);
 
+  const resolvedBroker = await resolveActiveBrokerForUser(userId);
+  const brokerStatus = toClientSafeBrokerStatus(resolvedBroker);
   const isLive = brokerStatus.isLiveTrading;
   const hasAnyConnection = connections.length > 0;
   const modeLabel = isLive
@@ -56,19 +45,16 @@ export default async function DashboardPage() {
         gap: 20,
       }}
     >
-      {/* ── Page header ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 26, letterSpacing: '-0.3px' }}>Trading dashboard</h1>
           <p style={{ color: 'var(--muted)', marginTop: 4, fontSize: 13 }}>
-            Live scanner output, signal cards, and active-trade management for the broker
+            Live scanner output, trade activity, and active-trade management for the broker
             account you have selected in <Link href="/dashboard/settings">Settings</Link>.
           </p>
         </div>
       </div>
 
-      {/* ── Active-mode strip — always visible so it's clear which account
-            the bot is acting on. Red border in live mode. */}
       <section
         style={{
           background: 'var(--panel)',
@@ -120,7 +106,6 @@ export default async function DashboardPage() {
         </Link>
       </section>
 
-      {/* ── First-run nudge if no broker connected ──────────────────────── */}
       {!hasAnyConnection && (
         <section
           style={{
@@ -141,17 +126,13 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {/* Risk Management — central risk-manager snapshot (per-trade cap, daily
-          drawdown lock, auto-execution threshold). Shown once a broker is linked. */}
       {hasAnyConnection && <RiskManagementPanel />}
-
-      {/* Auto AI Trading toggle — per-user opt-in for AI auto-execution
-          (controls auto-trading, not manual). Shown once a broker is linked. */}
       {hasAnyConnection && <AutoAiTradingToggle />}
 
-      {/* Live scanner — rich panel renders qualified signals, rejected
-          signals/scan details, open trades, and 30-min reassessment, all
-          fetched directly from the Railway scanner backend. */}
+      {/* Always visible near the top: documents every open, close, and partial close
+          for the signed-in user's traded pairs. */}
+      <TradeActivityLog hasBroker={hasAnyConnection} />
+
       <ScannerStatusCard hasBroker={hasAnyConnection} />
     </div>
   );

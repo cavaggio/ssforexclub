@@ -1,21 +1,15 @@
 /**
- * web/app/api/scanner/trade-logs/route.ts
- *
  * Authenticated read-only endpoint for the current user's trade history.
- * Filters: instrument, event_type, trade_id, start/end date, limit, cursor.
  *
- * Every query is filtered by the Clerk session's user_id at the DB layer,
- * so a user can only ever read their own rows even though the server uses
- * the service-role key. RLS deny-all is the defense-in-depth fallback.
- *
- * Pagination: cursor is the ISO `created_at` of the oldest row in the previous
- * page (rows are returned DESC by created_at). Pass it as `?cursor=…` to
- * fetch the next page.
+ * Reads the production-safe trade_logs shape without filtering successful
+ * fallback rows by `status`, so OPENED/CLOSED events remain visible even when
+ * the production table uses the compact schema.
  */
 
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
-import { listTradeLogsForUser, type TradeEventType } from '@/lib/tradeLogs';
+import type { TradeEventType } from '@/lib/tradeLogs';
+import { listVisibleTradeLogsForUser } from '@/lib/visibleTradeLogs';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -40,8 +34,8 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const sp = url.searchParams;
-
   const eventTypeRaw = sp.get('event_type');
+
   if (eventTypeRaw && !VALID_EVENT_TYPES.has(eventTypeRaw as TradeEventType)) {
     return NextResponse.json(
       { ok: false, error: `Invalid event_type "${eventTypeRaw}"` },
@@ -52,15 +46,15 @@ export async function GET(req: Request) {
   const limitRaw = sp.get('limit');
   let limit = 50;
   if (limitRaw) {
-    const n = Number(limitRaw);
-    if (!Number.isFinite(n) || n < 1) {
+    const parsed = Number(limitRaw);
+    if (!Number.isFinite(parsed) || parsed < 1) {
       return NextResponse.json({ ok: false, error: 'limit must be a positive integer' }, { status: 400 });
     }
-    limit = Math.min(200, Math.floor(n));
+    limit = Math.min(200, Math.floor(parsed));
   }
 
   try {
-    const { rows, nextCursor } = await listTradeLogsForUser(userId, {
+    const { rows, nextCursor } = await listVisibleTradeLogsForUser(userId, {
       instrument: sp.get('instrument') ?? undefined,
       eventType: (eventTypeRaw ?? undefined) as TradeEventType | undefined,
       tradeId: sp.get('trade_id') ?? undefined,
@@ -69,9 +63,10 @@ export async function GET(req: Request) {
       cursor: sp.get('cursor') ?? undefined,
       limit,
     });
+
     return NextResponse.json({ ok: true, rows, nextCursor });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     console.error('[TRADE_LOGS] read failed:', message);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
