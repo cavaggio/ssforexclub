@@ -41,6 +41,87 @@ function logWatchCandidate(candidate, tier, log) {
   );
 }
 
+function blockerCategory(reason = '') {
+  const value = String(reason).toLowerCase();
+  if (value.includes('daily/h4/m15') || value.includes('primary alignment')) return 'alignment_below_67';
+  if (value.includes('wait for retest') || value.includes('waiting for confirmed retest')) return 'waiting_for_retest';
+  if (value.includes('v3 score')) return 'v3_score_below_62';
+  if (value.includes('tp-hit confidence')) return 'tp_hit_confidence_below_85';
+  if (value.includes('r:r') || value.includes('risk reward') || value.includes('geometric')) return 'rr_below_1_5';
+  if (value.includes('no fresh primary trigger')) return 'missing_primary_trigger';
+  if (value.includes('supporting confirmations')) return 'missing_trigger_support';
+  if (value.includes('remaining opportunity') || value.includes('no target')) return 'target_or_opportunity';
+  if (value.includes('news')) return 'news_block';
+  if (value.includes('spread')) return 'spread_block';
+  if (value.includes('late_entry') || value.includes('late entry')) return 'late_entry';
+  if (value.includes('insufficient candles') || value.includes('missing') || value.includes('unavailable')) return 'missing_market_data';
+  return 'other';
+}
+
+function addBlocker(accumulator, pair, reason) {
+  const text = String(reason || '').trim();
+  if (!text) return;
+  const category = blockerCategory(text);
+  const current = accumulator.get(category) || { category, count: 0, pairs: new Set(), examples: new Set() };
+  current.count += 1;
+  if (pair) current.pairs.add(pair);
+  if (current.examples.size < 3) current.examples.add(text);
+  accumulator.set(category, current);
+}
+
+export function summarizeV3ScanBlockers(scan = {}) {
+  const blockers = new Map();
+  const watched = [
+    ...(scan.watchCandidates || []),
+    ...(scan.hotWatchCandidates || []),
+  ];
+
+  for (const candidate of watched) {
+    const pair = candidate?.pair;
+    const timing = String(candidate?.entryTiming?.status || '').toLowerCase();
+    if (timing === 'wait_for_retest') addBlocker(blockers, pair, 'waiting for confirmed retest');
+    for (const reason of candidate?.qualityConfirmation?.stage1?.reasons || []) addBlocker(blockers, pair, reason);
+    for (const reason of candidate?.qualityConfirmation?.stage2?.reasons || []) addBlocker(blockers, pair, reason);
+  }
+
+  for (const item of scan.rejected || []) {
+    const pair = item?.pair;
+    const reasons = Array.isArray(item?.rejectionReasons) && item.rejectionReasons.length
+      ? item.rejectionReasons
+      : [item?.reason];
+    for (const reason of reasons) addBlocker(blockers, pair, reason);
+  }
+
+  const ranked = [...blockers.values()]
+    .map((item) => ({
+      category: item.category,
+      count: item.count,
+      pairs: [...item.pairs],
+      examples: [...item.examples],
+    }))
+    .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
+
+  return {
+    totalBlockerOccurrences: ranked.reduce((sum, item) => sum + item.count, 0),
+    commonBlocker: ranked[0] || null,
+    ranked,
+  };
+}
+
+function logDiagnosticSummary(diagnostic, log) {
+  const top = diagnostic?.ranked?.slice(0, 5) || [];
+  if (top.length === 0) {
+    log('[V3_NATIVE_DIAGNOSTIC] blockers=none');
+    return;
+  }
+
+  log(
+    `[V3_NATIVE_DIAGNOSTIC] common=${top[0].category} count=${top[0].count} ` +
+    `pairs=${top[0].pairs.join(',') || 'none'} top=` +
+    top.map((item) => `${item.category}:${item.count}`).join(','),
+  );
+}
+
 /**
  * Native V3 autonomous runner.
  *
@@ -71,6 +152,9 @@ export async function runAutoV3ForUser({
   for (const candidate of scan.hotWatchCandidates || []) {
     logWatchCandidate(candidate, 'hot', log);
   }
+
+  const diagnostic = summarizeV3ScanBlockers(scan);
+  logDiagnosticSummary(diagnostic, log);
 
   const executable = scan.qualified.map((signal) => applyScalpMetadata({
     ...signal,
@@ -152,6 +236,7 @@ export async function runAutoV3ForUser({
     rejected: scan.rejected.length,
     executed,
     skipped,
+    diagnostic,
     v3Promoted: executable.length,
     qualityWatch: scan.watchCandidates.length + scan.hotWatchCandidates.length,
     watchCandidates: scan.watchCandidates,
