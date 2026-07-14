@@ -3,6 +3,8 @@ import { applyScalpMetadata } from './scalpOnlyPolicy.js';
 import { DEFAULT_V3_FOREX_WATCHLIST, scanV3Watchlist } from './v3NativeScanner.js';
 import { V3_PRIMARY_ALIGNMENT_MIN_SCORE } from './v3PrimaryAlignment.js';
 
+export const V3_STAGE1_MIN_SCORE = 62;
+
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
@@ -10,6 +12,33 @@ function maskAccount(id) {
 function ensureDedicatedV3Watchlist() {
   if (String(process.env.V3_FOREX_WATCHLIST || '').trim()) return;
   process.env.V3_FOREX_WATCHLIST = DEFAULT_V3_FOREX_WATCHLIST.join(',');
+}
+
+function enforceV3RuntimePolicy() {
+  // The requested V3 Stage 1 score floor is authoritative. This prevents an
+  // older Railway environment value (for example 65) from silently overriding
+  // the current 62-point production rule.
+  process.env.V3_QUALITY_SETUP_MIN_SCORE = String(V3_STAGE1_MIN_SCORE);
+}
+
+function compactReasons(reasons = []) {
+  return Array.isArray(reasons) && reasons.length > 0 ? reasons.join(' | ') : 'none';
+}
+
+function logWatchCandidate(candidate, tier, log) {
+  const stage1 = candidate?.qualityConfirmation?.stage1 || {};
+  const stage2 = candidate?.qualityConfirmation?.stage2 || {};
+  const metrics = stage1?.metrics || {};
+
+  log(
+    `[V3_NATIVE_WATCH_DETAIL] pair=${candidate?.pair || 'unknown'} tier=${tier} ` +
+    `timing=${candidate?.entryTiming?.status || 'unknown'} ` +
+    `score=${metrics.score ?? 'n/a'}/${metrics.minScore ?? V3_STAGE1_MIN_SCORE} ` +
+    `tpHit=${metrics.tpHitConfidence ?? candidate?.tpHitConfidence ?? 'n/a'}/${metrics.minTpHitConfidence ?? 'n/a'} ` +
+    `rr=${metrics.rr ?? candidate?.expectedRR ?? candidate?.rr ?? 'n/a'}/${metrics.minRR ?? 'n/a'} ` +
+    `stage1Reasons="${compactReasons(stage1.reasons)}" ` +
+    `stage2Reasons="${compactReasons(stage2.reasons)}"`,
+  );
 }
 
 /**
@@ -26,12 +55,23 @@ export async function runAutoV3ForUser({
   pairs = null,
 } = {}) {
   ensureDedicatedV3Watchlist();
+  enforceV3RuntimePolicy();
 
   const tag = `[AUTO_AI][V3_NATIVE][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (message) => console.log(`${tag} account=${account} ${message}`);
 
+  log(`[V3_NATIVE_POLICY] stage1MinScore=${V3_STAGE1_MIN_SCORE}`);
+
   const scan = await scanV3Watchlist({ client, now, scanMode, pairs, log });
+
+  for (const candidate of scan.watchCandidates || []) {
+    logWatchCandidate(candidate, 'near', log);
+  }
+  for (const candidate of scan.hotWatchCandidates || []) {
+    logWatchCandidate(candidate, 'hot', log);
+  }
+
   const executable = scan.qualified.map((signal) => applyScalpMetadata({
     ...signal,
     source: 'v3_native_auto_ai',
