@@ -2,7 +2,8 @@
  * Primary timeframe alignment policy.
  *
  * HARD GATE:
- *   Daily + H4 + M15 must align with intended trade direction.
+ *   Daily + H4 + M15 are the only directional decision timeframes.
+ *   Two of the three aligned with the intended direction = 67/100 and PASS.
  *
  * SOFT CONTEXT ONLY:
  *   H1 + M30 + M5 may warn/conflict, but they must not reject an otherwise valid trade.
@@ -10,6 +11,8 @@
 
 export const PRIMARY_ALIGNMENT_TIMEFRAMES = ['daily', 'h4', 'm15'];
 export const CONTEXT_ALIGNMENT_TIMEFRAMES = ['h1', 'm30', 'm5'];
+export const PRIMARY_ALIGNMENT_MIN_SCORE = 67;
+export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-2of3-2026-07-14';
 
 function norm(value) {
   const s = String(value || '').trim().toLowerCase();
@@ -71,38 +74,114 @@ export function extractTimeframeBiases(input = {}) {
   return out;
 }
 
+function majorityBias(biases) {
+  const primary = PRIMARY_ALIGNMENT_TIMEFRAMES.map((tf) => biases[tf]);
+  const bullish = primary.filter((bias) => bias === 'bullish').length;
+  const bearish = primary.filter((bias) => bias === 'bearish').length;
+
+  if (bullish >= 2) return 'bullish';
+  if (bearish >= 2) return 'bearish';
+  return null;
+}
+
 export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
-  const expected = wantBias(direction || input.direction || input.signal || input.side);
   const biases = extractTimeframeBiases(input);
+  const explicitExpected = wantBias(direction || input.direction || input.signal || input.side);
+  const expected = explicitExpected || majorityBias(biases);
+  const missingTimeframes = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => !biases[tf]);
 
   if (!expected) {
     return {
       passed: false,
+      score: 0,
       expected,
+      explicitDirection: Boolean(explicitExpected),
+      policyVersion: PRIMARY_ALIGNMENT_POLICY_VERSION,
+      minimumScore: PRIMARY_ALIGNMENT_MIN_SCORE,
       biases,
-      reason: 'No executable direction available for primary timeframe alignment.',
+      alignedTimeframes: [],
+      opposingTimeframes: [],
+      neutralTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] === 'neutral'),
+      missingTimeframes,
+      failures: [...PRIMARY_ALIGNMENT_TIMEFRAMES],
+      contextConflicts: [],
+      reason: 'No executable two-of-three Daily/H4/M15 direction is available.',
     };
   }
 
-  const failures = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] !== expected);
+  // Missing candle classifications fail closed rather than manufacturing a score.
+  if (missingTimeframes.length > 0) {
+    return {
+      passed: false,
+      score: 0,
+      expected,
+      explicitDirection: Boolean(explicitExpected),
+      policyVersion: PRIMARY_ALIGNMENT_POLICY_VERSION,
+      minimumScore: PRIMARY_ALIGNMENT_MIN_SCORE,
+      biases,
+      alignedTimeframes: [],
+      opposingTimeframes: [],
+      neutralTimeframes: [],
+      missingTimeframes,
+      failures: missingTimeframes,
+      contextConflicts: [],
+      reason: `Primary timeframe alignment unavailable: missing ${missingTimeframes.join(', ')} classification.`,
+    };
+  }
+
+  const opposite = expected === 'bullish' ? 'bearish' : 'bullish';
+  const alignedTimeframes = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] === expected);
+  const opposingTimeframes = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] === opposite);
+  const neutralTimeframes = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] === 'neutral');
   const contextConflicts = CONTEXT_ALIGNMENT_TIMEFRAMES.filter((tf) => {
-    const b = biases[tf];
-    return b && b !== 'neutral' && b !== expected;
+    const bias = biases[tf];
+    return bias && bias !== 'neutral' && bias !== expected;
   });
 
+  // Exact policy values: 0, 33, 67, 100. Do not derive a directionless 50%.
+  const scores = [0, 33, 67, 100];
+  const score = scores[alignedTimeframes.length] ?? 0;
+  const passed = score >= PRIMARY_ALIGNMENT_MIN_SCORE;
+  const failures = [...opposingTimeframes, ...neutralTimeframes];
+
+  let reason;
+  if (!passed) {
+    reason =
+      `Primary timeframe alignment failed: Daily/H4/M15 score ${score}/100 < ` +
+      `${PRIMARY_ALIGNMENT_MIN_SCORE}/100 for ${expected}.`;
+  } else if (opposingTimeframes.length || neutralTimeframes.length) {
+    const diagnostics = [
+      opposingTimeframes.length ? `opposing=${opposingTimeframes.join(',')}` : null,
+      neutralTimeframes.length ? `neutral=${neutralTimeframes.join(',')}` : null,
+    ].filter(Boolean).join(' ');
+    reason =
+      `Primary timeframe alignment passed at ${score}/100 (${alignedTimeframes.length}/3). ` +
+      `${diagnostics} is diagnostic only.`;
+  } else if (contextConflicts.length) {
+    reason =
+      `Primary timeframe alignment passed at 100/100. Context conflict only: ` +
+      `${contextConflicts.join(', ')}.`;
+  } else {
+    reason = 'Primary timeframe alignment passed at 100/100: Daily, H4 and M15 aligned.';
+  }
+
   return {
-    passed: failures.length === 0,
+    passed,
+    score,
     expected,
+    explicitDirection: Boolean(explicitExpected),
+    policyVersion: PRIMARY_ALIGNMENT_POLICY_VERSION,
+    minimumScore: PRIMARY_ALIGNMENT_MIN_SCORE,
     primaryTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES,
     contextTimeframes: CONTEXT_ALIGNMENT_TIMEFRAMES,
     biases,
+    alignedTimeframes,
+    opposingTimeframes,
+    neutralTimeframes,
+    missingTimeframes,
     failures,
     contextConflicts,
-    reason: failures.length
-      ? `Primary timeframe alignment failed: ${failures.join(', ')} not ${expected}. Required: Daily + H4 + M15.`
-      : contextConflicts.length
-        ? `Primary timeframe alignment passed. Context conflict only: ${contextConflicts.join(', ')}.`
-        : 'Primary timeframe alignment passed: Daily + H4 + M15 aligned.',
+    reason,
   };
 }
 
