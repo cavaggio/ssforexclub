@@ -112,6 +112,11 @@ function isObsoleteLegacyConfidenceReason(reason) {
   );
 }
 
+function isObsoleteCandleStrengthFloorReason(reason) {
+  const text = String(reason || '').trim();
+  return /^Rejected:\s*candle strength\s+\d+(?:\.\d+)?\s*<\s*profile floor\s+\d+/i.test(text);
+}
+
 function isObsoleteDirectionalReason(reason) {
   const text = String(reason || '').toLowerCase();
   return (
@@ -128,6 +133,9 @@ function isObsoleteDirectionalReason(reason) {
  * only the displayed directional policy so it matches the native V3 Auto AI
  * engine. This function never places trades or bypasses news, spread, R:R,
  * reversal-risk, Stage 1, Stage 2, sizing, margin, or broker checks.
+ *
+ * Legacy candle-strength profile floors are diagnostic only for V3. The separate
+ * risk-monitor exhaustion/over-extension check remains a valid hard risk reason.
  */
 export function normalizeSignalForV3Display(signal = {}) {
   const primary = calculateDashboardPrimaryAlignment(signal);
@@ -143,7 +151,7 @@ export function normalizeSignalForV3Display(signal = {}) {
   const retainedReasons = [];
 
   for (const reason of originalReasons) {
-    if (isObsoleteLegacyConfidenceReason(reason)) {
+    if (isObsoleteLegacyConfidenceReason(reason) || isObsoleteCandleStrengthFloorReason(reason)) {
       removedDiagnostics.push(String(reason));
       continue;
     }
@@ -181,6 +189,7 @@ export function normalizeSignalForV3Display(signal = {}) {
       macroConfidence: Number(signal?.macro?.macroConfidence ?? 0),
       structuralConfidence: Number(signal?.structure?.structuralConfidence ?? 0),
       executionConfidence: Number(signal?.momentum?.executionConfidence ?? 0),
+      candleStrengthFloor: Number(signal?.profile?.minCandleStrength ?? 0),
       gateStatus: 'diagnostic_only_for_v3',
     },
   };
@@ -232,6 +241,8 @@ export function normalizeScanForV3Display(scan = {}) {
       primaryAlignmentMinimum: 67,
       primaryAlignmentRule: 'Daily/H4/M15 exact two-of-three',
       legacyLayerConfidencePolicy: 'diagnostic_only_for_v3',
+      legacyCandleStrengthFloorPolicy: 'diagnostic_only_for_v3',
+      overextensionRiskMonitorPolicy: 'retained_hard_risk_gate',
       executionEngine: 'v3_native_auto_ai',
       dashboardAnalysisEngine: 'legacy_context_normalized_to_v3_policy',
       v3PrimaryPassedContextCount: v3PrimaryPassedContext.length,
