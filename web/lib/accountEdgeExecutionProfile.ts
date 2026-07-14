@@ -64,6 +64,7 @@ function mapCompactRow(row: CompactRow): TradeLogRow {
   const pair = stringOrNull(row.pair ?? edge.pair);
   const direction = stringOrNull(row.direction ?? edge.direction);
   const createdAt = String(row.created_at ?? '');
+  const type = eventType(row);
 
   return {
     id: String(row.id ?? ''),
@@ -73,7 +74,7 @@ function mapCompactRow(row: CompactRow): TradeLogRow {
     broker: 'oanda',
     broker_account_id: extractBrokerAccountId(row),
     environment: '',
-    event_type: eventType(row),
+    event_type: type,
     instrument: pair,
     trade_id: tradeIdFromRow(row),
     broker_order_id: null,
@@ -95,8 +96,8 @@ function mapCompactRow(row: CompactRow): TradeLogRow {
     },
     pair,
     direction: direction === 'long' || direction === 'short' ? direction : null,
-    entry_time: eventType(row) === 'opened' ? createdAt : null,
-    exit_time: eventType(row) === 'closed' || eventType(row) === 'manual_close_executed'
+    entry_time: type === 'opened' ? createdAt : null,
+    exit_time: type === 'closed' || type === 'manual_close_executed'
       ? createdAt
       : null,
     pnl: numberOrNull(row.realized_pl ?? edge.pnl),
@@ -112,10 +113,15 @@ function mapCompactRow(row: CompactRow): TradeLogRow {
   };
 }
 
+/**
+ * Dynamic profile fields are produced by the tested JS policy module. The cron
+ * treats the envelope as data and forwards only a small, sanitized subset into
+ * logs; no untyped value is used to bypass an execution gate.
+ */
 export async function loadAccountEdgeExecutionProfile(args: {
   userId: string;
   brokerAccountId: string;
-}) {
+}): Promise<any> {
   const { userId, brokerAccountId } = args;
 
   try {
