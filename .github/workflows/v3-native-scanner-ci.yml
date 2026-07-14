@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'server/v3Engine.js'
+      - 'server/v3QualityConfirmation.js'
+      - 'server/v3QualityConfirmation.test.js'
       - 'server/v3NativeEntryTiming.js'
       - 'server/v3NativeEntryTiming.test.js'
       - 'server/v3WatchClassification.js'
@@ -22,8 +24,11 @@ on:
       - main
       - feature/v3-native-12-pair-scanner
       - fix/v3-retest-hot-watch
+      - fix/v3-stage1-min-score-62
     paths:
       - 'server/v3Engine.js'
+      - 'server/v3QualityConfirmation.js'
+      - 'server/v3QualityConfirmation.test.js'
       - 'server/v3NativeEntryTiming.js'
       - 'server/v3NativeEntryTiming.test.js'
       - 'server/v3WatchClassification.js'
@@ -54,6 +59,7 @@ jobs:
       - name: Syntax checks
         run: |
           node --check server/v3Engine.js
+          node --check server/v3QualityConfirmation.js
           node --check server/v3NativeEntryTiming.js
           node --check server/v3WatchClassification.js
           node --check server/v3PrimaryAlignment.js
@@ -64,6 +70,7 @@ jobs:
       - name: Focused V3 tests
         run: >-
           node --test
+          server/v3QualityConfirmation.test.js
           server/v3NativeEntryTiming.test.js
           server/v3WatchClassification.test.js
           server/v3PrimaryAlignment.test.js
