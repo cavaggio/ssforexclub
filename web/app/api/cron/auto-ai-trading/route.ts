@@ -6,9 +6,9 @@
  * forwards to the Railway internal Auto AI endpoint — autonomous entry
  * (/api/internal/oanda/auto) plus recommend-only ICT lifecycle reassessment.
  *
- * Auth: shared X-Cron-Secret (AUTO_AI_CRON_SECRET). Gates: platform live flag +
- * NY weekday 02:15–11:00 ET window + per-user (ready, live) resolution. Never
- * falls back to platform-default creds.
+ * Auth: shared X-Cron-Secret (AUTO_AI_CRON_SECRET). Gates: NY weekday
+ * 02:15–14:00 ET entry window + per-user broker readiness. Never falls back to
+ * platform-default credentials.
  */
 
 import { NextResponse } from 'next/server';
@@ -53,7 +53,7 @@ function addPairs(target: Set<string>, value: unknown) {
   }
 }
 
-// NY weekday 02:15–11:00 ET (DST-aware, defense in depth — the Railway loop also checks).
+// NY weekday 02:15–14:00 ET (DST-aware; Railway checks the same boundary).
 function inWindow(now: Date): boolean {
   const p = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -69,7 +69,7 @@ function inWindow(now: Date): boolean {
   if (wd === 'Sat' || wd === 'Sun') return false;
 
   const mins = (parseInt(get('hour'), 10) % 24) * 60 + parseInt(get('minute'), 10);
-  return mins >= 135 && mins < 660; // 02:15–11:00 ET
+  return mins >= 135 && mins < 840; // 02:15–14:00 ET
 }
 
 // Build the reassessment context from a user's recent ICT 'opened' trade logs.
@@ -105,7 +105,12 @@ export async function POST(req: Request) {
   // gated — resolveActiveBrokerForUser only returns status='ready' for live when
   // PLATFORM_LIVE_TRADING_ENABLED=true AND the live-ack is accepted.
   if (!inWindow(new Date())) {
-    return NextResponse.json({ ok: true, skipped: 'outside_ny_window', users: 0 });
+    return NextResponse.json({
+      ok: true,
+      skipped: 'outside_ny_entry_window',
+      entryWindow: '02:15–14:00 America/New_York',
+      users: 0,
+    });
   }
 
   // Correlation id + staged scan payload — supplied by the Railway scheduler tick.
@@ -158,7 +163,11 @@ export async function POST(req: Request) {
         continue;
       }
       const creds = await resolved.getCredentials();
-      if (!creds) { console.log(`${tag} user=${mask(userId)} skipped=decrypt_failed`); results.push({ user: mask(userId), skipped: 'decrypt_failed' }); continue; }
+      if (!creds) {
+        console.log(`${tag} user=${mask(userId)} skipped=decrypt_failed`);
+        results.push({ user: mask(userId), skipped: 'decrypt_failed' });
+        continue;
+      }
       const acct = creds.accountId ? `${creds.accountId.slice(0, 3)}…${creds.accountId.slice(-3)}` : '***';
       const credBody = {
         apiKey: creds.token,
@@ -190,13 +199,20 @@ export async function POST(req: Request) {
         if (trades.length) {
           const r = await callInternalEndpoint('/api/internal/oanda/ict/reassess', { ...credBody, trades });
           reassess = r.ok ? r.data : { error: r.error };
-          const recList = (r.ok ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations : null) ?? [];
+          const recList = (r.ok
+            ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations
+            : null) ?? [];
           recs = recList.filter((x) => x?.reassessDue).length;
         }
       }
 
-      const q = autoData?.qualified ?? 0, e = autoData?.executed?.length ?? 0, s = autoData?.skipped?.length ?? 0;
-      totalQualified += q; totalExecuted += e; totalSkipped += s; totalRecs += recs;
+      const q = autoData?.qualified ?? 0;
+      const e = autoData?.executed?.length ?? 0;
+      const s = autoData?.skipped?.length ?? 0;
+      totalQualified += q;
+      totalExecuted += e;
+      totalSkipped += s;
+      totalRecs += recs;
 
       for (const executed of (autoData?.executed ?? []) as Array<Record<string, unknown>>) {
         const sig = (executed.signal && typeof executed.signal === 'object')
@@ -229,7 +245,10 @@ export async function POST(req: Request) {
       addPairs(hotPairs, autoData?.hotPairs);
       addPairs(lateEntryPairs, autoData?.lateEntryPairs);
 
-      console.log(`${tag} user=${mask(userId)} account=${acct} engine=${engine} scanMode=${scanMode} pairs=${autoData?.scanned ?? 0} qualified=${q} executed=${e} skipped=${s} recommendations=${recs}`);
+      console.log(
+        `${tag} user=${mask(userId)} account=${acct} engine=${engine} scanMode=${scanMode} ` +
+        `pairs=${autoData?.scanned ?? 0} qualified=${q} executed=${e} skipped=${s} recommendations=${recs}`,
+      );
       results.push({ user: mask(userId), engine, auto: auto.ok ? auto.data : { error: auto.error }, reassess });
     } catch (err) {
       console.log(`${tag} user=${mask(userId)} error=${err instanceof Error ? err.message : String(err)}`);
@@ -243,7 +262,8 @@ export async function POST(req: Request) {
 
   console.log(
     `${tag} complete users=${results.length} qualified=${totalQualified} executed=${totalExecuted} ` +
-    `skipped=${totalSkipped} recommendations=${totalRecs} near=${nearQualifiedPairList.length} hot=${hotPairList.length} late=${lateEntryPairList.length}`,
+    `skipped=${totalSkipped} recommendations=${totalRecs} near=${nearQualifiedPairList.length} ` +
+    `hot=${hotPairList.length} late=${lateEntryPairList.length}`,
   );
 
   return NextResponse.json({
@@ -251,6 +271,7 @@ export async function POST(req: Request) {
     runId,
     scanMode,
     pairs,
+    entryWindow: '02:15–14:00 America/New_York',
     users: results.length,
     qualified: totalQualified,
     executed: totalExecuted,
