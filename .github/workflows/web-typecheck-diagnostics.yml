@@ -1,0 +1,41 @@
+name: Web typecheck diagnostics
+
+on:
+  push:
+    branches:
+      - fix/v3-provisioning-alignment-diagnostics
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Capture diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm run typecheck -- --pretty false > typecheck.log 2>&1
+          code=$?
+          echo "$code" > typecheck.exit
+          cat typecheck.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-typecheck-diagnostics
+          path: |
+            web/typecheck.log
+            web/typecheck.exit
+          retention-days: 3
