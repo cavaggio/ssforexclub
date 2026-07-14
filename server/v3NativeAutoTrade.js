@@ -5,6 +5,7 @@ import { V3_PRIMARY_ALIGNMENT_MIN_SCORE } from './v3PrimaryAlignment.js';
 
 export const V3_STAGE1_MIN_SCORE = 62;
 export const V3_PROVISIONING_POLICY_VERSION = 'v3-primary-2of3-2026-07-14';
+export const V3_TRIGGER_SUPPORTS_POLICY = 'diagnostic_only';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
@@ -20,6 +21,13 @@ function enforceV3RuntimePolicy() {
   // older Railway environment value (for example 65) from silently overriding
   // the current 62-point production rule.
   process.env.V3_QUALITY_SETUP_MIN_SCORE = String(V3_STAGE1_MIN_SCORE);
+
+  // Supporting confirmations are already represented in the V3 setup score and
+  // TP-hit confidence. Requiring a separate count double-counted the same edge
+  // evidence (a confirmed retest was both a primary trigger and a support).
+  // Keep supports in metrics/logs, but never let an old Railway env value restore
+  // them as an independent native-V3 execution blocker.
+  process.env.V3_QUALITY_TRIGGER_MIN_SUPPORTS = '0';
 }
 
 function compactReasons(reasons = []) {
@@ -38,6 +46,7 @@ function logWatchCandidate(candidate, tier, log) {
     `tpHit=${metrics.tpHitConfidence ?? candidate?.tpHitConfidence ?? 'n/a'}/${metrics.minTpHitConfidence ?? 'n/a'} ` +
     `rr=${metrics.rr ?? candidate?.expectedRR ?? candidate?.rr ?? 'n/a'}/${metrics.minRR ?? 'n/a'} ` +
     `alignment=${candidate?.primaryTimeframeAlignment?.score ?? 'n/a'}/${V3_PRIMARY_ALIGNMENT_MIN_SCORE} ` +
+    `supports=${stage2?.supports?.length ?? 0}/diagnostic ` +
     `stage1Reasons="${compactReasons(stage1.reasons)}" ` +
     `stage2Reasons="${compactReasons(stage2.reasons)}"`,
   );
@@ -51,7 +60,7 @@ function blockerCategory(reason = '') {
   if (value.includes('tp-hit confidence')) return 'tp_hit_confidence_below_85';
   if (value.includes('r:r') || value.includes('risk reward') || value.includes('geometric')) return 'rr_below_1_5';
   if (value.includes('no fresh primary trigger')) return 'missing_primary_trigger';
-  if (value.includes('supporting confirmations')) return 'missing_trigger_support';
+  if (value.includes('supporting confirmations')) return 'obsolete_support_gate';
   if (value.includes('remaining opportunity') || value.includes('no target')) return 'target_or_opportunity';
   if (value.includes('news')) return 'news_block';
   if (value.includes('spread')) return 'spread_block';
@@ -147,7 +156,8 @@ export async function runAutoV3ForUser({
   log(
     `[V3_NATIVE_POLICY] version=${V3_PROVISIONING_POLICY_VERSION} ` +
     `stage1MinScore=${V3_STAGE1_MIN_SCORE} primaryAlignment=Daily/H4/M15-2of3 ` +
-    `primaryMin=${V3_PRIMARY_ALIGNMENT_MIN_SCORE} legacyMacroStructExecGates=disabled`,
+    `primaryMin=${V3_PRIMARY_ALIGNMENT_MIN_SCORE} ` +
+    `legacyMacroStructExecGates=disabled triggerSupports=${V3_TRIGGER_SUPPORTS_POLICY}`,
   );
 
   const scan = await scanV3Watchlist({ client, now, scanMode, pairs, log });
@@ -244,6 +254,7 @@ export async function runAutoV3ForUser({
       primaryAlignmentMinimum: V3_PRIMARY_ALIGNMENT_MIN_SCORE,
       stage1MinimumScore: V3_STAGE1_MIN_SCORE,
       legacyMacroStructuralExecutionConfidenceGates: 'disabled',
+      triggerSupportingConfirmations: V3_TRIGGER_SUPPORTS_POLICY,
     },
     scanned: scan.scanned,
     reviewedPairs: scan.pairs,
@@ -263,6 +274,7 @@ export async function runAutoV3ForUser({
       ...(scan.meta || {}),
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
       legacyMacroStructuralExecutionConfidenceGates: 'disabled',
+      triggerSupportingConfirmations: V3_TRIGGER_SUPPORTS_POLICY,
     },
   };
 }
