@@ -3,18 +3,17 @@
  *
  * Signal Stack V3 — Edge Intelligence read endpoint.
  *
- * Returns the current user's strategy-attribution report computed from their
- * own trade_logs rows. Read-only: it reads the event log the app already
- * writes and aggregates it. It never trades, writes, or alters execution.
- *
- * Always filtered by the Clerk session user_id (defense-in-depth on top of the
- * trade_logs deny-all RLS).
+ * Edge Intelligence now consumes the exact same normalized trade activity event
+ * stream shown on the dashboard. Visiting this endpoint also runs the shared,
+ * guarded OANDA closure reconciliation so broker-side TP/SL/manual closes are
+ * available to attribution even when the user opens Edge Intelligence directly.
  */
 
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
-import { listTradeLogsForUser } from '@/lib/tradeLogs';
 import { generateAttributionReport } from '@/lib/edgeAnalytics';
+import { reconcileBrokerClosuresForUser } from '@/lib/tradeActivityReconciliation';
+import { lifecycleTradeRows, listVisibleTradeLogsForUser } from '@/lib/visibleTradeLogs';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,12 +23,22 @@ export async function GET() {
   if (!userId) {
     return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
   }
+
   try {
-    // Pull the most recent window of events. 200 is the listTradeLogsForUser
-    // cap; enough to attribute a meaningful sample without a heavy scan.
-    const { rows } = await listTradeLogsForUser(userId, { limit: 200 });
-    const report = generateAttributionReport(rows, new Date().toISOString());
-    return NextResponse.json({ ok: true, report });
+    const reconciliation = await reconcileBrokerClosuresForUser(userId);
+    const { rows } = await listVisibleTradeLogsForUser(userId, { limit: 200 });
+    const lifecycleRows = lifecycleTradeRows(rows);
+    const report = generateAttributionReport(lifecycleRows, new Date().toISOString());
+
+    return NextResponse.json({
+      ok: true,
+      report,
+      source: {
+        eventRows: lifecycleRows.length,
+        syncedClosed: reconciliation.synced,
+        syncWarning: reconciliation.warning,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[EDGE_INTELLIGENCE] read failed:', message);

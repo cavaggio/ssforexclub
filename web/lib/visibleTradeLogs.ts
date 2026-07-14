@@ -58,18 +58,39 @@ function normalizeEventType(eventType: unknown, status: unknown): TradeEventType
 function nestedRaw(rawPayload: Record<string, unknown>) {
   const executed = record(rawPayload.executed);
   const signal = record(rawPayload.signal);
+  const executedSignal = record(executed.signal);
   const trade = record(rawPayload.trade);
   const close = record(rawPayload.close);
   const request = record(rawPayload.request);
   const result = record(rawPayload.result);
-  return { executed, signal, trade, close, request, result };
+  return { executed, signal, executedSignal, trade, close, request, result };
+}
+
+function nestedMarketContext(...candidates: Record<string, unknown>[]) {
+  for (const candidate of candidates) {
+    if (Object.keys(candidate).length === 0) continue;
+    const marketRegime = record(candidate.marketRegime);
+    const volatility = record(marketRegime.volatility);
+    const macro = record(candidate.macroAnalysis);
+    const momentum = record(candidate.momentum);
+    return { candidate, marketRegime, volatility, macro, momentum };
+  }
+  return {
+    candidate: {} as Record<string, unknown>,
+    marketRegime: {} as Record<string, unknown>,
+    volatility: {} as Record<string, unknown>,
+    macro: {} as Record<string, unknown>,
+    momentum: {} as Record<string, unknown>,
+  };
 }
 
 export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow {
   const payload = record(row.payload);
   const rawPayload = record(row.raw_payload);
-  const { executed, signal, trade, close, request, result } = nestedRaw(rawPayload);
+  const { executed, signal, executedSignal, trade, close, request, result } = nestedRaw(rawPayload);
   const edge = record(payload.edge);
+  const rawEdge = record(rawPayload.edge);
+  const context = nestedMarketContext(signal, executedSignal, request, executed);
   const createdAt = str(row.created_at) ?? new Date(0).toISOString();
   const eventType = normalizeEventType(row.event_type, row.status);
 
@@ -89,10 +110,15 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     tradeId,
   );
   const pair = normalizePair(
-    row.pair ?? edge.pair ?? executed.pair ?? signal.pair ?? request.pair ?? close.instrument,
+    row.pair ?? edge.pair ?? rawEdge.pair ?? executed.pair ?? signal.pair ?? executedSignal.pair ?? request.pair ?? close.instrument,
   );
   const side = normalizeSide(
-    row.direction ?? edge.direction ?? executed.direction ?? signal.direction ?? request.direction,
+    row.direction ?? edge.direction ?? rawEdge.direction ?? executed.direction ?? signal.direction ?? executedSignal.direction ?? request.direction,
+  );
+  const realizedPnl = num(row.realized_pl, edge.pnl, rawEdge.pnl, close.pnl, result.pnl, executed.realizedPL);
+  const explicitWinLoss = str(edge.winLoss, edge.win_loss, rawEdge.winLoss, rawEdge.win_loss);
+  const winLoss = explicitWinLoss ?? (
+    realizedPnl == null ? null : realizedPnl > 0 ? 'win' : realizedPnl < 0 ? 'loss' : 'breakeven'
   );
 
   return {
@@ -110,30 +136,71 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     side,
     units: num(payload.units, executed.units, trade.units, result.units),
     units_closed: num(payload.units_closed, close.unitsClosed, result.unitsClosed),
-    entry_price: num(row.entry_price, executed.fillPrice, trade.fillPrice, signal.entry, request.entry),
+    entry_price: num(row.entry_price, executed.fillPrice, trade.fillPrice, signal.entry, executedSignal.entry, request.entry),
     exit_price: num(row.exit_price, close.exitPrice, result.exitPrice, executed.exitPrice),
-    realized_pl: num(row.realized_pl, close.pnl, result.pnl, executed.realizedPL),
+    realized_pl: realizedPnl,
     unrealized_pl: num(row.unrealized_pl, executed.unrealizedPL),
-    tp: num(payload.tp, executed.takeProfit, signal.takeProfit, request.targetProfit),
-    sl: num(payload.sl, executed.stopLoss, signal.stopLoss, request.stopLoss),
+    tp: num(payload.tp, executed.takeProfit, signal.takeProfit, executedSignal.takeProfit, request.targetProfit),
+    sl: num(payload.sl, executed.stopLoss, signal.stopLoss, executedSignal.stopLoss, request.stopLoss),
     recommendation: str(payload.recommendation),
-    confidence: num(payload.confidence, executed.confidence, signal.confidence),
+    confidence: num(payload.confidence, edge.signalScore, rawEdge.signalScore, executed.confidence, signal.confidence, executedSignal.confidence),
     reason: str(payload.reason, close.message, result.message),
     raw_payload: row.raw_payload ?? row.payload ?? null,
     pair,
     direction: side,
-    entry_time: eventType === 'opened' ? createdAt : null,
-    exit_time: eventType === 'closed' || eventType === 'manual_close_executed' ? createdAt : null,
-    pnl: num(row.realized_pl, close.pnl, result.pnl, executed.realizedPL),
-    win_loss: null,
-    session: null,
-    spread: null,
-    signal_score: null,
-    trend: null,
-    volatility: null,
-    market_regime: null,
-    macro_bias: null,
-    macro_risk: null,
+    entry_time: str(edge.entryTime, edge.entry_time, rawEdge.entryTime, rawEdge.entry_time) ?? (eventType === 'opened' ? createdAt : null),
+    exit_time: str(edge.exitTime, edge.exit_time, rawEdge.exitTime, rawEdge.exit_time) ?? (
+      eventType === 'closed' || eventType === 'manual_close_executed' ? createdAt : null
+    ),
+    pnl: realizedPnl,
+    win_loss: winLoss,
+    session: str(edge.session, rawEdge.session, signal.session, executedSignal.session, request.session),
+    spread: num(edge.spread, rawEdge.spread, signal.spreadPips, executedSignal.spreadPips, executed.spreadPips),
+    signal_score: num(
+      edge.signalScore,
+      edge.signal_score,
+      rawEdge.signalScore,
+      rawEdge.signal_score,
+      signal.score,
+      executedSignal.score,
+      executed.v3Score,
+    ),
+    trend: str(
+      edge.trend,
+      rawEdge.trend,
+      signal.trend,
+      executedSignal.trend,
+      context.momentum.m15Trend,
+      context.momentum.trend,
+    ),
+    volatility: str(
+      edge.volatility,
+      rawEdge.volatility,
+      context.volatility.state,
+      context.marketRegime.volatility,
+      context.candidate.volatilityState,
+    ),
+    market_regime: str(
+      edge.marketRegime,
+      edge.market_regime,
+      rawEdge.marketRegime,
+      rawEdge.market_regime,
+      context.marketRegime.regime,
+    ),
+    macro_bias: str(
+      edge.macroBias,
+      edge.macro_bias,
+      rawEdge.macroBias,
+      rawEdge.macro_bias,
+      context.macro.bias,
+    ),
+    macro_risk: str(
+      edge.macroRisk,
+      edge.macro_risk,
+      rawEdge.macroRisk,
+      rawEdge.macro_risk,
+      context.macro.risk,
+    ),
   };
 }
 
