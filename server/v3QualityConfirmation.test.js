@@ -93,6 +93,20 @@ test('Stage 1 rejects a V3 score below 62', () => {
   assert.match(result.reasons.join(' '), /V3 score 61 < 62/);
 });
 
+test('Stage 1 treats internal V3 structure opposition as diagnostic only', () => {
+  const signal = baseSignal();
+  signal.tpHitConfidence = 90;
+  signal.v3.structure.structureTrend = 'bearish';
+  signal.v3.structure.chochDetected = false;
+  signal.v3.structure.choch = null;
+
+  const result = evaluateV3SetupStage(signal);
+  assert.equal(result.metrics.opposingStructure, true);
+  assert.equal(result.metrics.opposingStructurePolicy, 'diagnostic_only');
+  assert.equal(result.allowed, true, result.reasons.join('; '));
+  assert.doesNotMatch(result.reasons.join(' '), /structure opposes direction/i);
+});
+
 test('Stage 1 rejects R:R below 1.5', () => {
   const signal = baseSignal();
   signal.tpHitConfidence = 90;
@@ -144,6 +158,18 @@ test('Compressed market alone remains watch-only', () => {
 
 test('Stage 3 accepts a fresh, low-drift executable price', () => {
   const signal = baseSignal();
+  const result = evaluateV3FreshExecutionStage(signal, {
+    currentPrice: 1.10005,
+    currentSpreadPips: 1.1,
+    maxSpreadPips: 3.5,
+    now: new Date(),
+  });
+  assert.equal(result.allowed, true, result.reasons.join('; '));
+});
+
+test('Stage 3 does not penalize internal V3 structure opposition', () => {
+  const signal = baseSignal();
+  signal.v3.structure.structureTrend = 'bearish';
   const result = evaluateV3FreshExecutionStage(signal, {
     currentPrice: 1.10005,
     currentSpreadPips: 1.1,
