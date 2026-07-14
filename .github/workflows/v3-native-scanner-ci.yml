@@ -3,23 +3,38 @@ name: V3 native scanner CI
 on:
   pull_request:
     paths:
+      - 'server/v3Engine.js'
+      - 'server/v3NativeEntryTiming.js'
+      - 'server/v3NativeEntryTiming.test.js'
+      - 'server/v3WatchClassification.js'
+      - 'server/v3WatchClassification.test.js'
       - 'server/v3NativeScanner.js'
       - 'server/v3NativeAutoTrade.js'
       - 'server/v3PrimaryAlignment.js'
       - 'server/v3NativeScanner.test.js'
       - 'server/v3PrimaryAlignment.test.js'
+      - 'server/ictAutoScheduler.js'
+      - 'server/ictAutoScheduler.test.js'
       - 'server/autoAiRouter.js'
       - '.github/workflows/v3-native-scanner-ci.yml'
   push:
     branches:
       - main
       - feature/v3-native-12-pair-scanner
+      - fix/v3-retest-hot-watch
     paths:
+      - 'server/v3Engine.js'
+      - 'server/v3NativeEntryTiming.js'
+      - 'server/v3NativeEntryTiming.test.js'
+      - 'server/v3WatchClassification.js'
+      - 'server/v3WatchClassification.test.js'
       - 'server/v3NativeScanner.js'
       - 'server/v3NativeAutoTrade.js'
       - 'server/v3PrimaryAlignment.js'
       - 'server/v3NativeScanner.test.js'
       - 'server/v3PrimaryAlignment.test.js'
+      - 'server/ictAutoScheduler.js'
+      - 'server/ictAutoScheduler.test.js'
       - 'server/autoAiRouter.js'
       - '.github/workflows/v3-native-scanner-ci.yml'
 
@@ -38,9 +53,20 @@ jobs:
       - run: npm ci
       - name: Syntax checks
         run: |
+          node --check server/v3Engine.js
+          node --check server/v3NativeEntryTiming.js
+          node --check server/v3WatchClassification.js
           node --check server/v3PrimaryAlignment.js
           node --check server/v3NativeScanner.js
           node --check server/v3NativeAutoTrade.js
+          node --check server/ictAutoScheduler.js
           node --check server/autoAiRouter.js
       - name: Focused V3 tests
-        run: node --test server/v3PrimaryAlignment.test.js server/v3NativeScanner.test.js server/autoAiRouter.test.js
+        run: >-
+          node --test
+          server/v3NativeEntryTiming.test.js
+          server/v3WatchClassification.test.js
+          server/v3PrimaryAlignment.test.js
+          server/v3NativeScanner.test.js
+          server/ictAutoScheduler.test.js
+          server/autoAiRouter.test.js
