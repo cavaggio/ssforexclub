@@ -1,4 +1,3 @@
-
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -65,13 +64,38 @@ function baseSignal() {
 }
 
 test('Stage 1 accepts a valid setup for watch state', () => {
-  const result = evaluateV3SetupStage(baseSignal());
+  const signal = baseSignal();
+  signal.tpHitConfidence = 90;
+  const result = evaluateV3SetupStage(signal);
   assert.equal(result.allowed, true);
   assert.equal(result.state, 'watch');
 });
 
+test('Stage 1 accepts a V3 score of exactly 62', () => {
+  const signal = baseSignal();
+  signal.score = 62;
+  signal.v3.score = 62;
+  signal.tpHitConfidence = 90;
+
+  const result = evaluateV3SetupStage(signal);
+  assert.equal(result.metrics.minScore, 62);
+  assert.equal(result.allowed, true, result.reasons.join('; '));
+});
+
+test('Stage 1 rejects a V3 score below 62', () => {
+  const signal = baseSignal();
+  signal.score = 61;
+  signal.v3.score = 61;
+  signal.tpHitConfidence = 90;
+
+  const result = evaluateV3SetupStage(signal);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join(' '), /V3 score 61 < 62/);
+});
+
 test('Stage 1 rejects R:R below 1.5', () => {
   const signal = baseSignal();
+  signal.tpHitConfidence = 90;
   signal.takeProfit = 1.10200;
   signal.expectedRR = 1;
   signal.v3.targets.tp1.price = 1.10200;
