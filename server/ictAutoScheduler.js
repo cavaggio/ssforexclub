@@ -64,9 +64,7 @@ export function makeRunId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Exposed for tests/debugging.
- */
+/** Exposed for tests/debugging. */
 export function getAutoAiWatchState() {
   return {
     nearQualifiedPairs: Array.from(nearQualifiedPairs),
@@ -197,7 +195,7 @@ export async function tick(nextUrl, secret, options = {}) {
       return { ok: false, status: res.status, body: text };
     }
 
-    updateWatchStateFromCronResponse(text, tag);
+    updateWatchStateFromCronResponse(text, tag, scanMode, pairs);
 
     console.log(`${tag} complete ${text.slice(0, 300)}`);
     return { ok: true, status: res.status, body: text };
@@ -236,7 +234,27 @@ async function transactionSyncTick(nextUrl, secret) {
   }
 }
 
-function updateWatchStateFromCronResponse(text, tag) {
+function normalizePairList(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((pair) => String(pair || '').trim()).filter(Boolean))];
+}
+
+function replaceWatchSet(target, values) {
+  target.clear();
+  for (const pair of normalizePairList(values)) target.add(pair);
+}
+
+function reconcileScopedWatchSet(target, scannedPairs, returnedPairs) {
+  for (const pair of normalizePairList(scannedPairs)) target.delete(pair);
+  for (const pair of normalizePairList(returnedPairs)) target.add(pair);
+}
+
+/**
+ * A full scan is authoritative for the whole watchlist and replaces both sets.
+ * A staged scan is authoritative only for the pairs it actually reviewed, so it
+ * must not erase unrelated hot/near candidates discovered by another cadence.
+ */
+export function updateWatchStateFromCronResponse(text, tag, scanMode = 'full', scannedPairs = []) {
   let json = null;
 
   try {
@@ -245,21 +263,19 @@ function updateWatchStateFromCronResponse(text, tag) {
     return;
   }
 
-  if (Array.isArray(json.nearQualifiedPairs)) {
-    nearQualifiedPairs.clear();
-    for (const pair of json.nearQualifiedPairs) {
-      if (pair) nearQualifiedPairs.add(String(pair).trim());
-    }
-    console.log(`${tag} updated nearQualifiedPairs=${Array.from(nearQualifiedPairs).join(',') || 'none'}`);
+  const returnedNear = Array.isArray(json.nearQualifiedPairs) ? json.nearQualifiedPairs : [];
+  const returnedHot = Array.isArray(json.hotPairs) ? json.hotPairs : [];
+
+  if (scanMode === 'full') {
+    replaceWatchSet(nearQualifiedPairs, returnedNear);
+    replaceWatchSet(hotPairs, returnedHot);
+  } else {
+    reconcileScopedWatchSet(nearQualifiedPairs, scannedPairs, returnedNear);
+    reconcileScopedWatchSet(hotPairs, scannedPairs, returnedHot);
   }
 
-  if (Array.isArray(json.hotPairs)) {
-    hotPairs.clear();
-    for (const pair of json.hotPairs) {
-      if (pair) hotPairs.add(String(pair).trim());
-    }
-    console.log(`${tag} updated hotPairs=${Array.from(hotPairs).join(',') || 'none'}`);
-  }
+  console.log(`${tag} updated nearQualifiedPairs=${Array.from(nearQualifiedPairs).join(',') || 'none'}`);
+  console.log(`${tag} updated hotPairs=${Array.from(hotPairs).join(',') || 'none'}`);
 
   if (Array.isArray(json.lateEntryPairs)) {
     for (const pair of json.lateEntryPairs) {
@@ -276,6 +292,8 @@ function updateWatchStateFromCronResponse(text, tag) {
 
 export function stopAutoAiScheduler() {
   if (!_timers.length) {
+    nearQualifiedPairs.clear();
+    hotPairs.clear();
     return { stopped: false, reason: 'not_running' };
   }
 

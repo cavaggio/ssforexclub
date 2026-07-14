@@ -123,6 +123,7 @@ export function evaluateV3({
     narrative: scored.narrative,
     pillars: scored.pillars,
     entryDistanceFromOriginPct,
+    fib,
     targets,
     liquidity,
     liquidityIntent,
@@ -187,5 +188,3 @@ export function applyJune23SoftFilterScoring(candidate = {}) {
     softReasons,
   };
 }
-
-

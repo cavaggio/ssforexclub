@@ -6,6 +6,8 @@ import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
 import { scalpMinConfidence } from './scalpOnlyPolicy.js';
 import { getForexNewsRisk } from './oandaNewsRisk.js';
 import { analyzeRecentCandleStrength } from './oandaCandleStrength.js';
+import { classifyV3NativeEntryTiming } from './v3NativeEntryTiming.js';
+import { classifyV3WatchTier } from './v3WatchClassification.js';
 import {
   evaluateV3PrimaryAlignmentFromCandles,
   trendFromCandles,
@@ -157,6 +159,8 @@ export async function scanV3Watchlist({
   const qualified = [];
   const rejected = [];
   const watchCandidates = [];
+  const hotWatchCandidates = [];
+  const lateEntryPairs = [];
 
   log(`[V3_NATIVE_SCAN] mode=${scanMode} reviewing=${scanPairs.length} pairs=${scanPairs.join(',')}`);
 
@@ -285,6 +289,16 @@ export async function scanV3Watchlist({
         atrPips,
         window: 3,
       });
+      const entryTiming = classifyV3NativeEntryTiming({
+        direction: normalizedDirection,
+        fibonacci: v3?.fib,
+        v3,
+        m15Candles,
+        atrPips,
+        newsRisk,
+        currentPrice: Number(pricing.mid),
+        pair,
+      });
 
       const rawV3Score = firstFinite(v3?.score) ?? 0;
       const entryQualityConfidence = Math.max(0, Math.min(100, Math.round(
@@ -309,6 +323,8 @@ export async function scanV3Watchlist({
         momentum: { ...momentum, executionSignal: normalizedDirection },
         candleStrength,
         newsRisk,
+        entryTiming,
+        entryStatus: entryTiming?.status || null,
         primaryTimeframeAlignment,
         alignment: {
           timeframeAlignmentScore: primaryTimeframeAlignment.score,
@@ -327,39 +343,67 @@ export async function scanV3Watchlist({
         tpHitConfidence,
       };
       const stage1 = evaluateV3SetupStage(candidate);
-      const stage2 = stage1.allowed
-        ? evaluateV3TriggerStage(candidate)
-        : {
-            stage: 2,
-            allowed: false,
-            state: 'blocked',
-            reasons: ['stage 1 setup did not pass'],
-            primaryTriggers: [],
-            supports: [],
-            checkedAt: new Date().toISOString(),
-          };
+      // Evaluate Stage 2 even when Stage 1 is below threshold so V3 can distinguish
+      // a genuine retest/trigger watch from an ordinary rejected setup. Execution
+      // still requires BOTH stages to pass.
+      const stage2 = evaluateV3TriggerStage(candidate);
       const qualityConfirmation = { stage1, stage2, checkedAt: new Date().toISOString() };
+      const watchTier = classifyV3WatchTier({
+        primaryAlignment: primaryTimeframeAlignment,
+        geometryValid: true,
+        newsBlocked: newsRisk?.blocked === true,
+        spreadOk: Number(pricing.spreadPips) <= maxSpreadPips,
+        entryTiming,
+        stage1,
+        stage2,
+      });
 
-      if (stage1.allowed && !stage2.allowed) {
-        watchCandidates.push({
+      log(
+        `[V3_NATIVE_QUALITY] pair=${pair} timing=${entryTiming?.status || 'unknown'} ` +
+        `stage1=${stage1.allowed ? 'pass' : 'fail'} stage2=${stage2.state} tier=${watchTier.tier} ` +
+        `reason="${watchTier.reason}"`,
+      );
+
+      if (watchTier.tier === 'hot') {
+        hotWatchCandidates.push({
           ...candidate,
           qualityConfirmation,
-          finalQualifiedStatus: 'v3_native_watch',
+          watchTier,
+          finalQualifiedStatus: 'v3_native_hot_watch',
         });
         continue;
       }
 
-      const ready = stage1.allowed && stage2.allowed
+      if (watchTier.tier === 'near') {
+        watchCandidates.push({
+          ...candidate,
+          qualityConfirmation,
+          watchTier,
+          finalQualifiedStatus: 'v3_native_near_watch',
+        });
+        continue;
+      }
+
+      const ready = watchTier.tier === 'ready'
+        && stage1.allowed
+        && stage2.allowed
+        && entryTiming?.status === 'valid_entry'
         && primaryTimeframeAlignment.score >= V3_PRIMARY_ALIGNMENT_MIN_SCORE
         && Number.isFinite(tpHitConfidence)
         && tpHitConfidence >= scalpMinConfidence();
 
       if (!ready) {
-        const reasons = [...stage1.reasons, ...stage2.reasons];
+        const reasons = [
+          ...stage1.reasons,
+          ...stage2.reasons,
+          entryTiming?.reason ? `entry timing: ${entryTiming.reason}` : null,
+          watchTier.reason,
+        ].filter(Boolean);
+        if (entryTiming?.status === 'late_entry') lateEntryPairs.push(pair);
         rejected.push(rejection(
           pair,
           `V3 native quality rejected: ${reasons.join('; ') || `TP-hit confidence ${tpHitConfidence} below ${scalpMinConfidence()}`}`,
-          { direction: normalizedDirection, v3, primaryTimeframeAlignment, qualityConfirmation },
+          { direction: normalizedDirection, v3, primaryTimeframeAlignment, entryTiming, qualityConfirmation, watchTier },
         ));
         continue;
       }
@@ -367,6 +411,7 @@ export async function scanV3Watchlist({
       qualified.push({
         ...candidate,
         qualityConfirmation,
+        watchTier,
         finalQualifiedStatus: 'v3_native_quality_confirmed',
       });
     } catch (error) {
@@ -383,13 +428,19 @@ export async function scanV3Watchlist({
     qualified,
     rejected,
     watchCandidates,
+    hotWatchCandidates,
     nearQualifiedPairs: [...new Set(watchCandidates.map((item) => item.pair).filter(Boolean))],
-    hotPairs: [...new Set(qualified.map((item) => item.pair).filter(Boolean))],
-    lateEntryPairs: [],
+    hotPairs: [...new Set([
+      ...hotWatchCandidates.map((item) => item.pair),
+      ...qualified.map((item) => item.pair),
+    ].filter(Boolean))],
+    lateEntryPairs: [...new Set(lateEntryPairs)],
     meta: {
       primaryAlignmentMinimum: V3_PRIMARY_ALIGNMENT_MIN_SCORE,
       configuredWatchlistSize: getConfiguredV3Watchlist().length,
       requestedPairCount: Array.isArray(pairs) ? pairs.length : 0,
+      nearWatchCount: watchCandidates.length,
+      hotWatchCount: hotWatchCandidates.length,
     },
   };
 }

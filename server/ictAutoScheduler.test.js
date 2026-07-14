@@ -5,7 +5,10 @@ import {
   AUTO_AI_FULL_SCAN_INTERVAL_MS,
   AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
   AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
+  getAutoAiWatchState,
   inAutoAiWindow,
+  stopAutoAiScheduler,
+  updateWatchStateFromCronResponse,
 } from './ictAutoScheduler.js';
 
 test('auto-AI window: NY weekday 02:15–11:00 ET is open', () => {
@@ -29,4 +32,36 @@ test('auto-AI scheduler intervals default to staged cadence', () => {
   assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 120000);
   assert.equal(AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS, 60000);
   assert.equal(AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS, 30000);
+});
+
+test('near recheck cannot erase unrelated hot-watch pairs', () => {
+  stopAutoAiScheduler();
+
+  updateWatchStateFromCronResponse(JSON.stringify({
+    nearQualifiedPairs: ['EUR_USD'],
+    hotPairs: ['EUR_CHF'],
+    lateEntryPairs: [],
+  }), '[TEST][FULL]', 'full', []);
+
+  updateWatchStateFromCronResponse(JSON.stringify({
+    nearQualifiedPairs: [],
+    hotPairs: ['EUR_USD'],
+    lateEntryPairs: [],
+  }), '[TEST][NEAR]', 'near_recheck', ['EUR_USD']);
+
+  const state = getAutoAiWatchState();
+  assert.deepEqual(state.nearQualifiedPairs, []);
+  assert.deepEqual(new Set(state.hotPairs), new Set(['EUR_CHF', 'EUR_USD']));
+});
+
+test('hot-watch response removes only the hot pairs it actually rescanned', () => {
+  updateWatchStateFromCronResponse(JSON.stringify({
+    nearQualifiedPairs: [],
+    hotPairs: [],
+    lateEntryPairs: [],
+  }), '[TEST][HOT]', 'hot_watch', ['EUR_CHF']);
+
+  const state = getAutoAiWatchState();
+  assert.deepEqual(state.hotPairs, ['EUR_USD']);
+  stopAutoAiScheduler();
 });
