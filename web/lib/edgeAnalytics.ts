@@ -3,14 +3,10 @@
  *
  * Signal Stack V3 — Edge Intelligence analytics for the dashboard.
  *
- * Mirrors server/edgeIntelligence.js, but operates on Supabase `trade_logs`
- * rows. trade_logs is an event log (one row per opened / closed / reassessed
- * event), so this module first correlates the 'opened' row (entry conditions)
- * with its matching close row (realised pnl / win-loss) by trade_id to
- * reconstruct one snapshot per trade, then aggregates.
- *
- * Pure + read-only: it only reads rows that already exist. It never writes,
- * trades, or influences execution.
+ * The source of truth is the same per-user trade activity/event history shown on
+ * the dashboard. Open rows provide entry conditions; matching full-close rows
+ * provide exit time and outcome. Partial closes contribute realised P/L but do
+ * not mark the trade fully resolved by themselves.
  */
 
 import 'server-only';
@@ -59,11 +55,13 @@ export type HistoricalEdge = {
 
 export type AttributionReport = {
   generatedAt: string;
+  dataSource: 'trade_activity';
   sampleSufficient: boolean;
   minSamples: number;
   overall: {
     trades: number;
     resolved: number;
+    outcomes: number;
     wins: number;
     losses: number;
     winRate: number | null;
@@ -71,111 +69,153 @@ export type AttributionReport = {
     totalPnl: number | null;
   };
   edge: HistoricalEdge;
+  recentTrades: EdgeSnapshot[];
   highlights: string[];
 };
 
 const MIN_SAMPLES = Number(process.env.EDGE_MIN_SAMPLES || 3);
-
-const CLOSE_EVENTS = new Set(['closed', 'manual_close_executed', 'partial_closed']);
+const FULL_CLOSE_EVENTS = new Set(['closed', 'manual_close_executed']);
+const PNL_EVENTS = new Set(['closed', 'manual_close_executed', 'partial_closed']);
 
 function n(v: unknown): number | null {
   if (v === null || v === undefined || v === '') return null;
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
 }
+
 function s(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null;
 }
 
-/**
- * Reconstruct one snapshot per trade from the event log. Entry conditions come
- * from the 'opened' row; pnl / win-loss / exit come from the matching close row.
- * Rows that carry their own pnl but no trade_id are treated as standalone.
- */
+function timestamp(row: TradeLogRow): number {
+  const parsed = Date.parse(row.created_at);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function snapshotFromEntryAndEvents(
+  tradeId: string | null,
+  entry: TradeLogRow,
+  events: TradeLogRow[],
+): EdgeSnapshot {
+  const ordered = [...events].sort((a, b) => timestamp(a) - timestamp(b));
+  const opened = ordered.find((row) => row.event_type === 'opened') ?? entry;
+  const fullCloses = ordered.filter((row) => FULL_CLOSE_EVENTS.has(row.event_type));
+  const fullClose = fullCloses.at(-1) ?? null;
+  const pnlValues = ordered
+    .filter((row) => PNL_EVENTS.has(row.event_type))
+    .map((row) => n(row.pnl ?? row.realized_pl))
+    .filter((value): value is number => value !== null);
+  const pnl = pnlValues.length > 0
+    ? Number(pnlValues.reduce((total, value) => total + value, 0).toFixed(2))
+    : n(fullClose?.pnl ?? fullClose?.realized_pl ?? opened?.pnl ?? opened?.realized_pl ?? null);
+
+  let winLoss = s(fullClose?.win_loss ?? opened?.win_loss ?? null);
+  if (!winLoss && pnl != null && fullClose) {
+    winLoss = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
+  }
+
+  return {
+    tradeId,
+    pair: s(opened?.pair ?? opened?.instrument ?? fullClose?.pair ?? fullClose?.instrument ?? null),
+    direction: s(opened?.direction ?? opened?.side ?? null),
+    entryTime: s(opened?.entry_time ?? opened?.created_at ?? null),
+    exitTime: s(fullClose?.exit_time ?? fullClose?.created_at ?? null),
+    pnl,
+    winLoss,
+    session: s(opened?.session ?? null),
+    spread: n(opened?.spread ?? null),
+    confidence: n(opened?.confidence ?? null),
+    signalScore: n(opened?.signal_score ?? null),
+    trend: s(opened?.trend ?? null),
+    volatility: s(opened?.volatility ?? null),
+    marketRegime: s(opened?.market_regime ?? null),
+    macroBias: s(opened?.macro_bias ?? null),
+    macroRisk: s(opened?.macro_risk ?? null),
+    resolved: Boolean(fullClose) || winLoss != null,
+  };
+}
+
+/** Reconstruct one trade snapshot from the shared trade-activity event stream. */
 export function snapshotsFromTradeLogs(rows: TradeLogRow[]): EdgeSnapshot[] {
   const byTrade = new Map<string, TradeLogRow[]>();
   const orphans: TradeLogRow[] = [];
 
-  for (const r of rows) {
-    if (r.trade_id) {
-      const list = byTrade.get(r.trade_id) ?? [];
-      list.push(r);
-      byTrade.set(r.trade_id, list);
+  for (const row of rows) {
+    if (row.trade_id) {
+      const list = byTrade.get(row.trade_id) ?? [];
+      list.push(row);
+      byTrade.set(row.trade_id, list);
     } else {
-      orphans.push(r);
+      orphans.push(row);
     }
   }
 
-  const snaps: EdgeSnapshot[] = [];
+  const snapshots: EdgeSnapshot[] = [];
 
-  for (const [tradeId, list] of byTrade) {
-    const opened = list.find((r) => r.event_type === 'opened');
-    const closed = list.find((r) => CLOSE_EVENTS.has(r.event_type));
-    const entry = opened ?? list[0];
-    const pnl = n(closed?.pnl ?? closed?.realized_pl ?? entry?.pnl ?? null);
-    let winLoss = s(closed?.win_loss ?? entry?.win_loss ?? null);
-    if (!winLoss && pnl != null) winLoss = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
-
-    snaps.push({
-      tradeId,
-      pair: s(entry?.pair ?? entry?.instrument ?? closed?.pair ?? closed?.instrument ?? null),
-      direction: s(entry?.direction ?? entry?.side ?? null),
-      entryTime: s(entry?.entry_time ?? opened?.created_at ?? null),
-      exitTime: s(closed?.exit_time ?? closed?.created_at ?? null),
-      pnl,
-      winLoss,
-      session: s(entry?.session ?? null),
-      spread: n(entry?.spread ?? null),
-      confidence: n(entry?.confidence ?? null),
-      signalScore: n(entry?.signal_score ?? null),
-      trend: s(entry?.trend ?? null),
-      volatility: s(entry?.volatility ?? null),
-      marketRegime: s(entry?.market_regime ?? null),
-      macroBias: s(entry?.macro_bias ?? null),
-      macroRisk: s(entry?.macro_risk ?? null),
-      resolved: Boolean(closed) || winLoss != null,
-    });
+  for (const [tradeId, events] of byTrade) {
+    const ordered = [...events].sort((a, b) => timestamp(a) - timestamp(b));
+    const entry = ordered.find((row) => row.event_type === 'opened') ?? ordered[0];
+    if (!entry) continue;
+    snapshots.push(snapshotFromEntryAndEvents(tradeId, entry, ordered));
   }
 
-  for (const r of orphans) {
-    const pnl = n(r.pnl ?? r.realized_pl ?? null);
-    if (pnl == null && !r.win_loss) continue;
-    const winLoss = s(r.win_loss) ?? (pnl != null ? (pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven') : null);
-    snaps.push({
-      tradeId: null,
-      pair: s(r.pair ?? r.instrument), direction: s(r.direction ?? r.side),
-      entryTime: s(r.entry_time ?? r.created_at), exitTime: s(r.exit_time),
-      pnl, winLoss, session: s(r.session), spread: n(r.spread),
-      confidence: n(r.confidence), signalScore: n(r.signal_score),
-      trend: s(r.trend), volatility: s(r.volatility), marketRegime: s(r.market_regime),
-      macroBias: s(r.macro_bias), macroRisk: s(r.macro_risk),
-      resolved: winLoss != null,
-    });
+  // Older rows can lack a recoverable broker trade ID. Keep them visible rather
+  // than making Edge Intelligence appear empty; each open/full-close row becomes
+  // a standalone historical snapshot.
+  for (const row of orphans) {
+    if (row.event_type === 'opened') {
+      snapshots.push(snapshotFromEntryAndEvents(null, row, [row]));
+      continue;
+    }
+    if (FULL_CLOSE_EVENTS.has(row.event_type)) {
+      snapshots.push(snapshotFromEntryAndEvents(null, row, [row]));
+    }
   }
 
-  return snaps;
+  return snapshots.sort((a, b) => {
+    const aTime = Date.parse(a.exitTime ?? a.entryTime ?? '') || 0;
+    const bTime = Date.parse(b.exitTime ?? b.entryTime ?? '') || 0;
+    return bTime - aTime;
+  });
 }
 
-function isWin(snap: EdgeSnapshot): boolean | null {
-  if (snap.winLoss) return snap.winLoss === 'win';
-  if (snap.pnl != null) return snap.pnl > 0;
+function isWin(snapshot: EdgeSnapshot): boolean | null {
+  if (snapshot.winLoss) {
+    if (snapshot.winLoss === 'win') return true;
+    if (snapshot.winLoss === 'loss' || snapshot.winLoss === 'breakeven') return false;
+  }
+  if (snapshot.resolved && snapshot.pnl != null) return snapshot.pnl > 0;
   return null;
 }
 
-function summarize(key: string, snaps: EdgeSnapshot[]): GroupSummary {
-  let wins = 0, losses = 0, resolved = 0, totalPnl = 0, pnlCount = 0;
-  for (const snap of snaps) {
-    const w = isWin(snap);
-    if (w === true) { wins++; resolved++; }
-    else if (w === false) { losses++; resolved++; }
-    if (snap.pnl != null) { totalPnl += snap.pnl; pnlCount++; }
+function summarize(key: string, snapshots: EdgeSnapshot[]): GroupSummary {
+  let wins = 0;
+  let losses = 0;
+  let knownOutcomes = 0;
+  let totalPnl = 0;
+  let pnlCount = 0;
+
+  for (const snapshot of snapshots) {
+    const won = isWin(snapshot);
+    if (won === true) {
+      wins += 1;
+      knownOutcomes += 1;
+    } else if (won === false) {
+      losses += 1;
+      knownOutcomes += 1;
+    }
+    if (snapshot.pnl != null) {
+      totalPnl += snapshot.pnl;
+      pnlCount += 1;
+    }
   }
+
   return {
     key,
-    trades: snaps.length,
+    trades: snapshots.length,
     wins,
     losses,
-    winRate: resolved > 0 ? Number(((wins / resolved) * 100).toFixed(1)) : null,
+    winRate: knownOutcomes > 0 ? Number(((wins / knownOutcomes) * 100).toFixed(1)) : null,
     avgPnl: pnlCount > 0 ? Number((totalPnl / pnlCount).toFixed(2)) : null,
     totalPnl: pnlCount > 0 ? Number(totalPnl.toFixed(2)) : null,
   };
@@ -188,19 +228,19 @@ function sortByPerformance(list: GroupSummary[]): GroupSummary[] {
   });
 }
 
-function rankByField(snaps: EdgeSnapshot[], field: keyof EdgeSnapshot, min = MIN_SAMPLES) {
+function rankByField(snapshots: EdgeSnapshot[], field: keyof EdgeSnapshot, min = MIN_SAMPLES) {
   const groups = new Map<string, EdgeSnapshot[]>();
-  for (const snap of snaps) {
-    const raw = snap[field];
+  for (const snapshot of snapshots) {
+    const raw = snapshot[field];
     if (raw === null || raw === undefined || raw === '') continue;
     const key = String(raw);
     const list = groups.get(key) ?? [];
-    list.push(snap);
+    list.push(snapshot);
     groups.set(key, list);
   }
   const summaries = [...groups.entries()]
     .map(([key, list]) => summarize(key, list))
-    .filter((g) => g.trades >= min && g.winRate !== null);
+    .filter((group) => group.trades >= min && group.winRate !== null);
   const ranked = sortByPerformance(summaries);
   return { best: ranked.slice(0, 5), worst: ranked.slice(-5).reverse() };
 }
@@ -214,30 +254,30 @@ const CONDITION_FIELDS: Array<[keyof EdgeSnapshot, string]> = [
   ['direction', 'direction'],
 ];
 
-function rankConditions(snaps: EdgeSnapshot[], min = MIN_SAMPLES) {
+function rankConditions(snapshots: EdgeSnapshot[], min = MIN_SAMPLES) {
   const groups = new Map<string, EdgeSnapshot[]>();
-  for (const snap of snaps) {
+  for (const snapshot of snapshots) {
     for (const [field, label] of CONDITION_FIELDS) {
-      const raw = snap[field];
+      const raw = snapshot[field];
       if (raw === null || raw === undefined || raw === '') continue;
       const key = `${label}:${raw}`;
       const list = groups.get(key) ?? [];
-      list.push(snap);
+      list.push(snapshot);
       groups.set(key, list);
     }
   }
   const summaries = [...groups.entries()]
     .map(([key, list]) => summarize(key, list))
-    .filter((g) => g.trades >= min && g.winRate !== null);
+    .filter((group) => group.trades >= min && group.winRate !== null);
   const ranked = sortByPerformance(summaries);
   return { best: ranked.slice(0, 6), worst: ranked.slice(-6).reverse() };
 }
 
-export function analyzeHistoricalEdge(snaps: EdgeSnapshot[]): HistoricalEdge {
-  const conditions = rankConditions(snaps);
-  const pairs = rankByField(snaps, 'pair');
-  const sessions = rankByField(snaps, 'session');
-  const regimes = rankByField(snaps, 'marketRegime');
+export function analyzeHistoricalEdge(scoredSnapshots: EdgeSnapshot[]): HistoricalEdge {
+  const conditions = rankConditions(scoredSnapshots);
+  const pairs = rankByField(scoredSnapshots, 'pair');
+  const sessions = rankByField(scoredSnapshots, 'session');
+  const regimes = rankByField(scoredSnapshots, 'marketRegime');
   return {
     bestConditions: conditions.best,
     worstConditions: conditions.worst,
@@ -250,25 +290,26 @@ export function analyzeHistoricalEdge(snaps: EdgeSnapshot[]): HistoricalEdge {
   };
 }
 
-function pushTop(out: string[], list: GroupSummary[], label: string) {
+function pushTop(output: string[], list: GroupSummary[], label: string) {
   const top = list[0];
   if (!top) return;
-  const wr = top.winRate != null ? `${top.winRate}% win` : 'n/a win-rate';
+  const winRate = top.winRate != null ? `${top.winRate}% win` : 'n/a win-rate';
   const pnl = top.avgPnl != null ? `, avg ${top.avgPnl >= 0 ? '+' : ''}${top.avgPnl}` : '';
-  out.push(`${label}: ${top.key} (${wr}${pnl}, n=${top.trades}).`);
+  output.push(`${label}: ${top.key} (${winRate}${pnl}, n=${top.trades}).`);
 }
 
 export function generateAttributionReport(rows: TradeLogRow[], nowIso: string): AttributionReport {
-  const snaps = snapshotsFromTradeLogs(rows);
-  const overall = summarize('overall', snaps);
-  const edge = analyzeHistoricalEdge(snaps);
-  const resolved = snaps.filter((snap) => isWin(snap) !== null);
-  const sampleSufficient = resolved.length >= MIN_SAMPLES;
+  const snapshots = snapshotsFromTradeLogs(rows);
+  const resolved = snapshots.filter((snapshot) => snapshot.resolved);
+  const scored = snapshots.filter((snapshot) => isWin(snapshot) !== null);
+  const overall = summarize('overall', scored);
+  const edge = analyzeHistoricalEdge(scored);
+  const sampleSufficient = scored.length >= MIN_SAMPLES;
 
   const highlights: string[] = [];
   if (!sampleSufficient) {
     highlights.push(
-      `Only ${resolved.length} resolved trade(s) on record — attribution needs at least ${MIN_SAMPLES} to be meaningful. Treat the breakdown below as preliminary.`,
+      `${resolved.length} trade(s) are closed and ${scored.length} have a known P/L outcome; at least ${MIN_SAMPLES} scored outcomes are needed to judge the edge.`,
     );
   }
   pushTop(highlights, edge.bestPairs, 'Best-performing instrument');
@@ -280,11 +321,13 @@ export function generateAttributionReport(rows: TradeLogRow[], nowIso: string): 
 
   return {
     generatedAt: nowIso,
+    dataSource: 'trade_activity',
     sampleSufficient,
     minSamples: MIN_SAMPLES,
     overall: {
-      trades: overall.trades,
+      trades: snapshots.length,
       resolved: resolved.length,
+      outcomes: scored.length,
       wins: overall.wins,
       losses: overall.losses,
       winRate: overall.winRate,
@@ -292,6 +335,7 @@ export function generateAttributionReport(rows: TradeLogRow[], nowIso: string): 
       totalPnl: overall.totalPnl,
     },
     edge,
+    recentTrades: snapshots.slice(0, 12),
     highlights,
   };
 }
