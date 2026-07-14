@@ -212,6 +212,8 @@ export function evaluateV3SetupStage(signal = {}) {
     v3?.newsRisk?.blocked === true;
 
   const breaks = alignedStructureBreak(v3, direction);
+  // Internal V3 structure opposition is diagnostic only for now. The authoritative
+  // directional gate is the native Daily/H4/M15 aggregate alignment score.
   const opposingStructure = structureOpposes(v3, direction) && !breaks.chochAligned;
 
   const reasons = [];
@@ -223,7 +225,6 @@ export function evaluateV3SetupStage(signal = {}) {
   if (!targetsAccepted) reasons.push('remaining opportunity rejected');
   if (newsBlocked) reasons.push('news block active');
   if (spread !== null && spread > maxSpread) reasons.push(`spread ${spread} > ${maxSpread}`);
-  if (opposingStructure) reasons.push('structure opposes direction without a fresh aligned CHoCH');
 
   return {
     stage: 1,
@@ -247,6 +248,7 @@ export function evaluateV3SetupStage(signal = {}) {
       targetsAccepted,
       newsBlocked,
       opposingStructure,
+      opposingStructurePolicy: 'diagnostic_only',
       alignedChoch: breaks.chochAligned,
     },
     checkedAt: new Date().toISOString(),
@@ -418,7 +420,9 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
     driftAtr,
     maxPriceDriftAtr,
     firstTargetReached,
-    structureOpposes: structureOpposes(v3, direction),
+    // Internal structure opposition is intentionally excluded from execution
+    // confidence while the Daily/H4/M15 aggregate gate is authoritative.
+    structureOpposes: false,
     newsBlocked: signal?.newsRisk?.blocked === true || v3?.newsRisk?.blocked === true,
   });
   const reasons = [];
