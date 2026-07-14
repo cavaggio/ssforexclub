@@ -1,19 +1,10 @@
 /**
- * web/app/api/cron/auto-ai-trading/route.ts
+ * System cron endpoint called by the Railway staged scheduler.
  *
- * System cron endpoint (NO Clerk session) called by the Railway staged
- * scheduler. Per opted-in user it resolves credentials on the Next side and
- * forwards to the Railway internal Auto AI endpoint — autonomous entry
- * (/api/internal/oanda/auto) plus recommend-only ICT lifecycle reassessment.
- *
- * Auth: shared X-Cron-Secret (AUTO_AI_CRON_SECRET). Gates: platform live flag +
- * NY weekday entry window + per-user (ready, live) resolution. Never falls back
- * to platform-default credentials.
- *
- * Edge Intelligence influence is deliberately bounded and account-scoped:
- * proven positive pairs may receive an earlier priority pre-scan, but no V3
- * quality, alignment, confidence, R:R, news, spread, sizing, margin, drawdown,
- * duplicate, or broker gate is changed or bypassed.
+ * Every broker call is resolved per Clerk user and exact connected broker
+ * account. Edge Intelligence is bounded to an earlier priority pre-scan only;
+ * it never changes or bypasses V3 quality, alignment, confidence, R:R, news,
+ * spread, sizing, margin, drawdown, duplicate, or broker gates.
  */
 
 import { NextResponse } from 'next/server';
@@ -27,7 +18,9 @@ import { loadAccountEdgeExecutionProfile } from '@/lib/accountEdgeExecutionProfi
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const mask = (id: string) => (id && id.length > 6 ? `${id.slice(0, 4)}…${id.slice(-2)}` : '***');
+const mask = (id: string) => (
+  id && id.length > 6 ? `${id.slice(0, 4)}…${id.slice(-2)}` : '***'
+);
 
 type ScanMode = 'full' | 'near_recheck' | 'hot_watch';
 
@@ -55,19 +48,31 @@ function normalizeScanMode(value: unknown): ScanMode {
 
 function normalizePairs(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-
-  return value
-    .map((p) => String(p || '').trim())
-    .filter(Boolean);
+  return value.map((pair) => String(pair || '').trim()).filter(Boolean);
 }
 
 function addPairs(target: Set<string>, value: unknown) {
   if (!Array.isArray(value)) return;
-
   for (const item of value) {
     const pair = String(item || '').trim();
     if (pair) target.add(pair);
   }
+}
+
+function asAutoData(value: unknown): AutoData {
+  return value && typeof value === 'object' ? value as AutoData : {};
+}
+
+function successfulPayload(result: Awaited<ReturnType<typeof callInternalEndpoint>>): AutoData | null {
+  return result.ok ? asAutoData(result.data) : null;
+}
+
+function displayInternalResult(
+  result: Awaited<ReturnType<typeof callInternalEndpoint>> | null,
+  missingMessage: string,
+): unknown {
+  if (!result) return { error: missingMessage };
+  return result.ok ? result.data : { error: result.error, status: result.status };
 }
 
 function uniqueExecuted(payloads: AutoData[]): Array<Record<string, unknown>> {
@@ -91,9 +96,10 @@ function uniqueExecuted(payloads: AutoData[]): Array<Record<string, unknown>> {
   return output;
 }
 
-// NY weekday entry window (DST-aware; Railway performs the same defense).
+// Retains the currently deployed 02:15–11:00 ET entry window. The separate
+// 2:00 PM entry/5:00 PM management change remains isolated from this correction.
 function inWindow(now: Date): boolean {
-  const p = new Intl.DateTimeFormat('en-US', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     hour12: false,
     weekday: 'short',
@@ -101,42 +107,48 @@ function inWindow(now: Date): boolean {
     minute: '2-digit',
   }).formatToParts(now);
 
-  const get = (t: string) => p.find((x) => x.type === t)?.value ?? '';
-  const wd = get('weekday');
+  const read = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+  const weekday = read('weekday');
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
 
-  if (wd === 'Sat' || wd === 'Sun') return false;
+  const minutes =
+    (parseInt(read('hour'), 10) % 24) * 60 +
+    parseInt(read('minute'), 10);
 
-  const mins = (parseInt(get('hour'), 10) % 24) * 60 + parseInt(get('minute'), 10);
-  // This route retains the currently deployed window. The separately prepared
-  // 2:00 PM extension must be merged as its own deployment change.
-  return mins >= 135 && mins < 660;
+  return minutes >= 135 && minutes < 660;
 }
 
-// Build the reassessment context from a user's recent ICT 'opened' trade logs.
 async function ictOpenTradesContext(userId: string) {
-  const { rows } = await listTradeLogsForUser(userId, { limit: 50 }).catch(() => ({ rows: [] as unknown[] }));
-  const out: Record<string, unknown>[] = [];
-  for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
-    if (r.event_type !== 'opened') continue;
-    const raw = (r.raw_payload ?? {}) as Record<string, unknown>;
+  const fallback = { rows: [] as unknown[] };
+  const { rows } = await listTradeLogsForUser(userId, { limit: 50 }).catch(() => fallback);
+  const output: Record<string, unknown>[] = [];
+
+  for (const row of (rows ?? []) as Array<Record<string, unknown>>) {
+    if (row.event_type !== 'opened') continue;
+
+    const raw = (row.raw_payload ?? {}) as Record<string, unknown>;
     if (raw.strategy !== 'ICT') continue;
-    const req = (raw.request ?? {}) as Record<string, unknown>;
+
+    const request = (raw.request ?? {}) as Record<string, unknown>;
     const result = (raw.result ?? {}) as Record<string, unknown>;
-    out.push({
-      tradeId: r.trade_id ?? null,
-      pair: r.instrument ?? req.pair ?? null,
-      direction: r.side ?? req.direction ?? null,
-      entryPrice: typeof req.entry === 'number' ? req.entry : null,
-      target1: typeof req.targetProfit === 'number' ? req.targetProfit : null,
-      openedAtMs: Date.parse(String(r.created_at)) || null,
+
+    output.push({
+      tradeId: row.trade_id ?? null,
+      pair: row.instrument ?? request.pair ?? null,
+      direction: row.side ?? request.direction ?? null,
+      entryPrice: typeof request.entry === 'number' ? request.entry : null,
+      target1: typeof request.targetProfit === 'number' ? request.targetProfit : null,
+      openedAtMs: Date.parse(String(row.created_at)) || null,
       holdMinutes: typeof result.holdMinutes === 'number' ? result.holdMinutes : null,
     });
   }
-  return out.filter((t) => t.pair && t.direction && t.openedAtMs);
+
+  return output.filter((trade) => trade.pair && trade.direction && trade.openedAtMs);
 }
 
 export async function POST(req: Request) {
   const secret = process.env.AUTO_AI_CRON_SECRET;
+
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
@@ -147,19 +159,21 @@ export async function POST(req: Request) {
 
   let body: CronBody = {};
   try {
-    body = (await req.json()) as CronBody;
+    body = await req.json() as CronBody;
   } catch {
     body = {};
   }
 
-  let runId: string | null = typeof body?.runId === 'string' ? body.runId : null;
-  if (!runId) runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  let runId = typeof body.runId === 'string' ? body.runId : null;
+  if (!runId) {
+    runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
 
-  const scanMode = normalizeScanMode(body?.scanMode);
-  const pairs = normalizePairs(body?.pairs);
+  const scanMode = normalizeScanMode(body.scanMode);
+  const pairs = normalizePairs(body.pairs);
   const tag = `[AUTO_AI][${scanMode.toUpperCase()}][runId=${runId}]`;
 
-  if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && !pairs.length) {
+  if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && pairs.length === 0) {
     return NextResponse.json({ ok: true, runId, scanMode, skipped: 'no_pairs', users: 0 });
   }
 
@@ -170,6 +184,7 @@ export async function POST(req: Request) {
     .from('user_trading_settings')
     .select('user_id, auto_ai_engine')
     .eq('auto_ai_trading_enabled', true);
+
   if (error) {
     console.log(`${tag} enumerate failed: ${error.message}`);
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
@@ -183,7 +198,7 @@ export async function POST(req: Request) {
   let totalQualified = 0;
   let totalExecuted = 0;
   let totalSkipped = 0;
-  let totalRecs = 0;
+  let totalRecommendations = 0;
   let edgePriorityUsers = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
@@ -192,23 +207,31 @@ export async function POST(req: Request) {
 
     try {
       const resolved = await resolveActiveBrokerForUser(userId);
-      if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
+
+      if (
+        resolved.brokerCredentialStatus !== 'ready' ||
+        !resolved.getCredentials ||
+        !resolved.baseUrl
+      ) {
         console.log(`${tag} user=${mask(userId)} skipped=${resolved.brokerCredentialStatus}`);
         results.push({ user: mask(userId), skipped: resolved.brokerCredentialStatus });
         continue;
       }
 
-      const creds = await resolved.getCredentials();
-      if (!creds) {
+      const credentials = await resolved.getCredentials();
+      if (!credentials) {
         console.log(`${tag} user=${mask(userId)} skipped=decrypt_failed`);
         results.push({ user: mask(userId), skipped: 'decrypt_failed' });
         continue;
       }
 
-      const acct = creds.accountId ? `${creds.accountId.slice(0, 3)}…${creds.accountId.slice(-3)}` : '***';
-      const credBody = {
-        apiKey: creds.token,
-        accountId: creds.accountId,
+      const accountMask = credentials.accountId
+        ? `${credentials.accountId.slice(0, 3)}…${credentials.accountId.slice(-3)}`
+        : '***';
+
+      const credentialBody = {
+        apiKey: credentials.token,
+        accountId: credentials.accountId,
         baseUrl: resolved.baseUrl,
         environment: resolved.activeEnvironment,
         runId,
@@ -216,27 +239,22 @@ export async function POST(req: Request) {
         pairs,
       };
 
-      const edgeProfile = engine === 'v3'
+      const edgeProfile: any = engine === 'v3'
         ? await loadAccountEdgeExecutionProfile({
             userId,
-            brokerAccountId: creds.accountId,
+            brokerAccountId: credentials.accountId,
           })
         : {
             enabled: false,
+            version: null,
             mode: 'not_applicable_to_ict',
             accountScoped: true,
-            preferredPairs: [] as string[],
+            preferredPairs: [],
             reason: 'V3 account Edge priority is not applied to ICT.',
           };
 
-      const autoCalls: Array<{
-        kind: 'edge_priority' | 'scheduled';
-        result: Awaited<ReturnType<typeof callInternalEndpoint>>;
-      }> = [];
+      let priorityResult: Awaited<ReturnType<typeof callInternalEndpoint>> | null = null;
 
-      // A full V3 cycle may pre-scan up to three proven positive pairs for this
-      // exact user + broker account. The normal full scan still runs afterward,
-      // so no watchlist coverage is lost and no pair is permanently excluded.
       if (
         engine === 'v3' &&
         scanMode === 'full' &&
@@ -246,144 +264,159 @@ export async function POST(req: Request) {
       ) {
         edgePriorityUsers += 1;
         const priorityPairs = edgeProfile.preferredPairs.slice(0, 3);
+
         console.log(
-          `${tag} user=${mask(userId)} account=${acct} ` +
-          `edgeProfile=${edgeProfile.version} priorityPairs=${priorityPairs.join(',')} ` +
+          `${tag} user=${mask(userId)} account=${accountMask} ` +
+          `edgeProfile=${edgeProfile.version ?? 'unknown'} ` +
+          `priorityPairs=${priorityPairs.join(',')} ` +
           `mode=priority_prescan_only thresholdsChanged=false`,
         );
 
-        const priorityResult = await callInternalEndpoint('/api/internal/oanda/auto', {
-          ...credBody,
+        priorityResult = await callInternalEndpoint('/api/internal/oanda/auto', {
+          ...credentialBody,
           runId: `${runId}-edge`,
           scanMode: 'near_recheck',
           pairs: priorityPairs,
           engine,
         });
-        autoCalls.push({ kind: 'edge_priority', result: priorityResult });
       }
 
       const scheduledResult = await callInternalEndpoint('/api/internal/oanda/auto', {
-        ...credBody,
+        ...credentialBody,
         engine,
       });
-      autoCalls.push({ kind: 'scheduled', result: scheduledResult });
 
-      const autoPayloads = autoCalls
-        .filter((call) => call.result.ok)
-        .map((call) => call.result.data as AutoData);
+      const payloads: AutoData[] = [];
+      const priorityPayload = priorityResult ? successfulPayload(priorityResult) : null;
+      const scheduledPayload = successfulPayload(scheduledResult);
+      if (priorityPayload) payloads.push(priorityPayload);
+      if (scheduledPayload) payloads.push(scheduledPayload);
 
-      const executedList = uniqueExecuted(autoPayloads);
-      const q = autoPayloads.reduce((sum, payload) => sum + Number(payload.qualified ?? 0), 0);
-      const s = autoPayloads.reduce(
+      const executedList = uniqueExecuted(payloads);
+      const qualified = payloads.reduce(
+        (sum, payload) => sum + Number(payload.qualified ?? 0),
+        0,
+      );
+      const skipped = payloads.reduce(
         (sum, payload) => sum + (Array.isArray(payload.skipped) ? payload.skipped.length : 0),
         0,
       );
-      const e = executedList.length;
 
-      let reassess: unknown = null;
-      let recs = 0;
+      let reassessment: unknown = null;
+      let recommendations = 0;
+
       if (engine === 'ict') {
         const trades = await ictOpenTradesContext(userId);
         if (trades.length) {
-          const r = await callInternalEndpoint('/api/internal/oanda/ict/reassess', { ...credBody, trades });
-          reassess = r.ok ? r.data : { error: r.error };
-          const recList = (r.ok
-            ? (r.data as { recommendations?: Array<{ reassessDue?: boolean }> })?.recommendations
-            : null) ?? [];
-          recs = recList.filter((x) => x?.reassessDue).length;
+          const reassessResult = await callInternalEndpoint(
+            '/api/internal/oanda/ict/reassess',
+            { ...credentialBody, trades },
+          );
+          reassessment = displayInternalResult(reassessResult, 'reassessment missing');
+
+          if (reassessResult.ok) {
+            const recommendationList =
+              (reassessResult.data as {
+                recommendations?: Array<{ reassessDue?: boolean }>;
+              })?.recommendations ?? [];
+            recommendations = recommendationList.filter((item) => item?.reassessDue).length;
+          }
         }
       }
 
-      totalQualified += q;
-      totalExecuted += e;
-      totalSkipped += s;
-      totalRecs += recs;
+      totalQualified += qualified;
+      totalExecuted += executedList.length;
+      totalSkipped += skipped;
+      totalRecommendations += recommendations;
 
       for (const executed of executedList) {
-        const sig = (executed.signal && typeof executed.signal === 'object')
+        const signal = executed.signal && typeof executed.signal === 'object'
           ? executed.signal as Record<string, unknown>
           : executed;
 
         await logTradeEvent({
           userId,
           broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
-          brokerAccountId: creds.accountId,
+          brokerAccountId: credentials.accountId,
           environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
           eventType: 'opened',
           instrument: typeof executed.pair === 'string' ? executed.pair : null,
           tradeId: typeof executed.tradeId === 'string' ? executed.tradeId : null,
           brokerOrderId: typeof executed.tradeId === 'string' ? executed.tradeId : null,
-          side: executed.direction === 'long' || executed.direction === 'short' ? executed.direction : null,
+          side:
+            executed.direction === 'long' || executed.direction === 'short'
+              ? executed.direction
+              : null,
           units: typeof executed.units === 'number' ? Math.abs(executed.units) : null,
           entryPrice: typeof executed.fillPrice === 'number' ? executed.fillPrice : null,
           sl: typeof executed.stopLoss === 'number' ? executed.stopLoss : null,
           tp: typeof executed.takeProfit === 'number' ? executed.takeProfit : null,
           confidence: typeof executed.confidence === 'number' ? executed.confidence : null,
-          recommendation: typeof executed.expectedRR === 'number' ? `RR ${executed.expectedRR}` : 'V3_AUTO',
+          recommendation:
+            typeof executed.expectedRR === 'number'
+              ? `RR ${executed.expectedRR}`
+              : 'V3_AUTO',
           reason: `Auto AI ${engine.toUpperCase()} opened trade during run ${runId}`,
           rawPayload: {
             runId,
             scanMode,
             engine,
-            brokerAccountId: creds.accountId,
+            brokerAccountId: credentials.accountId,
             edgeProfile: {
-              version: edgeProfile.version,
-              enabled: edgeProfile.enabled,
-              mode: edgeProfile.mode,
-              accountScoped: edgeProfile.accountScoped,
-              preferredPairs: edgeProfile.preferredPairs,
+              version: edgeProfile.version ?? null,
+              enabled: edgeProfile.enabled === true,
+              mode: edgeProfile.mode ?? null,
+              accountScoped: edgeProfile.accountScoped === true,
+              preferredPairs: Array.isArray(edgeProfile.preferredPairs)
+                ? edgeProfile.preferredPairs
+                : [],
               thresholdsChanged: false,
             },
             executed,
           },
-          edge: edgeSnapshotFromSignal(sig),
+          edge: edgeSnapshotFromSignal(signal),
         });
       }
 
-      for (const payload of autoPayloads) {
+      for (const payload of payloads) {
         addPairs(nearQualifiedPairs, payload.nearQualifiedPairs);
         addPairs(hotPairs, payload.hotPairs);
         addPairs(lateEntryPairs, payload.lateEntryPairs);
       }
 
-      const scheduledCall = autoCalls.find((call) => call.kind === 'scheduled');
-      const priorityCall = autoCalls.find((call) => call.kind === 'edge_priority');
-
       console.log(
-        `${tag} user=${mask(userId)} account=${acct} engine=${engine} scanMode=${scanMode} ` +
-        `qualified=${q} executed=${e} skipped=${s} recommendations=${recs} ` +
-        `edgePriority=${edgeProfile.enabled === true} policy=${autoPayloads[0]?.policyVersion ?? 'unknown'}`,
+        `${tag} user=${mask(userId)} account=${accountMask} engine=${engine} ` +
+        `scanMode=${scanMode} qualified=${qualified} executed=${executedList.length} ` +
+        `skipped=${skipped} recommendations=${recommendations} ` +
+        `edgePriority=${edgeProfile.enabled === true} ` +
+        `policy=${scheduledPayload?.policyVersion ?? priorityPayload?.policyVersion ?? 'unknown'}`,
       );
 
       results.push({
         user: mask(userId),
-        account: acct,
+        account: accountMask,
         engine,
         edgeProfile,
-        priorityScan: priorityCall
-          ? priorityCall.result.ok
-            ? priorityCall.result.data
-            : { error: priorityCall.result.error }
-          : null,
-        auto: scheduledCall?.result.ok
-          ? scheduledCall.result.data
-          : { error: scheduledCall?.result.error ?? 'scheduled auto call missing' },
-        reassess,
+        priorityScan: displayInternalResult(priorityResult, 'priority scan not used'),
+        auto: displayInternalResult(scheduledResult, 'scheduled scan missing'),
+        reassessment,
       });
     } catch (err) {
-      console.log(`${tag} user=${mask(userId)} error=${err instanceof Error ? err.message : String(err)}`);
-      results.push({ user: mask(userId), error: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`${tag} user=${mask(userId)} error=${message}`);
+      results.push({ user: mask(userId), error: message });
     }
   }
 
-  const nearQualifiedPairList = Array.from(nearQualifiedPairs);
-  const hotPairList = Array.from(hotPairs);
-  const lateEntryPairList = Array.from(lateEntryPairs);
+  const nearList = Array.from(nearQualifiedPairs);
+  const hotList = Array.from(hotPairs);
+  const lateList = Array.from(lateEntryPairs);
 
   console.log(
-    `${tag} complete users=${results.length} qualified=${totalQualified} executed=${totalExecuted} ` +
-    `skipped=${totalSkipped} recommendations=${totalRecs} edgePriorityUsers=${edgePriorityUsers} ` +
-    `near=${nearQualifiedPairList.length} hot=${hotPairList.length} late=${lateEntryPairList.length}`,
+    `${tag} complete users=${results.length} qualified=${totalQualified} ` +
+    `executed=${totalExecuted} skipped=${totalSkipped} ` +
+    `recommendations=${totalRecommendations} edgePriorityUsers=${edgePriorityUsers} ` +
+    `near=${nearList.length} hot=${hotList.length} late=${lateList.length}`,
   );
 
   return NextResponse.json({
@@ -395,13 +428,13 @@ export async function POST(req: Request) {
     qualified: totalQualified,
     executed: totalExecuted,
     skipped: totalSkipped,
-    recommendations: totalRecs,
+    recommendations: totalRecommendations,
     edgePriorityUsers,
     edgeLearningMode: 'per_user_per_broker_account_priority_prescan_only',
     edgeThresholdsChanged: false,
-    nearQualifiedPairs: nearQualifiedPairList,
-    hotPairs: hotPairList,
-    lateEntryPairs: lateEntryPairList,
+    nearQualifiedPairs: nearList,
+    hotPairs: hotList,
+    lateEntryPairs: lateList,
     results,
   });
 }
