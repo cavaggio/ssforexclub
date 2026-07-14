@@ -195,7 +195,7 @@ export function evaluateV3SetupStage(signal = {}) {
   const tpHitConfidence = computeV3EntryTpHitConfidence(signal);
   const rr = getSignalRR(signal);
 
-  const minScore = envNumber('V3_QUALITY_SETUP_MIN_SCORE', 65);
+  const minScore = envNumber('V3_QUALITY_SETUP_MIN_SCORE', 62);
   const minTpHitConfidence = Math.max(85, envNumber(
     'V3_QUALITY_SETUP_MIN_TP_HIT_CONFIDENCE',
     envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 85),
