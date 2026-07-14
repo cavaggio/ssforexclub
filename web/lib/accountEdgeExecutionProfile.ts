@@ -146,7 +146,7 @@ export async function loadAccountEdgeExecutionProfile(args: {
       };
     }
 
-    const allRows = (data ?? []) as CompactRow[];
+    const allRows = (data ?? []) as unknown as CompactRow[];
     const accountRows = allRows.filter(
       (row) => extractBrokerAccountId(row) === brokerAccountId,
     );
