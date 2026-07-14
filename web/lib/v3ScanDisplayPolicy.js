@@ -117,6 +117,20 @@ function isObsoleteCandleStrengthFloorReason(reason) {
   return /^Rejected:\s*candle strength\s+\d+(?:\.\d+)?\s*<\s*profile floor\s+\d+/i.test(text);
 }
 
+function isRangingProfileReason(reason) {
+  const text = String(reason || '').trim().toLowerCase();
+  return (
+    text.includes('profile does not allow ranging') ||
+    text.includes('market state ranging is not allowed') ||
+    text.includes('ranging state not allowed')
+  );
+}
+
+function isChoppyReason(reason) {
+  const text = String(reason || '').trim().toLowerCase();
+  return text.includes('choppy') || text.includes('whipsaw');
+}
+
 function isObsoleteDirectionalReason(reason) {
   const text = String(reason || '').toLowerCase();
   return (
@@ -136,6 +150,10 @@ function isObsoleteDirectionalReason(reason) {
  *
  * Legacy candle-strength profile floors are diagnostic only for V3. The separate
  * risk-monitor exhaustion/over-extension check remains a valid hard risk reason.
+ *
+ * RANGING is context, not an automatic rejection, once the authoritative V3
+ * direction, alignment and remaining execution/risk gates pass. CHOPPY/whipsaw
+ * conditions remain valid hard rejection reasons.
  */
 export function normalizeSignalForV3Display(signal = {}) {
   const primary = calculateDashboardPrimaryAlignment(signal);
@@ -152,6 +170,10 @@ export function normalizeSignalForV3Display(signal = {}) {
 
   for (const reason of originalReasons) {
     if (isObsoleteLegacyConfidenceReason(reason) || isObsoleteCandleStrengthFloorReason(reason)) {
+      removedDiagnostics.push(String(reason));
+      continue;
+    }
+    if (primary.passed && isRangingProfileReason(reason) && !isChoppyReason(reason)) {
       removedDiagnostics.push(String(reason));
       continue;
     }
@@ -242,6 +264,8 @@ export function normalizeScanForV3Display(scan = {}) {
       primaryAlignmentRule: 'Daily/H4/M15 exact two-of-three',
       legacyLayerConfidencePolicy: 'diagnostic_only_for_v3',
       legacyCandleStrengthFloorPolicy: 'diagnostic_only_for_v3',
+      rangingMarketPolicy: 'conditional_context_not_automatic_rejection',
+      choppyMarketPolicy: 'retained_hard_risk_gate',
       overextensionRiskMonitorPolicy: 'retained_hard_risk_gate',
       executionEngine: 'v3_native_auto_ai',
       dashboardAnalysisEngine: 'legacy_context_normalized_to_v3_policy',
