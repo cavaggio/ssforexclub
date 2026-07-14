@@ -46,9 +46,27 @@ test('breakout with no M15 retest is classified wait_for_retest', () => {
   assert.equal(result.retestDetected, false);
 });
 
-test('M15 touch and hold of broken level confirms a long retest', () => {
+test('the breakout candle cannot be treated as its own retest', () => {
   const candles = [
-    { high: 1.1030, low: 1.1010, close: 1.1020 },
+    { high: 1.0998, low: 1.0985, close: 1.0992 },
+    { high: 1.1020, low: 1.0997, close: 1.1015 },
+  ];
+
+  const retest = detectV3NativeRetest({
+    direction: 'long',
+    fibonacci: fib,
+    m15Candles: candles,
+    atrPips: 8,
+    pair: 'EUR_USD',
+  });
+
+  assert.equal(retest, null);
+});
+
+test('M15 touch and hold after the breakout confirms a long retest', () => {
+  const candles = [
+    { high: 1.0998, low: 1.0985, close: 1.0992 },
+    { high: 1.1030, low: 1.1005, close: 1.1020 },
     { high: 1.1012, low: 1.0998, close: 1.1005 },
   ];
 
@@ -60,6 +78,7 @@ test('M15 touch and hold of broken level confirms a long retest', () => {
     pair: 'EUR_USD',
   });
   assert.equal(retest?.type, 'retest');
+  assert.ok((retest?.breakoutIndexFromLatest ?? 0) > (retest?.candleIndexFromLatest ?? 0));
 
   const result = classifyV3NativeEntryTiming({
     direction: 'long',
@@ -77,7 +96,11 @@ test('M15 touch and hold of broken level confirms a long retest', () => {
 });
 
 test('M15 touch that closes through the level does not confirm the retest', () => {
-  const candles = [{ high: 1.1005, low: 1.0985, close: 1.0990 }];
+  const candles = [
+    { high: 1.0998, low: 1.0985, close: 1.0992 },
+    { high: 1.1030, low: 1.1005, close: 1.1020 },
+    { high: 1.1005, low: 1.0985, close: 1.0990 },
+  ];
   const result = detectV3NativeRetest({
     direction: 'long',
     fibonacci: fib,
