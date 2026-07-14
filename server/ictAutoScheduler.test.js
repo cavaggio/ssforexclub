@@ -2,36 +2,48 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS,
   AUTO_AI_FULL_SCAN_INTERVAL_MS,
   AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
   AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
   getAutoAiWatchState,
+  inActiveTradeManagementWindow,
   inAutoAiWindow,
   stopAutoAiScheduler,
   updateWatchStateFromCronResponse,
 } from './ictAutoScheduler.js';
 
-test('auto-AI window: NY weekday 02:15–11:00 ET is open', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:15:00Z')), true); // 02:15 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), true); // 10:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:59:00Z')), true); // 10:59 ET Tue
+test('Auto AI entry window is open from 02:15 through 13:59 ET', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-07-14T06:15:00Z')), true); // 02:15 ET
+  assert.equal(inAutoAiWindow(new Date('2026-07-14T17:59:00Z')), true); // 13:59 ET
 });
 
-test('auto-AI window: before 02:15 / at-or-after 11:00 ET is closed', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T15:00:00Z')), false); // 11:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T16:00:00Z')), false); // 12:00 ET Tue
+test('Auto AI stops opening new trades at 14:00 ET', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-07-14T06:14:00Z')), false); // 02:14 ET
+  assert.equal(inAutoAiWindow(new Date('2026-07-14T18:00:00Z')), false); // 14:00 ET
+  assert.equal(inAutoAiWindow(new Date('2026-07-14T20:00:00Z')), false); // 16:00 ET
 });
 
-test('auto-AI window: weekends are closed even mid-window', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-06T14:00:00Z')), false); // Saturday
-  assert.equal(inAutoAiWindow(new Date('2026-06-07T14:00:00Z')), false); // Sunday
+test('active-trade management continues through the 5 PM ET sweep', () => {
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-07-14T17:59:00Z')), true); // 13:59 ET
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-07-14T21:00:00Z')), true); // 17:00 ET
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-07-14T21:05:00Z')), false); // 17:05 ET
 });
 
-test('auto-AI scheduler intervals default to staged cadence', () => {
+test('entry and management windows are closed on weekends', () => {
+  const saturday = new Date('2026-07-18T16:00:00Z');
+  const sunday = new Date('2026-07-19T16:00:00Z');
+  assert.equal(inAutoAiWindow(saturday), false);
+  assert.equal(inActiveTradeManagementWindow(saturday), false);
+  assert.equal(inAutoAiWindow(sunday), false);
+  assert.equal(inActiveTradeManagementWindow(sunday), false);
+});
+
+test('Auto AI scheduler intervals use staged entry and five-minute management cadence', () => {
   assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 120000);
   assert.equal(AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS, 60000);
   assert.equal(AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS, 30000);
+  assert.equal(ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS, 300000);
 });
 
 test('near recheck cannot erase unrelated hot-watch pairs', () => {
