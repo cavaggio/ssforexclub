@@ -77,6 +77,14 @@ function sweepState(v3, direction) {
   return { confirmed: Boolean(detected && aligned && !pending), pending: Boolean(detected && aligned && pending) };
 }
 
+function confirmedRetestState(signal = {}) {
+  const timing = signal?.entryTiming || {};
+  return Boolean(
+    timing?.retestDetected === true &&
+    String(timing?.status || '').toLowerCase() === 'valid_entry'
+  );
+}
+
 export function isPureV3Signal(signal = {}) {
   return (
     signal?.source === 'v3_pure_auto_ai' ||
@@ -128,6 +136,7 @@ export function computeV3EntryTpHitConfidence(signal = {}) {
   const pdScore = firstNumber(v3?.premiumDiscount?.premiumDiscountScore, 0) ?? 0;
   const liquidityScore = firstNumber(v3?.liquidityIntent?.intentScore, v3?.liquidityIntent?.score, 0) ?? 0;
   const sweep = sweepState(v3, direction);
+  const confirmedRetest = confirmedRetestState(signal);
   const targetAccepted = v3?.targets?.accepted !== false && signal?.lifecycle?.tp?.allowed !== false;
   const earlyTrigger = signal.earlyTrigger === true || v3.earlyTrigger === true;
 
@@ -138,6 +147,7 @@ export function computeV3EntryTpHitConfidence(signal = {}) {
   if (liquidityScore >= 0.65) confidence += 5;
   if (alignedStructure(v3, direction)) confidence += 4;
   if (sweep.confirmed) confidence += 3;
+  if (confirmedRetest) confidence += 6;
   if (sweep.pending) confidence -= 8;
   if (!targetAccepted) confidence = Math.min(confidence, 35);
 
@@ -370,6 +380,7 @@ export function computeV3TpHitConfidence(context = {}) {
     score += 5;
   }
 
+  if (context.confirmedRetest === true) score += 6;
   if (context.confirmedSweep === true) score += 3;
   if (context.alignedChoch === true) score += 3;
   if (context.alignedBos === true) score += 3;
@@ -475,4 +486,5 @@ export const _test = {
   percent,
   geometricRR,
   normalizeDirection,
+  confirmedRetestState,
 };

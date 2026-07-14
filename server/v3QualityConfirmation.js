@@ -120,6 +120,20 @@ function confirmedAlignedSweep(v3, direction) {
   };
 }
 
+function confirmedNativeRetest(signal, direction) {
+  const sign = directionSign(direction);
+  const timing = signal?.entryTiming || {};
+  const retest = timing?.retest || null;
+  const timingStatus = String(timing?.status || '').toLowerCase();
+  const aligned = !retest?.direction || retest.direction === sign;
+  const confirmed =
+    timing?.retestDetected === true &&
+    timingStatus === 'valid_entry' &&
+    aligned;
+
+  return { confirmed, retest };
+}
+
 function favorablePremiumDiscount(v3, direction) {
   const pd = v3?.premiumDiscount || {};
   const state = String(pd.premiumDiscountState || '').toLowerCase();
@@ -132,6 +146,8 @@ function favorablePremiumDiscount(v3, direction) {
 }
 
 function alignedFlowSupport(signal, direction) {
+  if (confirmedNativeRetest(signal, direction).confirmed) return true;
+
   const sign = directionSign(direction);
   const signals = Array.isArray(signal?.institutionalFlow?.signals)
     ? signal.institutionalFlow.signals
@@ -235,7 +251,7 @@ export function evaluateV3SetupStage(signal = {}) {
       pair,
       direction,
       score,
-      confidence: tpHitConfidence, // compatibility alias; this is TP-hit confidence for V3
+      confidence: tpHitConfidence,
       tpHitConfidence,
       entryQualityConfidence,
       rr,
@@ -250,6 +266,7 @@ export function evaluateV3SetupStage(signal = {}) {
       opposingStructure,
       opposingStructurePolicy: 'diagnostic_only',
       alignedChoch: breaks.chochAligned,
+      confirmedRetest: confirmedNativeRetest(signal, direction).confirmed,
     },
     checkedAt: new Date().toISOString(),
   };
@@ -259,6 +276,7 @@ export function evaluateV3TriggerStage(signal = {}) {
   const v3 = extractV3(signal);
   const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
   const sweep = confirmedAlignedSweep(v3, direction);
+  const retest = confirmedNativeRetest(signal, direction);
   const breaks = alignedStructureBreak(v3, direction);
   const volatilityState = String(v3?.volatility?.volatilityState || '').toLowerCase();
 
@@ -272,6 +290,7 @@ export function evaluateV3TriggerStage(signal = {}) {
     );
 
   const primaryTriggers = [];
+  if (retest.confirmed) primaryTriggers.push('confirmed_retest');
   if (sweep.confirmed) primaryTriggers.push('confirmed_liquidity_sweep');
   if (breaks.chochAligned) primaryTriggers.push('fresh_aligned_choch');
   if (breaks.bosAligned) primaryTriggers.push('fresh_aligned_bos');
@@ -291,13 +310,13 @@ export function evaluateV3TriggerStage(signal = {}) {
   if (!direction) reasons.push('missing direction');
   if (sweep.pending) reasons.push('liquidity sweep is pending; close-back-inside confirmation is missing');
   if (primaryTriggers.length === 0) {
-    reasons.push('no fresh primary trigger: confirmed sweep, aligned BOS/CHoCH, or compression-to-expansion');
+    reasons.push('no fresh primary trigger: confirmed retest/sweep, aligned BOS/CHoCH, or compression-to-expansion');
   }
   if (supports.length < minSupports) {
     reasons.push(`supporting confirmations ${supports.length} < ${minSupports}`);
   }
-  if (volatilityState === 'expanded' && !sweep.confirmed) {
-    reasons.push('volatility is already expanded without a fresh confirmed sweep');
+  if (volatilityState === 'expanded' && !sweep.confirmed && !retest.confirmed) {
+    reasons.push('volatility is already expanded without a fresh confirmed retest or sweep');
   }
 
   return {
@@ -311,6 +330,7 @@ export function evaluateV3TriggerStage(signal = {}) {
       direction,
       pendingSweep: sweep.pending,
       confirmedSweep: sweep.confirmed,
+      confirmedRetest: retest.confirmed,
       alignedChoch: breaks.chochAligned,
       alignedBos: breaks.bosAligned,
       compressionExpansion,
@@ -411,6 +431,7 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
     stage2Allowed: stage2.allowed,
     primaryTriggerCount: stage2.primaryTriggers.length,
     supportCount: stage2.supports.length,
+    confirmedRetest: stage2.metrics.confirmedRetest,
     confirmedSweep: stage2.metrics.confirmedSweep,
     alignedChoch: stage2.metrics.alignedChoch,
     alignedBos: stage2.metrics.alignedBos,
@@ -481,6 +502,7 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
       firstTargetReached,
       currentSpreadPips,
       maxSpreadPips,
+      confirmedRetest: stage2.metrics.confirmedRetest,
       tpHitConfidence: tpConfidence.tpHitConfidence,
       minimumTpHitConfidence: tpConfidence.minimumEntryConfidence,
       tpConfidence,
@@ -492,6 +514,7 @@ export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
 export const _test = {
   computePriceRR,
   confirmedAlignedSweep,
+  confirmedNativeRetest,
   favorablePremiumDiscount,
   normalizeDirection,
 };
