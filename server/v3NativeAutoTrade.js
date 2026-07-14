@@ -57,6 +57,13 @@ export async function runAutoV3ForUser({
       continue;
     }
 
+    if (signal?.entryTiming?.status !== 'valid_entry') {
+      const reason = `V3 native execution rejected: entry timing is ${signal?.entryTiming?.status || 'missing'}, not valid_entry`;
+      skipped.push({ pair: signal?.pair, reason });
+      log(`execution skipped pair=${signal?.pair || 'unknown'} reason="${reason}"`);
+      continue;
+    }
+
     signal.environment = client?.environment || signal.environment;
     const result = await executeTrade(signal, { client, autoAi: true });
 
@@ -82,6 +89,7 @@ export async function runAutoV3ForUser({
       postFillTpAdjusted: result.postFillTpAdjusted === true,
       expectedRR: signal.expectedRR ?? signal.rr,
       primaryTimeframeAlignment: signal.primaryTimeframeAlignment,
+      entryTiming: signal.entryTiming,
       source: signal.source,
       strategy: 'V3',
       signal,
@@ -91,7 +99,8 @@ export async function runAutoV3ForUser({
 
   log(
     `scan complete scanned=${scan.scanned} qualified=${executable.length} ` +
-    `executed=${executed.length} skipped=${skipped.length} watches=${scan.watchCandidates.length}`,
+    `executed=${executed.length} skipped=${skipped.length} ` +
+    `near=${scan.watchCandidates.length} hot=${scan.hotWatchCandidates.length}`,
   );
 
   return {
@@ -104,8 +113,9 @@ export async function runAutoV3ForUser({
     executed,
     skipped,
     v3Promoted: executable.length,
-    qualityWatch: scan.watchCandidates.length,
+    qualityWatch: scan.watchCandidates.length + scan.hotWatchCandidates.length,
     watchCandidates: scan.watchCandidates,
+    hotWatchCandidates: scan.hotWatchCandidates,
     nearQualifiedPairs: scan.nearQualifiedPairs,
     hotPairs: scan.hotPairs,
     lateEntryPairs: scan.lateEntryPairs,
