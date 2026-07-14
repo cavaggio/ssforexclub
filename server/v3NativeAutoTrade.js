@@ -4,6 +4,7 @@ import { DEFAULT_V3_FOREX_WATCHLIST, scanV3Watchlist } from './v3NativeScanner.j
 import { V3_PRIMARY_ALIGNMENT_MIN_SCORE } from './v3PrimaryAlignment.js';
 
 export const V3_STAGE1_MIN_SCORE = 62;
+export const V3_PROVISIONING_POLICY_VERSION = 'v3-primary-2of3-2026-07-14';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
@@ -36,6 +37,7 @@ function logWatchCandidate(candidate, tier, log) {
     `score=${metrics.score ?? 'n/a'}/${metrics.minScore ?? V3_STAGE1_MIN_SCORE} ` +
     `tpHit=${metrics.tpHitConfidence ?? candidate?.tpHitConfidence ?? 'n/a'}/${metrics.minTpHitConfidence ?? 'n/a'} ` +
     `rr=${metrics.rr ?? candidate?.expectedRR ?? candidate?.rr ?? 'n/a'}/${metrics.minRR ?? 'n/a'} ` +
+    `alignment=${candidate?.primaryTimeframeAlignment?.score ?? 'n/a'}/${V3_PRIMARY_ALIGNMENT_MIN_SCORE} ` +
     `stage1Reasons="${compactReasons(stage1.reasons)}" ` +
     `stage2Reasons="${compactReasons(stage2.reasons)}"`,
   );
@@ -142,7 +144,11 @@ export async function runAutoV3ForUser({
   const account = maskAccount(client?.accountId);
   const log = (message) => console.log(`${tag} account=${account} ${message}`);
 
-  log(`[V3_NATIVE_POLICY] stage1MinScore=${V3_STAGE1_MIN_SCORE}`);
+  log(
+    `[V3_NATIVE_POLICY] version=${V3_PROVISIONING_POLICY_VERSION} ` +
+    `stage1MinScore=${V3_STAGE1_MIN_SCORE} primaryAlignment=Daily/H4/M15-2of3 ` +
+    `primaryMin=${V3_PRIMARY_ALIGNMENT_MIN_SCORE} legacyMacroStructExecGates=disabled`,
+  );
 
   const scan = await scanV3Watchlist({ client, now, scanMode, pairs, log });
 
@@ -163,6 +169,7 @@ export async function runAutoV3ForUser({
     tradeStyle: 'SCALP',
     scalpOnly: true,
     selectedLogicType: 'v3_pure',
+    policyVersion: V3_PROVISIONING_POLICY_VERSION,
   }));
 
   const executed = [];
@@ -216,20 +223,28 @@ export async function runAutoV3ForUser({
       entryTiming: signal.entryTiming,
       source: signal.source,
       strategy: 'V3',
+      policyVersion: V3_PROVISIONING_POLICY_VERSION,
       signal,
     });
     log(`trade executed pair=${signal.pair} dir=${signal.direction} id=${result.tradeId}`);
   }
 
   log(
-    `scan complete scanned=${scan.scanned} qualified=${executable.length} ` +
-    `executed=${executed.length} skipped=${skipped.length} ` +
+    `scan complete policy=${V3_PROVISIONING_POLICY_VERSION} scanned=${scan.scanned} ` +
+    `qualified=${executable.length} executed=${executed.length} skipped=${skipped.length} ` +
     `near=${scan.watchCandidates.length} hot=${scan.hotWatchCandidates.length}`,
   );
 
   return {
     engine: 'v3',
     scanner: 'v3_native',
+    policyVersion: V3_PROVISIONING_POLICY_VERSION,
+    policy: {
+      primaryAlignmentRule: 'Daily/H4/M15 exact two-of-three',
+      primaryAlignmentMinimum: V3_PRIMARY_ALIGNMENT_MIN_SCORE,
+      stage1MinimumScore: V3_STAGE1_MIN_SCORE,
+      legacyMacroStructuralExecutionConfidenceGates: 'disabled',
+    },
     scanned: scan.scanned,
     reviewedPairs: scan.pairs,
     qualified: executable.length,
@@ -244,6 +259,10 @@ export async function runAutoV3ForUser({
     nearQualifiedPairs: scan.nearQualifiedPairs,
     hotPairs: scan.hotPairs,
     lateEntryPairs: scan.lateEntryPairs,
-    scanMeta: scan.meta,
+    scanMeta: {
+      ...(scan.meta || {}),
+      policyVersion: V3_PROVISIONING_POLICY_VERSION,
+      legacyMacroStructuralExecutionConfidenceGates: 'disabled',
+    },
   };
 }
