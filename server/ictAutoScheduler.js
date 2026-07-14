@@ -4,22 +4,26 @@ import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMo
  *
  * Railway-side staged trigger for autonomous Auto AI trading. It does NOT
  * resolve credentials or execute itself — Railway has no Clerk/decrypt context.
- * Each in-window tick POSTs a protected Next endpoint
- * (/api/cron/auto-ai-trading), which enumerates opted-in users, resolves each
- * user's creds, and calls back into the Railway internal Auto AI endpoints.
+ * Each in-window tick POSTs protected Next endpoints, which enumerate opted-in
+ * users, resolve each user's credentials, and call the Railway internal OANDA
+ * endpoints with a user-scoped client.
  *
- * Off by default (ICT_AUTO_AI_SCHEDULER_ENABLED=false). Only fires on NY
- * weekdays between 02:15 and 11:00 ET (DST-aware via ictTime).
+ * Off by default (ICT_AUTO_AI_SCHEDULER_ENABLED=false).
  *
  * Cadence:
- * - Full scan: every 5 minutes
- * - Near-qualified recheck: every 60 seconds
- * - Hot trigger watch: every 30 seconds
+ * - Full entry scan: every 2 minutes, 02:15–14:00 ET weekdays
+ * - Near-qualified recheck: every 60 seconds, 02:15–14:00 ET weekdays
+ * - Hot trigger watch: every 30 seconds, 02:15–14:00 ET weekdays
+ * - Active-trade management: every 5 minutes, 02:15–17:05 ET weekdays
  */
 
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 11 * 60 }; // 02:15–11:00 ET
+export const AUTO_AI_WINDOW = { startMin: 2 * 60 + 15, endMin: 14 * 60 }; // 02:15–14:00 ET
+export const ACTIVE_TRADE_MANAGEMENT_WINDOW = {
+  startMin: 2 * 60 + 15,
+  endMin: 17 * 60 + 5,
+}; // final 17:00 ET sweep plus five-minute scheduling grace
 
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = parseInterval(
   'AUTO_AI_FULL_SCAN_INTERVAL_MS',
@@ -34,6 +38,11 @@ export const AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS = parseInterval(
 export const AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS = parseInterval(
   'AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS',
   30 * 1000,
+);
+
+export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = parseInterval(
+  'ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS',
+  5 * 60 * 1000,
 );
 
 export const OANDA_TRANSACTION_SYNC_INTERVAL_MS = parseInterval(
@@ -52,11 +61,21 @@ function parseInterval(name, fallbackMs) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
 }
 
-/** True only on a NY weekday within 02:15–11:00 ET. */
+/** True only on a NY weekday within the Auto AI entry window. */
 export function inAutoAiWindow(input = new Date()) {
   const et = etParts(input);
   if (!et || et.isWeekend) return false;
   return et.minutesFromMidnight >= AUTO_AI_WINDOW.startMin && et.minutesFromMidnight < AUTO_AI_WINDOW.endMin;
+}
+
+/** True while account-scoped active-trade monitoring is allowed. */
+export function inActiveTradeManagementWindow(input = new Date()) {
+  const et = etParts(input);
+  if (!et || et.isWeekend) return false;
+  return (
+    et.minutesFromMidnight >= ACTIVE_TRADE_MANAGEMENT_WINDOW.startMin &&
+    et.minutesFromMidnight < ACTIVE_TRADE_MANAGEMENT_WINDOW.endMin
+  );
 }
 
 /** Short correlation id for one scheduler tick, threaded through the whole path. */
@@ -98,10 +117,12 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const nearRecheckMs = AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS;
   const hotWatchMs = AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS;
+  const activeTradeManagementMs = ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS;
 
   console.log(
     `[AUTO_AI] starting staged scheduler → ${nextUrl}/api/cron/auto-ai-trading ` +
-    `(NY weekday 02:15–11:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms)`,
+    `(NY weekday entries 02:15–14:00 ET; full=${fullScanMs}ms near=${nearRecheckMs}ms hot=${hotWatchMs}ms; ` +
+    `active-management 02:15–17:05 ET every ${activeTradeManagementMs}ms)`,
   );
 
   addTimer(setInterval(() => {
@@ -128,6 +149,11 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
     });
   }, hotWatchMs));
 
+  addTimer(setInterval(() => {
+    void activeTradeManagementTick(nextUrl, secret);
+  }, activeTradeManagementMs));
+  void activeTradeManagementTick(nextUrl, secret);
+
   // Sync broker-side OANDA TP/SL closes into trade_logs for Edge Intelligence.
   // This is intentionally NOT gated by the Auto AI entry window.
   addTimer(setInterval(() => {
@@ -141,6 +167,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
     fullScanMs,
     nearRecheckMs,
     hotWatchMs,
+    activeTradeManagementMs,
   };
 }
 
@@ -157,8 +184,8 @@ export async function tick(nextUrl, secret, options = {}) {
   } = options;
 
   if (!inAutoAiWindow(new Date())) {
-    console.log(`${logTag} outside Auto AI window — skip`);
-    return { ok: true, skipped: true, reason: 'outside_window' };
+    console.log(`${logTag} outside Auto AI entry window (02:15–14:00 ET) — skip`);
+    return { ok: true, skipped: true, reason: 'outside_entry_window' };
   }
 
   if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && !pairs.length) {
@@ -201,6 +228,41 @@ export async function tick(nextUrl, secret, options = {}) {
     return { ok: true, status: res.status, body: text };
   } catch (err) {
     console.log(`${tag} cron unreachable: ${err?.message || err}`);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+export async function activeTradeManagementTick(nextUrl, secret, now = new Date()) {
+  const tag = '[AUTO_AI_ACTIVE_MANAGEMENT][SCHEDULER]';
+
+  if (!inActiveTradeManagementWindow(now)) {
+    console.log(`${tag} outside 02:15–17:05 ET management window — skip`);
+    return { ok: true, skipped: true, reason: 'outside_management_window' };
+  }
+
+  const managementUrl = `${String(nextUrl).replace(/\/$/, '')}/api/cron/oanda-active-trade-management`;
+
+  try {
+    const res = await fetch(managementUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cron-Secret': secret,
+      },
+      body: JSON.stringify({ source: 'railway-scheduler', runId: makeRunId() }),
+    });
+
+    const text = await res.text();
+
+    if (!res.ok) {
+      console.log(`${tag} failed ${res.status}: ${text.slice(0, 500)}`);
+      return { ok: false, status: res.status, body: text };
+    }
+
+    console.log(`${tag} complete ${text.slice(0, 500)}`);
+    return { ok: true, status: res.status, body: text };
+  } catch (err) {
+    console.log(`${tag} unreachable: ${err?.message || err}`);
     return { ok: false, error: err?.message || String(err) };
   }
 }
@@ -308,22 +370,20 @@ export function stopAutoAiScheduler() {
   return { stopped: true };
 }
 
-
-
 // === ACTIVE TRADE LOGIC PATCH ===
 export function getNewYorkMinutes(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hour: "2-digit",
-    minute: "2-digit",
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
   }).formatToParts(date);
 
   const get = (type) =>
     Number(parts.find((part) => part.type === type)?.value ?? 0);
 
-  const hour = get("hour") === 24 ? 0 : get("hour");
-  return hour * 60 + get("minute");
+  const hour = get('hour') === 24 ? 0 : get('hour');
+  return hour * 60 + get('minute');
 }
 
 export function getNewYorkHour(date = new Date()) {
@@ -332,25 +392,25 @@ export function getNewYorkHour(date = new Date()) {
 
 export function isPrimaryTradeWindow(date = new Date()) {
   const minutes = getNewYorkMinutes(date);
-  return minutes >= 2 * 60 + 15 && minutes < 11 * 60;
+  return minutes >= 2 * 60 + 15 && minutes < 14 * 60;
 }
 
-export function isTrueHardReject(reason = "") {
+export function isTrueHardReject(reason = '') {
   const r = String(reason).toLowerCase();
   return (
-    r.includes("rr") && r.includes("1.5") ||
-    r.includes("risk reward") && r.includes("below") ||
-    r.includes("max daily loss") ||
-    r.includes("daily loss") ||
-    r.includes("max trades") ||
-    r.includes("duplicate") ||
-    r.includes("spread too high") ||
-    r.includes("invalid broker") ||
-    r.includes("credentials") ||
-    r.includes("missing stop") ||
-    r.includes("missing take profit") ||
-    r.includes("live trading disabled") ||
-    r.includes("execution disabled")
+    r.includes('rr') && r.includes('1.5') ||
+    r.includes('risk reward') && r.includes('below') ||
+    r.includes('max daily loss') ||
+    r.includes('daily loss') ||
+    r.includes('max trades') ||
+    r.includes('duplicate') ||
+    r.includes('spread too high') ||
+    r.includes('invalid broker') ||
+    r.includes('credentials') ||
+    r.includes('missing stop') ||
+    r.includes('missing take profit') ||
+    r.includes('live trading disabled') ||
+    r.includes('execution disabled')
   );
 }
 
@@ -363,16 +423,16 @@ export function softenRejectReasons(reasons = [], now = new Date()) {
     if (isTrueHardReject(r)) return true;
 
     if (
-      r.includes("late_entry") ||
-      r.includes("late entry") ||
-      r.includes("flow opposes") ||
-      r.includes("institutional flow") ||
-      r.includes("missing smt") ||
-      r.includes("missing fvg") ||
-      r.includes("mixed ema") ||
-      r.includes("emaalignment=mixed") ||
-      r.includes("single opposing liquidity") ||
-      r.includes("liquidity proxy")
+      r.includes('late_entry') ||
+      r.includes('late entry') ||
+      r.includes('flow opposes') ||
+      r.includes('institutional flow') ||
+      r.includes('missing smt') ||
+      r.includes('missing fvg') ||
+      r.includes('mixed ema') ||
+      r.includes('emaalignment=mixed') ||
+      r.includes('single opposing liquidity') ||
+      r.includes('liquidity proxy')
     ) {
       return false;
     }
@@ -385,12 +445,10 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 85) return "SCALP";
-  return "NONE";
+  if (rr >= 1.5 && confidence >= 85) return 'SCALP';
+  return 'NONE';
 }
 // === END ACTIVE TRADE LOGIC PATCH ===
-
-
 
 function prioritizeRetraceWatchPairs(pairs = []) {
   const watched = getRetraceWatchPairs();
