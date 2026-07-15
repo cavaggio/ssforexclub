@@ -11,7 +11,9 @@
  */
 
 import { auth } from '@clerk/nextjs/server';
+import { revalidatePath } from 'next/cache';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
+import { getServerSupabase } from '@/lib/db';
 import { summarizeEnvironments } from '@/lib/environments';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus, type ClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { formatBrokerConnection } from '@/lib/brokerDisplay';
@@ -19,6 +21,43 @@ import { ValidateConnectionsButton } from '@/components/validate-connections-but
 import { TradingModeToggle } from '@/components/trading-mode-toggle';
 import { ConnectBrokerForm } from '@/components/connect-broker-form';
 import { LiveAckCard } from '@/components/live-ack-card';
+
+/**
+ * Reactivate a previously disabled broker row without requiring the user to
+ * re-enter credentials. The update is scoped by both Clerk user ID and row ID,
+ * and resets validation so the next "Re-check connections" performs a fresh
+ * broker authentication probe.
+ */
+async function reactivateBrokerConnectionAction(formData: FormData): Promise<void> {
+  'use server';
+
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthenticated');
+
+  const connectionId = String(formData.get('connectionId') || '').trim();
+  if (!connectionId) throw new Error('connectionId is required');
+
+  const supabase = getServerSupabase();
+  const { data, error } = await supabase
+    .from('broker_connections')
+    .update({
+      is_active: true,
+      validation_status: 'pending',
+      last_validated_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId)
+    .eq('id', connectionId)
+    .select('id');
+
+  if (error) throw new Error(`reactivateBrokerConnection: ${error.message}`);
+  if (!Array.isArray(data) || data.length !== 1) {
+    throw new Error('Broker connection was not found or could not be reactivated');
+  }
+
+  revalidatePath('/dashboard/settings');
+  revalidatePath('/dashboard');
+}
 
 export default async function SettingsPage() {
   const { userId } = await auth();
@@ -204,6 +243,8 @@ export default async function SettingsPage() {
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 12,
                   padding: '12px 16px',
                   background: 'var(--bg)',
                   border: '1px solid var(--border)',
@@ -216,9 +257,32 @@ export default async function SettingsPage() {
                     {formatBrokerConnection(c).environment} &middot; {formatBrokerConnection(c).accountLabel}
                   </span>
                 </span>
-                <span style={{ color: statusToneColor(formatBrokerConnection(c).statusTone) }}>
-                  {formatBrokerConnection(c).statusLabel}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ color: statusToneColor(formatBrokerConnection(c).statusTone) }}>
+                    {formatBrokerConnection(c).statusLabel}
+                  </span>
+                  {!c.isActive && (
+                    <form action={reactivateBrokerConnectionAction}>
+                      <input type="hidden" name="connectionId" value={c.id} />
+                      <button
+                        type="submit"
+                        style={{
+                          padding: '6px 12px',
+                          background: 'transparent',
+                          color: 'var(--text)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                          fontFamily: 'inherit',
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Reactivate
+                      </button>
+                    </form>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
