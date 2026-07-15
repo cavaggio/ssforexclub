@@ -20,6 +20,8 @@ type TradeActivityRow = {
 type ActivityResponse = {
   ok?: boolean;
   rows?: TradeActivityRow[];
+  tradingDateKey?: string | null;
+  timeZone?: string;
   syncedClosed?: number;
   syncWarning?: string | null;
   refreshedAt?: string;
@@ -60,12 +62,24 @@ function compactTradeId(value: string | null): string {
   return `${value.slice(0, 6)}…${value.slice(-4)}`;
 }
 
+function formatTradingDate(value: string | null): string {
+  if (!value) return 'Today';
+  const [year, month, day] = value.split('-').map(Number);
+  if (![year, month, day].every(Number.isFinite)) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(year, month - 1, day));
+}
+
 export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
   const [rows, setRows] = useState<TradeActivityRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
+  const [tradingDateKey, setTradingDateKey] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -83,6 +97,7 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
       }
       setRows(Array.isArray(data.rows) ? data.rows : []);
       setWarning(data.syncWarning ?? null);
+      setTradingDateKey(data.tradingDateKey ?? null);
       setRefreshedAt(data.refreshedAt ?? new Date().toISOString());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -104,7 +119,7 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
     };
   }, [refresh]);
 
-  const visibleRows = useMemo(() => rows.slice(0, 30), [rows]);
+  const visibleRows = useMemo(() => rows.slice(0, 50), [rows]);
 
   return (
     <section
@@ -127,15 +142,14 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
         }}
       >
         <div>
-          <h2 style={{ margin: 0, fontSize: 18 }}>Trade activity</h2>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Today&apos;s trade activity</h2>
           <p style={{ color: 'var(--muted)', margin: '5px 0 0', fontSize: 13, lineHeight: 1.5 }}>
-            Open and close events for every traded pair. The list refreshes automatically every 30 seconds.
+            Opens, partial closes, and closes recorded today in New York time. Older trades remain in Trade logs.
           </p>
-          {refreshedAt && (
-            <div style={{ color: 'var(--muted)', marginTop: 5, fontSize: 11 }}>
-              Last refreshed {new Date(refreshedAt).toLocaleString()}
-            </div>
-          )}
+          <div style={{ color: 'var(--muted)', marginTop: 5, fontSize: 11 }}>
+            Trading date: {formatTradingDate(tradingDateKey)} ET
+            {refreshedAt ? ` · Last refreshed ${new Date(refreshedAt).toLocaleString()}` : ''}
+          </div>
         </div>
         <button
           type="button"
@@ -201,8 +215,8 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
           }}
         >
           {hasBroker
-            ? 'No documented trade opens or closes yet.'
-            : 'Connect a broker to begin documenting trade opens and closes.'}
+            ? 'No trades have been opened or closed today.'
+            : 'Connect a broker to begin documenting today’s trade activity.'}
         </div>
       )}
 
@@ -233,7 +247,7 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
               {visibleRows.map((row) => (
                 <tr key={row.id} style={{ borderBottom: '1px solid rgba(128,128,160,0.15)' }}>
                   <td style={{ padding: '11px 10px', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
-                    {new Date(row.created_at).toLocaleString()}
+                    {new Date(row.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
                   </td>
                   <td style={{ padding: '11px 10px', color: 'var(--text)', fontWeight: 800, fontSize: 13 }}>
                     {displayPair(row.instrument)}
