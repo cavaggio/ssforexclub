@@ -10,6 +10,10 @@
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
 import {
+  applyPrimaryDirectionDisplayPolicy,
+  PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
+} from '@/lib/v3PrimaryDirectionDisplay.js';
+import {
   normalizeScanForV3Display,
   V3_PROVISIONING_POLICY_VERSION,
 } from '@/lib/v3ScanDisplayPolicy.js';
@@ -168,11 +172,15 @@ async function handle(req: Request) {
       ? envelope.scan as AnyRecord
       : {};
 
-    const normalized = normalizeScanForV3Display(rawScan);
+    // Correct stale legacy LONG/SHORT labels from the authoritative Daily/H4/M15
+    // majority before alignment scoring. This changes dashboard display only.
+    const directionCorrected = applyPrimaryDirectionDisplayPolicy(rawScan);
+    const normalized = normalizeScanForV3Display(directionCorrected);
     const scan = makeScanRenderSafe(normalized);
 
     console.log(
       `[SCANNER_SCAN_POLICY] version=${V3_PROVISIONING_POLICY_VERSION} ` +
+      `directionPolicy=${PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION} ` +
       `alignment=Daily/H4/M15-2of3 legacyConfidenceGates=diagnostic_only ` +
       `watchDisplay=near_hot_separated renderSafety=enabled`,
     );
@@ -181,6 +189,7 @@ async function handle(req: Request) {
       ...envelope,
       scan,
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
+      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
     });
   } catch (err) {
     console.warn(
@@ -200,6 +209,7 @@ async function handle(req: Request) {
         meta: {},
       },
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
+      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
     }, { status: 502 });
   }
 }
