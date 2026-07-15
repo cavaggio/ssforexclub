@@ -1,11 +1,10 @@
 /**
  * web/app/dashboard/futures/page.tsx
  *
- * Futures / NinjaTrader tab. Separate from the OANDA forex dashboard — futures
- * never share OANDA's execution path. The connection panel fetches live
- * diagnostics and derives every state (connection / mode / execution) from the
- * shared pure helper, so "Execution enabled" can only appear when every gate
- * passes. Live execution is OFF by default (NINJATRADER_LIVE_EXECUTION_ENABLED).
+ * Interactive Brokers + ICT Indices & Gold tab. Futures remain physically
+ * separate from the OANDA forex execution path. The legacy internal provider
+ * key `ninjatrader` is retained temporarily for route/database compatibility;
+ * all user-facing behavior and credentials are IBKR Gateway based.
  */
 
 import { auth } from '@clerk/nextjs/server';
@@ -15,8 +14,9 @@ import {
   ninjatraderLiveEnabled,
 } from '@/lib/futuresProvider';
 import { getUserTradingSettings } from '@/lib/userTradingSettings';
-import { ConnectNinjaTraderForm } from '@/components/connect-ninjatrader-form';
+import { ConnectIbkrForm } from '@/components/connect-ibkr-form';
 import { FuturesStatusPanel, type FuturesGate } from '@/components/futures-status-panel';
+import { IbkrIctEnginePanel } from '@/components/ibkr-ict-engine-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,23 +40,26 @@ export default async function FuturesPage() {
     hasConnection: Boolean(active),
     connectionEnvironment: active?.environment ?? null,
     complianceMessage: isLive && !liveFlag
-      ? 'Live NinjaTrader execution is disabled (NINJATRADER_LIVE_EXECUTION_ENABLED). Simulated mode only.'
+      ? 'Live IBKR execution is disabled (IBKR_LIVE_EXECUTION_ENABLED=false). Paper and shadow analysis remain available.'
       : null,
   };
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div style={{ maxWidth: 1080, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
       <section style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 20 }}>Futures / NinjaTrader</h2>
-        <p style={{ color: 'var(--muted)', marginTop: 8 }}>
-          Trade index, energy and metals futures through NinjaTrader / Tradovate. This tab is fully
-          separate from your OANDA forex setup — no futures order can route through OANDA.
+        <h2 style={{ margin: 0, fontSize: 20 }}>Interactive Brokers — ICT Indices & Gold</h2>
+        <p style={{ color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
+          Analyze and trade CME index futures and COMEX gold through a dedicated ICT engine.
+          This tab never routes futures orders through OANDA and never applies forex pip sizing
+          to futures contracts.
         </p>
       </section>
 
-      <FuturesStatusPanel provider="ninjatrader" providerLabel="NinjaTrader / Tradovate" gate={gate} />
+      <FuturesStatusPanel provider="ninjatrader" providerLabel="Interactive Brokers" gate={gate} />
 
-      <ConnectNinjaTraderForm />
+      <IbkrIctEnginePanel enabled={enabled} hasConnection={Boolean(active)} />
+
+      <ConnectIbkrForm />
     </div>
   );
 }
