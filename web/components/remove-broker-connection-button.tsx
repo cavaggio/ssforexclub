@@ -2,7 +2,6 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { deleteBrokerConnectionAction } from '@/app/dashboard/actions';
 
 export function RemoveBrokerConnectionButton({
   connectionId,
@@ -22,16 +21,23 @@ export function RemoveBrokerConnectionButton({
     if (!confirmed) return;
 
     setError(null);
-    const formData = new FormData();
-    formData.set('connectionId', connectionId);
-
     startTransition(async () => {
-      const result = await deleteBrokerConnectionAction(formData);
-      if (!result.ok) {
-        setError(result.error);
-        return;
+      try {
+        const res = await fetch(`/api/broker-connections/${encodeURIComponent(connectionId)}`, {
+          method: 'DELETE',
+        });
+        const result = (await res.json().catch(() => ({ ok: false, error: 'Unexpected response' }))) as {
+          ok: boolean;
+          error?: string;
+        };
+        if (!res.ok || !result.ok) {
+          setError(result.error || 'Could not remove broker connection');
+          return;
+        }
+        router.refresh();
+      } catch {
+        setError('Could not reach the server');
       }
-      router.refresh();
     });
   }
 
