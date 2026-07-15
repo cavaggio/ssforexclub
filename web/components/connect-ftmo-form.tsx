@@ -2,25 +2,90 @@
 
 import { useActionState, useState } from 'react';
 import { saveFtmoConnectionAction, type FtmoActionResult } from '@/app/dashboard/ftmo-actions';
+import type { FtmoPlatform } from '@/lib/futuresProvider';
 
 async function wrapper(_prev: FtmoActionResult | null, formData: FormData): Promise<FtmoActionResult> {
   return saveFtmoConnectionAction(formData);
 }
 
+const CONNECTORS: Array<{
+  value: FtmoPlatform;
+  title: string;
+  badge: string;
+  description: string;
+}> = [
+  {
+    value: 'ctrader',
+    title: 'cTrader Open API',
+    badge: 'Recommended',
+    description: 'Native OAuth/Open API connection for FTMO cTrader accounts.',
+  },
+  {
+    value: 'mt5',
+    title: 'MetaTrader 5',
+    badge: 'Bridge',
+    description: 'Connect through a MetaApi or self-hosted MT5 bridge.',
+  },
+  {
+    value: 'mt4',
+    title: 'MetaTrader 4',
+    badge: 'Bridge',
+    description: 'Connect through a MetaApi or self-hosted MT4 bridge.',
+  },
+];
+
 export function ConnectFtmoForm() {
   const [state, formAction, pending] = useActionState(wrapper, null);
   const [environment, setEnvironment] = useState<'challenge' | 'verification' | 'funded'>('challenge');
+  const [platform, setPlatform] = useState<FtmoPlatform>('ctrader');
 
   return (
     <section style={panel}>
-      <h3 style={{ margin: 0, fontSize: 16 }}>Connect FTMO / cTrader account</h3>
+      <h3 style={{ margin: 0, fontSize: 18 }}>Connect an FTMO account</h3>
 
-      <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13 }}>
-        Save FTMO/cTrader credentials securely. Secrets are encrypted server-side and never returned to the browser.
+      <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, lineHeight: 1.6 }}>
+        FTMO currently provides cTrader, MetaTrader 5, and MetaTrader 4 accounts. cTrader uses
+        Open API credentials. MetaTrader accounts require a separate bridge because FTMO does
+        not issue a direct REST API token for MT4 or MT5.
       </p>
 
+      <div style={connectorGrid}>
+        {CONNECTORS.map((connector) => {
+          const selected = connector.value === platform;
+          return (
+            <button
+              key={connector.value}
+              type="button"
+              onClick={() => setPlatform(connector.value)}
+              aria-pressed={selected}
+              style={{
+                ...connectorCard,
+                borderColor: selected ? 'var(--accent)' : 'var(--border)',
+                boxShadow: selected ? '0 0 0 1px var(--accent)' : 'none',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <strong style={{ color: 'var(--text)', fontSize: 14 }}>{connector.title}</strong>
+                <span style={connectorBadge}>{connector.badge}</span>
+              </span>
+              <span style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5, textAlign: 'left' }}>
+                {connector.description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={notice}>
+        {platform === 'ctrader'
+          ? 'Use the cTrader account ID and OAuth tokens generated through the cTrader Open API application. Do not enter your FTMO password here.'
+          : `The ${platform.toUpperCase()} API token comes from the configured bridge provider, not from FTMO. Live execution remains disabled until the bridge adapter is completed and validated.`}
+      </div>
+
       <form action={formAction} style={grid}>
-        <Field label="Environment">
+        <input type="hidden" name="platform" value={platform} />
+
+        <Field label="FTMO phase">
           <select
             name="environment"
             value={environment}
@@ -29,43 +94,63 @@ export function ConnectFtmoForm() {
           >
             <option value="challenge">Challenge</option>
             <option value="verification">Verification</option>
-            <option value="funded">Funded</option>
+            <option value="funded">FTMO Account</option>
           </select>
         </Field>
 
-        <Field label="cTrader Account ID">
-          <input name="accountId" type="text" required style={input} autoComplete="off" />
+        <Field label={platform === 'ctrader' ? 'cTrader account ID' : 'FTMO account login'}>
+          <input
+            name="accountId"
+            type="text"
+            required
+            style={input}
+            autoComplete="off"
+            placeholder={platform === 'ctrader' ? 'cTID trader account ID' : 'MetaTrader login number'}
+          />
         </Field>
 
-        <Field label="cTrader Client ID">
-          <input name="clientId" type="text" required style={input} autoComplete="off" />
-        </Field>
+        {platform === 'ctrader' ? (
+          <>
+            <Field label="cTrader access token">
+              <input name="accessToken" type="password" required style={input} autoComplete="off" />
+            </Field>
 
-        <Field label="cTrader Client Secret">
-          <input name="clientSecret" type="password" required style={input} autoComplete="off" />
-        </Field>
+            <Field label="cTrader refresh token">
+              <input name="refreshToken" type="password" required style={input} autoComplete="off" />
+            </Field>
+          </>
+        ) : (
+          <>
+            <Field label="FTMO server">
+              <input
+                name="server"
+                type="text"
+                required
+                style={input}
+                autoComplete="off"
+                placeholder="Shown in FTMO account credentials"
+              />
+            </Field>
 
-        <Field label="Access Token">
-          <input name="accessToken" type="password" required style={input} autoComplete="off" />
-        </Field>
+            <Field label="MetaApi account ID">
+              <input name="bridgeAccountId" type="text" required style={input} autoComplete="off" />
+            </Field>
 
-        <Field label="Refresh Token">
-          <input name="refreshToken" type="password" required style={input} autoComplete="off" />
-        </Field>
-
-        <Field label="API Base URL optional">
-          <input name="apiBaseUrl" type="text" style={input} autoComplete="off" placeholder="Optional" />
-        </Field>
+            <Field label="MetaApi API token">
+              <input name="bridgeToken" type="password" required style={input} autoComplete="off" />
+            </Field>
+          </>
+        )}
 
         <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
           <button type="submit" disabled={pending} style={{ ...btn, cursor: pending ? 'wait' : 'pointer' }}>
-            {pending ? 'Saving…' : 'Save FTMO connection'}
+            {pending ? 'Saving…' : `Save ${platform === 'ctrader' ? 'cTrader' : platform.toUpperCase()} connection`}
           </button>
         </div>
       </form>
 
       {state && !state.ok && <div style={errBox}>{state.error}</div>}
-      {state && state.ok && <div style={okBox}>FTMO connection saved.</div>}
+      {state && state.ok && <div style={okBox}>FTMO connection profile saved.</div>}
     </section>
   );
 }
@@ -84,6 +169,49 @@ const panel: React.CSSProperties = {
   border: '1px solid var(--border)',
   borderRadius: 10,
   padding: 24,
+};
+
+const connectorGrid: React.CSSProperties = {
+  marginTop: 18,
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+  gap: 12,
+};
+
+const connectorCard: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  padding: 14,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  fontFamily: 'inherit',
+  cursor: 'pointer',
+};
+
+const connectorBadge: React.CSSProperties = {
+  padding: '3px 8px',
+  borderRadius: 20,
+  background: '#10283b',
+  border: '1px solid #24516f',
+  color: 'var(--accent)',
+  fontSize: 10,
+  fontWeight: 800,
+  textTransform: 'uppercase',
+  letterSpacing: '0.7px',
+  whiteSpace: 'nowrap',
+};
+
+const notice: React.CSSProperties = {
+  marginTop: 14,
+  padding: '11px 13px',
+  borderRadius: 7,
+  background: '#33270d',
+  border: '1px solid #5c481a',
+  color: '#e0b341',
+  fontSize: 12,
+  lineHeight: 1.5,
 };
 
 const grid: React.CSSProperties = {
