@@ -11,6 +11,8 @@ on:
       - 'web/components/trade-activity-log.tsx'
       - 'web/lib/tradingDay.js'
       - 'web/lib/tradingDay.test.js'
+      - 'web/lib/v3PrimaryDirectionDisplay.js'
+      - 'web/lib/v3PrimaryDirectionDisplay.test.js'
       - 'web/lib/v3ScanDisplayPolicy.js'
       - 'web/lib/v3ScanDisplayPolicy.test.js'
       - '.github/workflows/dashboard-watch-ci.yml'
@@ -31,8 +33,9 @@ jobs:
       - name: Pure policy syntax and tests
         run: |
           node --check web/lib/tradingDay.js
+          node --check web/lib/v3PrimaryDirectionDisplay.js
           node --check web/lib/v3ScanDisplayPolicy.js
-          node --test web/lib/tradingDay.test.js web/lib/v3ScanDisplayPolicy.test.js
+          node --test web/lib/tradingDay.test.js web/lib/v3PrimaryDirectionDisplay.test.js web/lib/v3ScanDisplayPolicy.test.js
       - name: Install dashboard dependencies
         working-directory: web
         run: npm ci
