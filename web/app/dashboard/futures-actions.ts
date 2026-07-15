@@ -1,12 +1,9 @@
 /**
  * web/app/dashboard/futures-actions.ts
  *
- * Server Actions for connecting the futures providers (NinjaTrader, Topstep).
- * Same security contract as the OANDA broker actions:
- *   - run server-only
- *   - derive userId from the Clerk session, never from form data
- *   - validate + encrypt credentials before persistence
- *   - never echo secrets back to the browser
+ * Server Actions for connecting futures providers. The primary futures slot
+ * retains the legacy canonical provider value `ninjatrader` for database and
+ * route compatibility, but now stores IBKR Gateway / bridge connection data.
  */
 
 'use server';
@@ -60,20 +57,25 @@ async function saveFutures(
   }
 }
 
-// ─── NinjaTrader ────────────────────────────────────────────────────────────
-export async function saveNinjaTraderConnectionAction(formData: FormData): Promise<ActionResult> {
+// ─── Interactive Brokers ─────────────────────────────────────────────────────
+export async function saveIbkrConnectionAction(formData: FormData): Promise<ActionResult> {
   const environment = (str(formData, 'environment') || 'paper') as BrokerEnvironment;
   if (environment !== 'paper' && environment !== 'live') {
-    return { ok: false, error: 'NinjaTrader environment must be paper or live' };
+    return { ok: false, error: 'IBKR environment must be paper or live' };
   }
   return saveFutures('ninjatrader', environment, {
-    name: str(formData, 'name'),
-    password: str(formData, 'password'),
-    appId: str(formData, 'appId'),
-    appVersion: str(formData, 'appVersion'),
-    cid: str(formData, 'cid'),
-    sec: str(formData, 'sec'),
+    accountId: str(formData, 'accountId').toUpperCase(),
+    gatewayUrl: str(formData, 'gatewayUrl').replace(/\/+$/, ''),
+    bridgeToken: str(formData, 'bridgeToken'),
+    clientId: str(formData, 'clientId') || '7',
+    providerLabel: 'ibkr',
   });
+}
+
+// Legacy action kept temporarily so old clients fail with an explicit message
+// instead of silently saving obsolete Tradovate credentials.
+export async function saveNinjaTraderConnectionAction(): Promise<ActionResult> {
+  return { ok: false, error: 'NinjaTrader / Tradovate has been replaced by Interactive Brokers on the Futures tab.' };
 }
 
 // ─── Topstep ──────────────────────────────────────────────────────────────────
