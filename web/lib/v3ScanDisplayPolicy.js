@@ -142,18 +142,111 @@ function isObsoleteDirectionalReason(reason) {
   );
 }
 
+function normalizedTimingStatus(signal = {}) {
+  return String(signal?.entryTiming?.status || signal?.entryStatus || '').trim().toLowerCase();
+}
+
+function normalizedWatchTier(signal = {}) {
+  const tier = String(
+    signal?.dashboardWatchTier?.tier ||
+    signal?.watchTier?.tier ||
+    signal?.watchTier ||
+    '',
+  ).trim().toLowerCase();
+  return ['hot', 'near', 'ready', 'none'].includes(tier) ? tier : null;
+}
+
+function hardWatchBlockReasons(signal = {}) {
+  const reasons = [
+    ...(Array.isArray(signal?.rejectionReasons) ? signal.rejectionReasons : []),
+    ...(Array.isArray(signal?.alignment?.rejectionReasons) ? signal.alignment.rejectionReasons : []),
+    signal?.reason,
+  ].filter(Boolean).map((reason) => String(reason).toLowerCase());
+
+  const hardPatterns = [
+    'news block',
+    'news_blocked',
+    'high-impact',
+    'spread ',
+    'risk/reward',
+    'risk reward',
+    'no target provides',
+    'below minimum rr',
+    'choppy',
+    'whipsaw',
+    'late_entry',
+    'late entry',
+    'insufficient candles',
+    'no oanda pricing',
+    'not tradeable',
+    'over-extended',
+    'possible exhaustion',
+    'reversal risk high',
+  ];
+
+  return reasons.filter((reason) => hardPatterns.some((pattern) => reason.includes(pattern)));
+}
+
+/**
+ * Assign a non-executable dashboard watch tier using the same observable states
+ * as the native V3 watch classifier. This changes display grouping only; it
+ * never promotes a pair into the executable qualified array.
+ */
+export function classifyDashboardWatchTier(signal = {}) {
+  const primary = signal?.primaryTimeframeAlignment || calculateDashboardPrimaryAlignment(signal);
+  if (primary?.passed !== true) {
+    return { tier: 'none', reason: 'Primary Daily/H4/M15 alignment has not passed.' };
+  }
+
+  if (signal?.newsRisk?.blocked === true) {
+    return { tier: 'none', reason: 'News risk is blocking the setup.' };
+  }
+
+  const hardReasons = hardWatchBlockReasons(signal);
+  if (hardReasons.length) {
+    return { tier: 'none', reason: hardReasons[0] };
+  }
+
+  const explicitTier = normalizedWatchTier(signal);
+  if (explicitTier === 'hot' || explicitTier === 'near') {
+    return {
+      tier: explicitTier,
+      reason: String(signal?.watchTier?.reason || signal?.dashboardWatchTier?.reason || `${explicitTier} watch candidate`),
+    };
+  }
+
+  const timing = normalizedTimingStatus(signal);
+  if (timing === 'wait_for_retest') {
+    return { tier: 'hot', reason: signal?.entryTiming?.reason || 'Waiting for a confirmed retest.' };
+  }
+  if (timing === 'too_early') {
+    return { tier: 'near', reason: signal?.entryTiming?.reason || 'Waiting for price to enter the setup zone.' };
+  }
+  if (timing === 'news_blocked' || timing === 'late_entry') {
+    return { tier: 'none', reason: `Entry timing is ${timing}.` };
+  }
+
+  const stage1 = signal?.qualityConfirmation?.stage1;
+  const stage2 = signal?.qualityConfirmation?.stage2;
+  if (stage1?.allowed === true && String(stage2?.state || '').toLowerCase() === 'watch') {
+    return { tier: 'hot', reason: 'Setup passed; waiting for a fresh primary trigger.' };
+  }
+  if (stage1?.allowed === true && stage2?.allowed !== true) {
+    return { tier: 'near', reason: 'Setup passed but trigger support is incomplete.' };
+  }
+
+  if (signal?.displayQualification === 'primary_alignment_passed_legacy_diagnostics_only') {
+    return { tier: 'near', reason: 'Primary alignment passed; remaining V3 entry confirmation is pending.' };
+  }
+
+  return { tier: 'none', reason: 'Setup is not currently a Near Qualified or Hot Watch candidate.' };
+}
+
 /**
  * The dashboard scanner still receives rich legacy-waterfall context. Normalize
  * only the displayed directional policy so it matches the native V3 Auto AI
  * engine. This function never places trades or bypasses news, spread, R:R,
  * reversal-risk, Stage 1, Stage 2, sizing, margin, or broker checks.
- *
- * Legacy candle-strength profile floors are diagnostic only for V3. The separate
- * risk-monitor exhaustion/over-extension check remains a valid hard risk reason.
- *
- * RANGING is context, not an automatic rejection, once the authoritative V3
- * direction, alignment and remaining execution/risk gates pass. CHOPPY/whipsaw
- * conditions remain valid hard rejection reasons.
  */
 export function normalizeSignalForV3Display(signal = {}) {
   const primary = calculateDashboardPrimaryAlignment(signal);
@@ -229,6 +322,36 @@ export function normalizeSignalForV3Display(signal = {}) {
   };
 }
 
+function normalizeWatchSources(values, forcedTier) {
+  if (!Array.isArray(values)) return [];
+  return values.map((signal) => {
+    const normalized = normalizeSignalForV3Display(signal);
+    return {
+      ...normalized,
+      dashboardWatchTier: {
+        tier: forcedTier,
+        reason: String(signal?.watchTier?.reason || signal?.reason || `${forcedTier} watch candidate`),
+      },
+    };
+  });
+}
+
+function signalKey(signal = {}) {
+  return `${String(signal?.pair || signal?.instrument || 'unknown')}:${String(signal?.direction || signal?.v3?.direction || 'neutral')}`;
+}
+
+function uniqueSignals(values = []) {
+  const seen = new Set();
+  const output = [];
+  for (const signal of values) {
+    const key = signalKey(signal);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(signal);
+  }
+  return output;
+}
+
 export function normalizeScanForV3Display(scan = {}) {
   const qualified = Array.isArray(scan.qualified)
     ? scan.qualified.map(normalizeSignalForV3Display)
@@ -237,25 +360,46 @@ export function normalizeScanForV3Display(scan = {}) {
     ? scan.rejected.map(normalizeSignalForV3Display)
     : [];
 
-  // Never promote a legacy dashboard result into the executable qualified list.
-  // A pair that only failed obsolete legacy confidence/directional checks is
-  // removed from the red Rejected section and returned separately for audit.
-  // Native V3 Auto AI remains the only authority that can qualify it to trade.
-  const v3PrimaryPassedContext = normalizedRejected.filter(
+  const classifiedRejected = normalizedRejected.map((signal) => ({
+    ...signal,
+    dashboardWatchTier: classifyDashboardWatchTier(signal),
+  }));
+
+  const explicitNear = [
+    ...normalizeWatchSources(scan.nearQualified, 'near'),
+    ...normalizeWatchSources(scan.watchCandidates, 'near'),
+  ];
+  const explicitHot = [
+    ...normalizeWatchSources(scan.hotWatch, 'hot'),
+    ...normalizeWatchSources(scan.hotWatchCandidates, 'hot'),
+  ];
+
+  const hotWatch = uniqueSignals([
+    ...explicitHot,
+    ...classifiedRejected.filter((signal) => signal.dashboardWatchTier?.tier === 'hot'),
+  ]);
+  const nearQualified = uniqueSignals([
+    ...explicitNear,
+    ...classifiedRejected.filter((signal) => signal.dashboardWatchTier?.tier === 'near'),
+  ]).filter((signal) => !hotWatch.some((hot) => signalKey(hot) === signalKey(signal)));
+
+  const watchedKeys = new Set([...hotWatch, ...nearQualified].map(signalKey));
+  const v3PrimaryPassedContext = classifiedRejected.filter(
     (signal) =>
-      signal.displayQualification ===
-      'primary_alignment_passed_legacy_diagnostics_only',
+      signal.displayQualification === 'primary_alignment_passed_legacy_diagnostics_only',
   );
-  const rejected = normalizedRejected.filter(
+  const rejected = classifiedRejected.filter(
     (signal) =>
-      signal.displayQualification !==
-      'primary_alignment_passed_legacy_diagnostics_only',
+      !watchedKeys.has(signalKey(signal)) &&
+      signal.displayQualification !== 'primary_alignment_passed_legacy_diagnostics_only',
   );
 
   return {
     ...scan,
     qualified,
     rejected,
+    nearQualified,
+    hotWatch,
     v3PrimaryPassedContext,
     meta: {
       ...(scan.meta || {}),
@@ -270,6 +414,9 @@ export function normalizeScanForV3Display(scan = {}) {
       executionEngine: 'v3_native_auto_ai',
       dashboardAnalysisEngine: 'legacy_context_normalized_to_v3_policy',
       v3PrimaryPassedContextCount: v3PrimaryPassedContext.length,
+      nearQualifiedCount: nearQualified.length,
+      hotWatchCount: hotWatch.length,
+      watchDisplayPolicy: 'non_executable_display_only',
     },
   };
 }
