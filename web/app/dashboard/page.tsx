@@ -2,7 +2,7 @@
  * web/app/dashboard/page.tsx
  *
  * Main trading dashboard. Shows the user's active environment summary, trade
- * activity, risk controls, Auto AI controls, and the rich scanner panel.
+ * activity, risk controls, Auto AI controls, V3 watch status, and scanner.
  */
 
 import Link from 'next/link';
@@ -10,6 +10,7 @@ import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { ScannerStatusCard } from '@/components/scanner-status-card';
+import { ScannerWatchStatus } from '@/components/scanner-watch-status';
 import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
@@ -129,10 +130,9 @@ export default async function DashboardPage() {
       {hasAnyConnection && <RiskManagementPanel />}
       {hasAnyConnection && <AutoAiTradingToggle />}
 
-      {/* Always visible near the top: documents every open, close, and partial close
-          for the signed-in user's traded pairs. */}
       <TradeActivityLog hasBroker={hasAnyConnection} />
 
+      <ScannerWatchStatus hasBroker={hasAnyConnection} />
       <ScannerStatusCard hasBroker={hasAnyConnection} />
     </div>
   );
