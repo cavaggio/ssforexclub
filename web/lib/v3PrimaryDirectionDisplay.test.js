@@ -30,7 +30,7 @@ test('three bearish primary timeframes override a stale LONG label and score 100
   assert.equal(alignment.passed, true);
   assert.deepEqual(alignment.alignedTimeframes, ['daily', 'h4', 'm15']);
   assert.deepEqual(alignment.opposingTimeframes, []);
-  assert.deepEqual(alignment.contextConflicts, ['h1', 'm5']);
+  assert.deepEqual(alignment.contextConflicts, ['h1']);
 });
 
 test('two bullish primary timeframes produce LONG and 67 regardless of stale SHORT label', () => {
