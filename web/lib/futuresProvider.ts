@@ -10,7 +10,6 @@
 import 'server-only';
 import {
   createBrokerConnection,
-  deactivateBrokerConnection,
   listBrokerConnectionsForUser,
   getDecryptedBrokerCredentials,
   type BrokerConnection,
@@ -91,12 +90,8 @@ export async function saveFuturesConnection(args: {
   if (!check.ok) throw new Error(check.error);
 
   const accountId = deriveAccountId(provider, credentials) || provider;
-  const existing = await listBrokerConnectionsForUser(clerkUserId);
-  const stale = existing.filter(
-    (c) => c.broker === provider && c.environment === environment && c.accountId === accountId && c.isActive,
-  );
-  for (const s of stale) await deactivateBrokerConnection(clerkUserId, s.id);
-
+  // createBrokerConnection performs an atomic upsert for this exact logical
+  // account, reactivating a previously disabled row without a duplicate insert.
   return createBrokerConnection({
     clerkUserId,
     broker: provider,
