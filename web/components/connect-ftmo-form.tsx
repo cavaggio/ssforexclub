@@ -13,10 +13,11 @@ export function ConnectFtmoForm() {
 
   return (
     <section style={panel}>
-      <h3 style={{ margin: 0, fontSize: 16 }}>Connect FTMO / cTrader account</h3>
+      <h3 style={{ margin: 0, fontSize: 16 }}>Connect FTMO MetaTrader 5 bridge</h3>
 
-      <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13 }}>
-        Save FTMO/cTrader credentials securely. Secrets are encrypted server-side and never returned to the browser.
+      <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, lineHeight: 1.6 }}>
+        These encrypted credentials authorize Signal Stack to your private MT5 bridge. Keep the FTMO master trading
+        password only on the Windows VPS bridge; do not enter the investor/read-only password here.
       </p>
 
       <form action={formAction} style={grid}>
@@ -33,39 +34,44 @@ export function ConnectFtmoForm() {
           </select>
         </Field>
 
-        <Field label="cTrader Account ID">
-          <input name="accountId" type="text" required style={input} autoComplete="off" />
+        <Field label="MT5 Login Number">
+          <input name="accountLogin" inputMode="numeric" pattern="[0-9]+" required style={input} autoComplete="off" />
         </Field>
 
-        <Field label="cTrader Client ID">
-          <input name="clientId" type="text" required style={input} autoComplete="off" />
+        <Field label="Exact MT5 Server">
+          <input name="server" type="text" required style={input} autoComplete="off" placeholder="Example: FTMO-Demo2" />
         </Field>
 
-        <Field label="cTrader Client Secret">
-          <input name="clientSecret" type="password" required style={input} autoComplete="off" />
+        <Field label="HTTPS Bridge URL">
+          <input name="bridgeUrl" type="url" required style={input} autoComplete="off" placeholder="https://mt5-bridge.example.com" />
         </Field>
 
-        <Field label="Access Token">
-          <input name="accessToken" type="password" required style={input} autoComplete="off" />
+        <Field label="Bridge API Key">
+          <input name="bridgeApiKey" type="password" required style={input} autoComplete="new-password" />
         </Field>
 
-        <Field label="Refresh Token">
-          <input name="refreshToken" type="password" required style={input} autoComplete="off" />
+        <Field label="Bridge HMAC Secret">
+          <input name="bridgeSecret" type="password" minLength={16} required style={input} autoComplete="new-password" />
         </Field>
 
-        <Field label="API Base URL optional">
-          <input name="apiBaseUrl" type="text" style={input} autoComplete="off" placeholder="Optional" />
+        <Field label="Terminal ID">
+          <input name="terminalId" type="text" style={input} autoComplete="off" defaultValue="ftmo-primary" />
         </Field>
+
+        <div style={{ gridColumn: '1 / -1', ...noteBox }}>
+          The FTMO master password, MetaTrader terminal path, and the same bridge key/secret are configured in the
+          bridge service&apos;s Windows VPS <code>.env</code> file.
+        </div>
 
         <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
           <button type="submit" disabled={pending} style={{ ...btn, cursor: pending ? 'wait' : 'pointer' }}>
-            {pending ? 'Saving…' : 'Save FTMO connection'}
+            {pending ? 'Saving…' : 'Save FTMO MT5 connection'}
           </button>
         </div>
       </form>
 
       {state && !state.ok && <div style={errBox}>{state.error}</div>}
-      {state && state.ok && <div style={okBox}>FTMO connection saved.</div>}
+      {state && state.ok && <div style={okBox}>FTMO MT5 bridge connection saved.</div>}
     </section>
   );
 }
@@ -109,6 +115,16 @@ const input: React.CSSProperties = {
   borderRadius: 6,
   fontFamily: 'inherit',
   fontSize: 13,
+};
+
+const noteBox: React.CSSProperties = {
+  padding: '10px 14px',
+  background: 'var(--bg)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  color: 'var(--muted)',
+  fontSize: 12,
+  lineHeight: 1.55,
 };
 
 const btn: React.CSSProperties = {
