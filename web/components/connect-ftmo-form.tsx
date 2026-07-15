@@ -18,7 +18,7 @@ const CONNECTORS: Array<{
     value: 'ctrader',
     title: 'cTrader Open API',
     badge: 'Recommended',
-    description: 'Native OAuth/Open API connection for FTMO cTrader accounts.',
+    description: 'Secure OAuth connection for FTMO cTrader accounts.',
   },
   {
     value: 'mt5',
@@ -44,9 +44,9 @@ export function ConnectFtmoForm() {
       <h3 style={{ margin: 0, fontSize: 18 }}>Connect an FTMO account</h3>
 
       <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, lineHeight: 1.6 }}>
-        FTMO currently provides cTrader, MetaTrader 5, and MetaTrader 4 accounts. cTrader uses
-        Open API credentials. MetaTrader accounts require a separate bridge because FTMO does
-        not issue a direct REST API token for MT4 or MT5.
+        FTMO currently provides cTrader, MetaTrader 5, and MetaTrader 4 accounts. cTrader connects
+        through cTrader ID authorization. MetaTrader accounts require a separate bridge because
+        FTMO does not issue a direct REST API token for MT4 or MT5.
       </p>
 
       <div style={connectorGrid}>
@@ -78,79 +78,97 @@ export function ConnectFtmoForm() {
 
       <div style={notice}>
         {platform === 'ctrader'
-          ? 'Use the cTrader account ID and OAuth tokens generated through the cTrader Open API application. Do not enter your FTMO password here.'
+          ? 'Signal Stack redirects you to cTrader to approve access. Your FTMO or cTrader password is never entered into or stored by Signal Stack.'
           : `The ${platform.toUpperCase()} API token comes from the configured bridge provider, not from FTMO. Live execution remains disabled until the bridge adapter is completed and validated.`}
       </div>
 
-      <form action={formAction} style={grid}>
-        <input type="hidden" name="platform" value={platform} />
+      {platform === 'ctrader' ? (
+        <div style={grid}>
+          <Field label="FTMO phase">
+            <select
+              value={environment}
+              onChange={(e) => setEnvironment(e.target.value as 'challenge' | 'verification' | 'funded')}
+              style={input}
+            >
+              <option value="challenge">Challenge</option>
+              <option value="verification">Verification</option>
+              <option value="funded">FTMO Account</option>
+            </select>
+          </Field>
 
-        <Field label="FTMO phase">
-          <select
-            name="environment"
-            value={environment}
-            onChange={(e) => setEnvironment(e.target.value as 'challenge' | 'verification' | 'funded')}
-            style={input}
-          >
-            <option value="challenge">Challenge</option>
-            <option value="verification">Verification</option>
-            <option value="funded">FTMO Account</option>
-          </select>
-        </Field>
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 6 }}>
+            <span style={labelStyle}>Secure authorization</span>
+            <a
+              href={`/api/ftmo/ctrader/connect?environment=${encodeURIComponent(environment)}`}
+              style={oauthButton}
+            >
+              Connect cTrader to Signal Stack
+            </a>
+          </div>
 
-        <Field label={platform === 'ctrader' ? 'cTrader account ID' : 'FTMO account login'}>
-          <input
-            name="accountId"
-            type="text"
-            required
-            style={input}
-            autoComplete="off"
-            placeholder={platform === 'ctrader' ? 'cTID trader account ID' : 'MetaTrader login number'}
-          />
-        </Field>
-
-        {platform === 'ctrader' ? (
-          <>
-            <Field label="cTrader access token">
-              <input name="accessToken" type="password" required style={input} autoComplete="off" />
-            </Field>
-
-            <Field label="cTrader refresh token">
-              <input name="refreshToken" type="password" required style={input} autoComplete="off" />
-            </Field>
-          </>
-        ) : (
-          <>
-            <Field label="FTMO server">
-              <input
-                name="server"
-                type="text"
-                required
-                style={input}
-                autoComplete="off"
-                placeholder="Shown in FTMO account credentials"
-              />
-            </Field>
-
-            <Field label="MetaApi account ID">
-              <input name="bridgeAccountId" type="text" required style={input} autoComplete="off" />
-            </Field>
-
-            <Field label="MetaApi API token">
-              <input name="bridgeToken" type="password" required style={input} autoComplete="off" />
-            </Field>
-          </>
-        )}
-
-        <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-          <button type="submit" disabled={pending} style={{ ...btn, cursor: pending ? 'wait' : 'pointer' }}>
-            {pending ? 'Saving…' : `Save ${platform === 'ctrader' ? 'cTrader' : platform.toUpperCase()} connection`}
-          </button>
+          <p style={{ gridColumn: '1 / -1', color: 'var(--muted)', fontSize: 12, lineHeight: 1.55, margin: 0 }}>
+            After you sign in with your cTrader ID, choose the FTMO account or accounts Signal Stack may access.
+            The connection requests trading scope, but order execution remains blocked by Signal Stack until the
+            cTrader transport and live-execution safeguards are enabled.
+          </p>
         </div>
-      </form>
+      ) : (
+        <form action={formAction} style={grid}>
+          <input type="hidden" name="platform" value={platform} />
 
-      {state && !state.ok && <div style={errBox}>{state.error}</div>}
-      {state && state.ok && <div style={okBox}>FTMO connection profile saved.</div>}
+          <Field label="FTMO phase">
+            <select
+              name="environment"
+              value={environment}
+              onChange={(e) => setEnvironment(e.target.value as 'challenge' | 'verification' | 'funded')}
+              style={input}
+            >
+              <option value="challenge">Challenge</option>
+              <option value="verification">Verification</option>
+              <option value="funded">FTMO Account</option>
+            </select>
+          </Field>
+
+          <Field label="FTMO account login">
+            <input
+              name="accountId"
+              type="text"
+              required
+              style={input}
+              autoComplete="off"
+              placeholder="MetaTrader login number"
+            />
+          </Field>
+
+          <Field label="FTMO server">
+            <input
+              name="server"
+              type="text"
+              required
+              style={input}
+              autoComplete="off"
+              placeholder="Shown in FTMO account credentials"
+            />
+          </Field>
+
+          <Field label="MetaApi account ID">
+            <input name="bridgeAccountId" type="text" required style={input} autoComplete="off" />
+          </Field>
+
+          <Field label="MetaApi API token">
+            <input name="bridgeToken" type="password" required style={input} autoComplete="off" />
+          </Field>
+
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+            <button type="submit" disabled={pending} style={{ ...btn, cursor: pending ? 'wait' : 'pointer' }}>
+              {pending ? 'Saving…' : `Save ${platform.toUpperCase()} connection`}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {platform !== 'ctrader' && state && !state.ok && <div style={errBox}>{state.error}</div>}
+      {platform !== 'ctrader' && state && state.ok && <div style={okBox}>FTMO connection profile saved.</div>}
     </section>
   );
 }
@@ -231,12 +249,24 @@ const labelStyle: React.CSSProperties = {
 
 const input: React.CSSProperties = {
   padding: '10px 12px',
+  minHeight: 40,
   background: 'var(--bg)',
   border: '1px solid var(--border)',
   color: 'var(--text)',
   borderRadius: 6,
   fontFamily: 'inherit',
   fontSize: 13,
+};
+
+const oauthButton: React.CSSProperties = {
+  ...input,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'var(--accent)',
+  color: '#001a33',
+  textDecoration: 'none',
+  fontWeight: 800,
 };
 
 const btn: React.CSSProperties = {
