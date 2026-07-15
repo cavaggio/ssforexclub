@@ -18,10 +18,16 @@ const validFtmoEnv = {
   FTMO_LIVE_EXECUTION_ENABLED: 'false',
   FTMO_USE_V3_ENGINE: 'true',
   FTMO_USE_ICT_ENGINE: 'true',
-  FTMO_CTRADER_CLIENT_ID: 'client-id',
-  FTMO_CTRADER_CLIENT_SECRET: 'client-secret',
-  FTMO_CTRADER_ACCOUNT_ID: 'account-id',
-  FTMO_CTRADER_ACCESS_TOKEN: 'access-token',
+  CTRADER_OPEN_API_CLIENT_ID: 'client-id',
+  CTRADER_OPEN_API_CLIENT_SECRET: 'client-secret',
+};
+
+const validUserCredentials = {
+  accountId: 'account-id',
+  accessToken: 'access-token',
+  refreshToken: 'refresh-token',
+  traderLogin: '1234567',
+  isLive: false,
 };
 
 test('FTMO config defaults live execution to false', () => {
@@ -38,42 +44,57 @@ test('FTMO config defaults live execution to false', () => {
 });
 
 test('FTMO validation rejects disabled connector', () => {
-  const result = validateFtmoCredentials({
-    FTMO_ENABLED: 'false',
-  });
+  const result = validateFtmoCredentials({ FTMO_ENABLED: 'false' });
 
   assert.equal(result.ok, false);
   assert.equal(result.error, 'FTMO connector disabled');
 });
 
-test('FTMO validation rejects missing cTrader credentials', () => {
+test('FTMO app validation requires Signal Stack cTrader app credentials', () => {
   const result = validateFtmoCredentials({
     FTMO_ENABLED: 'true',
     FTMO_PROVIDER: 'ctrader',
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.error, 'FTMO cTrader credentials missing');
-  assert.ok(result.missing.includes('FTMO_CTRADER_CLIENT_ID'));
-  assert.ok(result.missing.includes('FTMO_CTRADER_CLIENT_SECRET'));
-  assert.ok(result.missing.includes('FTMO_CTRADER_ACCOUNT_ID'));
-  assert.ok(result.missing.includes('FTMO_CTRADER_ACCESS_TOKEN'));
+  assert.equal(result.error, 'cTrader Open API app credentials missing');
+  assert.ok(result.missing.includes('CTRADER_OPEN_API_CLIENT_ID'));
+  assert.ok(result.missing.includes('CTRADER_OPEN_API_CLIENT_SECRET'));
 });
 
-test('FTMO client builds only from FTMO credentials', () => {
-  const client = buildFtmoClient({ env: validFtmoEnv });
+test('FTMO app validation succeeds without a global user account token', () => {
+  const result = validateFtmoCredentials(validFtmoEnv);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.missing, []);
+});
+
+test('FTMO client builds from shared app credentials and per-user OAuth tokens', () => {
+  const client = buildFtmoClient({
+    env: validFtmoEnv,
+    credentials: validUserCredentials,
+  });
 
   assert.equal(client.provider, 'ftmo');
   assert.equal(client.adapter, 'ctrader');
   assert.equal(client.accountId, 'account-id');
   assert.equal(client.credentials.clientId, 'client-id');
+  assert.equal(client.credentials.accessToken, 'access-token');
+  assert.equal(client.credentials.refreshToken, 'refresh-token');
+});
+
+test('FTMO client rejects missing per-user OAuth tokens', () => {
+  assert.throws(
+    () => buildFtmoClient({ env: validFtmoEnv }),
+    /FTMO cTrader credentials missing/,
+  );
 });
 
 test('FTMO client does not accept OANDA-only credentials', () => {
   assert.throws(
     () => buildFtmoClient({
       env: {
-        FTMO_ENABLED: 'true',
+        ...validFtmoEnv,
         OANDA_API_KEY: 'oanda-key',
         OANDA_ACCOUNT_ID: 'oanda-account',
       },
@@ -83,7 +104,7 @@ test('FTMO client does not accept OANDA-only credentials', () => {
 });
 
 test('FTMO live execution false blocks place order', async () => {
-  const client = buildFtmoClient({ env: validFtmoEnv });
+  const client = buildFtmoClient({ env: validFtmoEnv, credentials: validUserCredentials });
   const result = await placeFtmoOrder(client, {
     symbol: 'EUR_USD',
     side: 'buy',
@@ -95,7 +116,7 @@ test('FTMO live execution false blocks place order', async () => {
 });
 
 test('FTMO live execution false blocks close position', async () => {
-  const client = buildFtmoClient({ env: validFtmoEnv });
+  const client = buildFtmoClient({ env: validFtmoEnv, credentials: validUserCredentials });
   const result = await closeFtmoPosition(client, {
     positionId: 'position-1',
   });
@@ -105,8 +126,8 @@ test('FTMO live execution false blocks close position', async () => {
   assert.equal(result.reason, 'FTMO live execution disabled');
 });
 
-test('FTMO account summary transport is isolated and not silently implemented', async () => {
-  const client = buildFtmoClient({ env: validFtmoEnv });
+test('FTMO account summary transport remains isolated until implemented', async () => {
+  const client = buildFtmoClient({ env: validFtmoEnv, credentials: validUserCredentials });
   const result = await getFtmoAccountSummary(client);
 
   assert.equal(result.ok, false);
@@ -114,8 +135,8 @@ test('FTMO account summary transport is isolated and not silently implemented', 
   assert.equal(result.reason, 'FTMO cTrader account summary transport not implemented yet');
 });
 
-test('FTMO positions transport is isolated and not silently implemented', async () => {
-  const client = buildFtmoClient({ env: validFtmoEnv });
+test('FTMO positions transport remains isolated until implemented', async () => {
+  const client = buildFtmoClient({ env: validFtmoEnv, credentials: validUserCredentials });
   const result = await getFtmoPositions(client);
 
   assert.equal(result.ok, false);
