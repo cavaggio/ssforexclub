@@ -1,15 +1,10 @@
 /**
  * web/lib/futuresProvider.ts
  *
- * Server-only credential + feature-flag layer for the futures providers
- * (NinjaTrader, Topstep). These reuse broker_connections + AES-256-GCM
- * encryption, but carry a MULTI-FIELD credential object rather than a single
- * token. The whole object is JSON-encoded and stored in `encrypted_token`
- * (which only ever holds ciphertext). `encrypted_secret` stays null.
- *
- * Credentials are NEVER returned to the browser. The connect Server Actions
- * validate + persist; the proxy decrypts server-side and forwards to the
- * scanner's internal futures endpoints.
+ * Server-only credential + feature-flag layer for NinjaTrader, Topstep, and
+ * the FTMO MT5 bridge. These reuse broker_connections + AES-256-GCM encryption,
+ * but carry a multi-field credential object rather than a single token.
+ * Credentials are never returned to the browser.
  */
 
 import 'server-only';
@@ -26,10 +21,10 @@ export type FuturesProvider = 'ninjatrader' | 'topstep' | 'ftmo';
 
 export const NINJATRADER_REQUIRED_FIELDS = ['name', 'password', 'appId', 'appVersion', 'cid', 'sec'] as const;
 export const TOPSTEP_REQUIRED_FIELDS = ['userName', 'apiKey'] as const;
+export const FTMO_REQUIRED_FIELDS = ['accountLogin', 'server', 'bridgeUrl', 'bridgeApiKey', 'bridgeSecret'] as const;
 
 export type FuturesValidation = { ok: boolean; missing: string[]; error?: string };
 
-// ─── feature flags (env) ────────────────────────────────────────────────────
 const truthy = (v: string | undefined) => String(v || 'false').toLowerCase() === 'true';
 
 export function ninjatraderEnabled(): boolean { return truthy(process.env.NINJATRADER_FUTURES_ENABLED); }
@@ -42,7 +37,6 @@ export const TOPSTEP_COMPLIANCE_MESSAGE =
   'Topstep execution is only enabled when your account, API permissions, and Topstep ' +
   'automation rules allow it.';
 
-// ─── validation (mirrors the server connectors) ─────────────────────────────
 function validateFields(creds: Record<string, unknown>, required: readonly string[]): FuturesValidation {
   if (!creds || typeof creds !== 'object') {
     return { ok: false, missing: [...required], error: 'Credentials are required' };
@@ -56,15 +50,24 @@ function validateFields(creds: Record<string, unknown>, required: readonly strin
 }
 
 export function validateFuturesCredentials(provider: FuturesProvider, creds: Record<string, unknown>): FuturesValidation {
-  return provider === 'ninjatrader'
-    ? validateFields(creds, NINJATRADER_REQUIRED_FIELDS)
-    : validateFields(creds, TOPSTEP_REQUIRED_FIELDS);
+  if (provider === 'ninjatrader') return validateFields(creds, NINJATRADER_REQUIRED_FIELDS);
+  if (provider === 'topstep') return validateFields(creds, TOPSTEP_REQUIRED_FIELDS);
+
+  const result = validateFields(creds, FTMO_REQUIRED_FIELDS);
+  if (!result.ok) return result;
+  if (!/^\d+$/.test(String(creds.accountLogin).trim())) {
+    return { ok: false, missing: [], error: 'FTMO MT5 login must contain digits only' };
+  }
+  if (String(creds.bridgeSecret).trim().length < 16) {
+    return { ok: false, missing: [], error: 'FTMO bridge secret must be at least 16 characters' };
+  }
+  return { ok: true, missing: [] };
 }
 
-/** A stable per-connection account label derived from the credential set. */
 function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknown>): string {
   if (provider === 'ninjatrader') return String(creds.name || '').trim();
-  return String(creds.userName || '').trim();
+  if (provider === 'topstep') return String(creds.userName || '').trim();
+  return String(creds.accountLogin || '').trim();
 }
 
 const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
@@ -73,11 +76,6 @@ const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
   ftmo: ['challenge', 'verification', 'funded'],
 };
 
-/**
- * Validate + encrypt + persist a futures connection. Returns the created
- * connection metadata (no secrets). Deactivates any stale active row for the
- * same (provider, env, account) first — same upsert-by-history pattern as OANDA.
- */
 export async function saveFuturesConnection(args: {
   clerkUserId: string;
   provider: FuturesProvider;
@@ -93,14 +91,12 @@ export async function saveFuturesConnection(args: {
   if (!check.ok) throw new Error(check.error);
 
   const accountId = deriveAccountId(provider, credentials) || provider;
-
   const existing = await listBrokerConnectionsForUser(clerkUserId);
   const stale = existing.filter(
     (c) => c.broker === provider && c.environment === environment && c.accountId === accountId && c.isActive,
   );
   for (const s of stale) await deactivateBrokerConnection(clerkUserId, s.id);
 
-  // The full credential object is JSON-encoded into the (encrypted) token field.
   return createBrokerConnection({
     clerkUserId,
     broker: provider,
@@ -119,10 +115,6 @@ export async function listFuturesConnections(
   return all.filter((c) => c.broker === provider && c.isActive);
 }
 
-/**
- * Decrypt the credential object for a futures connection. SERVER-ONLY — the
- * returned object must never cross the wire. Returns null if not found.
- */
 export async function resolveFuturesCredentials(
   clerkUserId: string,
   connectionId: string,

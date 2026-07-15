@@ -34,7 +34,6 @@ async function requireUserId(): Promise<string> {
 export async function saveFtmoConnectionAction(formData: FormData): Promise<FtmoActionResult> {
   try {
     const userId = await requireUserId();
-
     const environment = (str(formData, 'environment') || 'challenge') as BrokerEnvironment;
 
     if (!['challenge', 'verification', 'funded'].includes(environment)) {
@@ -42,20 +41,36 @@ export async function saveFtmoConnectionAction(formData: FormData): Promise<Ftmo
     }
 
     const credentials = {
-      accountId: str(formData, 'accountId'),
-      clientId: str(formData, 'clientId'),
-      clientSecret: str(formData, 'clientSecret'),
-      accessToken: str(formData, 'accessToken'),
-      refreshToken: str(formData, 'refreshToken'),
-      apiBaseUrl: str(formData, 'apiBaseUrl'),
+      accountLogin: str(formData, 'accountLogin'),
+      server: str(formData, 'server'),
+      bridgeUrl: str(formData, 'bridgeUrl').replace(/\/+$/, ''),
+      bridgeApiKey: str(formData, 'bridgeApiKey'),
+      bridgeSecret: str(formData, 'bridgeSecret'),
+      terminalId: str(formData, 'terminalId') || 'ftmo-primary',
     };
 
-    const missing = Object.entries(credentials)
-      .filter(([key, value]) => key !== 'apiBaseUrl' && !value)
-      .map(([key]) => key);
+    const required = ['accountLogin', 'server', 'bridgeUrl', 'bridgeApiKey', 'bridgeSecret'] as const;
+    const missing = required.filter((key) => !credentials[key]);
 
     if (missing.length) {
-      return { ok: false, error: `Missing required FTMO field(s): ${missing.join(', ')}` };
+      return { ok: false, error: `Missing required FTMO MT5 field(s): ${missing.join(', ')}` };
+    }
+    if (!/^\d+$/.test(credentials.accountLogin)) {
+      return { ok: false, error: 'FTMO MT5 login must contain digits only' };
+    }
+    if (credentials.bridgeSecret.length < 16) {
+      return { ok: false, error: 'Bridge secret must be at least 16 characters' };
+    }
+
+    let bridgeUrl: URL;
+    try {
+      bridgeUrl = new URL(credentials.bridgeUrl);
+    } catch {
+      return { ok: false, error: 'Bridge URL must be a valid absolute URL' };
+    }
+    const local = ['localhost', '127.0.0.1', '::1'].includes(bridgeUrl.hostname);
+    if (bridgeUrl.protocol !== 'https:' && !(bridgeUrl.protocol === 'http:' && local)) {
+      return { ok: false, error: 'Bridge URL must use HTTPS' };
     }
 
     await saveFuturesConnection({
@@ -66,6 +81,7 @@ export async function saveFtmoConnectionAction(formData: FormData): Promise<Ftmo
     });
 
     revalidatePath('/dashboard/ftmo');
+    revalidatePath('/dashboard/settings');
 
     return { ok: true };
   } catch (err) {

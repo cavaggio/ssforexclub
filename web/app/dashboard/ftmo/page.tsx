@@ -35,31 +35,30 @@ function Row({ label, active }: { label: string; active: boolean }) {
 
 export default async function FtmoPage() {
   const { userId } = await auth();
-
   const connections = userId
     ? await listFuturesConnections(userId, 'ftmo').catch(() => [])
     : [];
-
   const active = connections[0] ?? null;
 
   const ftmoEnabled = on(process.env.FTMO_ENABLED);
   const autoTrade = on(process.env.FTMO_AUTO_TRADE_ENABLED);
   const liveExecution = on(process.env.FTMO_LIVE_EXECUTION_ENABLED);
-  const useV3 = on(process.env.FTMO_USE_V3_ENGINE);
-  const useICT = on(process.env.FTMO_USE_ICT_ENGINE);
-  const provider = process.env.FTMO_PROVIDER || 'ctrader';
+  const useV3 = process.env.FTMO_USE_V3_ENGINE == null || on(process.env.FTMO_USE_V3_ENGINE);
+  const useICT = process.env.FTMO_USE_ICT_ENGINE == null || on(process.env.FTMO_USE_ICT_ENGINE);
+  const provider = process.env.FTMO_PROVIDER || 'mt5_bridge';
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
       <section style={panel}>
-        <h2 style={{ margin: 0, fontSize: 20 }}>FTMO / cTrader</h2>
+        <h2 style={{ margin: 0, fontSize: 20 }}>FTMO / MetaTrader 5 Bridge</h2>
 
-        <p style={{ color: 'var(--muted)', marginTop: 8 }}>
-          FTMO connector scaffold for prop-firm trading. This is separate from OANDA, NinjaTrader, and Topstep.
+        <p style={{ color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
+          Signal Stack sends signed trade requests to a private bridge running beside the FTMO MT5 terminal on a
+          Windows VPS. FTMO credentials never fall back to OANDA or another broker connection.
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12 }}>
-          Safe mode: live FTMO order execution stays disabled until real cTrader transport is complete.
+          Safe mode: keep live execution disabled until bridge health, account identity, positions, and test orders are verified.
         </p>
       </section>
 
@@ -77,11 +76,16 @@ export default async function FtmoPage() {
           <Row label="Live execution" active={liveExecution} />
           <Row label="V3 engine" active={useV3} />
           <Row label="ICT engine" active={useICT} />
-          <Row label="Saved connection" active={Boolean(active)} />
+          <Row label="Saved MT5 bridge" active={Boolean(active)} />
 
           <div style={card}>
             <strong>Environment</strong>
             <span>{active?.environment ?? '—'}</span>
+          </div>
+
+          <div style={card}>
+            <strong>MT5 Login</strong>
+            <span>{active?.accountId ?? '—'}</span>
           </div>
         </div>
       </section>
