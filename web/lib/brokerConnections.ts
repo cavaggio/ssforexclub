@@ -8,7 +8,7 @@
  *   - Every query filters by `user_id = clerkUserId`. A future bug that
  *     forgets the filter would still hit RLS-disabled service-role land, so
  *     defense-in-depth: code review and tests should pin this contract.
- *   - Credentials are encrypted before insert and never returned to callers.
+ *   - Credentials are encrypted before insert/update and never returned to callers.
  *     A separate helper `getDecryptedTokenForUser` is provided for the
  *     scanner/proxy code that needs to call broker APIs server-side.
  *
@@ -96,12 +96,22 @@ export async function listBrokerConnectionsForUser(
   return (data ?? []).map((r) => rowToConnection(r as unknown as Record<string, unknown>));
 }
 
+/**
+ * Create or refresh one logical broker connection.
+ *
+ * The database has a unique key on (user_id, broker, account_id, environment),
+ * so reconnecting the same account must update that row in place. Using an
+ * atomic upsert also prevents the old failure mode where code deactivated a
+ * connection first, the replacement insert failed as a duplicate, and the
+ * user was left with a disabled account.
+ */
 export async function createBrokerConnection(
   input: CreateInput
 ): Promise<BrokerConnection> {
   if (!input.clerkUserId) throw new Error('createBrokerConnection: missing clerkUserId');
   const supabase = getServerSupabase();
-  const row = {
+  const now = new Date().toISOString();
+  const baseRow = {
     user_id: input.clerkUserId,
     broker: input.broker,
     account_id: input.accountId,
@@ -109,13 +119,23 @@ export async function createBrokerConnection(
     encrypted_token: encryptSecret(input.token),
     encrypted_secret: input.secret ? encryptSecret(input.secret) : null,
     is_active: true,
+    updated_at: now,
   };
-  const run = (cols: string) =>
-    supabase.from('broker_connections').insert(row).select(cols).single();
+  const fullRow = {
+    ...baseRow,
+    validation_status: 'pending',
+    last_validated_at: null,
+  };
+  const run = (cols: string, row: Record<string, unknown>) =>
+    supabase
+      .from('broker_connections')
+      .upsert(row, { onConflict: 'user_id,broker,account_id,environment' })
+      .select(cols)
+      .single();
 
-  let { data, error } = await run(FULL_COLS);
+  let { data, error } = await run(FULL_COLS, fullRow);
   if (error && isMissingColumnError(error)) {
-    ({ data, error } = await run(BASE_COLS));
+    ({ data, error } = await run(BASE_COLS, baseRow));
   }
   if (error || !data) {
     throw new Error(`createBrokerConnection: ${error?.message ?? 'no row returned'}`);
