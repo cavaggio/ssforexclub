@@ -52,10 +52,9 @@ async function requireUserId(): Promise<string> {
 }
 
 // ─── saveBrokerConnectionAction ─────────────────────────────────────────────
-// Upsert-style: if the user already has a connection for the same
-// (broker, environment, account_id), the existing one is deactivated and a
-// new one is created. This keeps history (audit trail) without duplicating
-// active rows.
+// Atomic upsert: reconnecting the same (user, broker, environment, account_id)
+// refreshes credentials, reactivates the row, and resets validation to pending.
+// Never deactivate first — a later write failure must not strand the account.
 export async function saveBrokerConnectionAction(formData: FormData): Promise<ActionResult> {
   try {
     const userId = await requireUserId();
@@ -74,13 +73,6 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
     }
     if (!accountId) return { ok: false, error: 'Account ID is required' };
     if (!token)     return { ok: false, error: 'API token is required' };
-
-    // Deactivate any existing active rows for this (broker, env, accountId).
-    const existing = await listBrokerConnectionsForUser(userId);
-    const stale = existing.filter(
-      (c) => c.broker === broker && c.environment === environment && c.accountId === accountId && c.isActive
-    );
-    for (const s of stale) await deactivateBrokerConnection(userId, s.id);
 
     await createBrokerConnection({
       clerkUserId: userId,
