@@ -1,0 +1,41 @@
+name: Dashboard watch and trade history CI
+
+on:
+  pull_request:
+    paths:
+      - 'web/app/api/scanner/scan/route.ts'
+      - 'web/app/api/scanner/trade-activity/route.ts'
+      - 'web/app/api/scanner/trade-logs/route.ts'
+      - 'web/app/dashboard/page.tsx'
+      - 'web/components/scanner-watch-status.tsx'
+      - 'web/components/trade-activity-log.tsx'
+      - 'web/lib/tradingDay.js'
+      - 'web/lib/tradingDay.test.js'
+      - 'web/lib/v3ScanDisplayPolicy.js'
+      - 'web/lib/v3ScanDisplayPolicy.test.js'
+      - '.github/workflows/dashboard-watch-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Pure policy syntax and tests
+        run: |
+          node --check web/lib/tradingDay.js
+          node --check web/lib/v3ScanDisplayPolicy.js
+          node --test web/lib/tradingDay.test.js web/lib/v3ScanDisplayPolicy.test.js
+      - name: Install dashboard dependencies
+        working-directory: web
+        run: npm ci
+      - name: Typecheck dashboard
+        working-directory: web
+        run: npm run typecheck
