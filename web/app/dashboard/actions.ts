@@ -37,6 +37,8 @@ import { currentUser } from '@clerk/nextjs/server';
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
+const OANDA_ACCOUNT_ID_PATTERN = /^\d{3}-\d{3}-\d{6,12}-\d{3}$/;
+
 async function requireUserId(): Promise<string> {
   const { userId } = await auth();
   if (!userId) throw new Error('Unauthenticated');
@@ -73,6 +75,12 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
     }
     if (!accountId) return { ok: false, error: 'Account ID is required' };
     if (!token)     return { ok: false, error: 'API token is required' };
+    if (broker === 'oanda' && !OANDA_ACCOUNT_ID_PATTERN.test(accountId)) {
+      return {
+        ok: false,
+        error: 'Enter your OANDA account ID, not your email address. Example: 101-001-39311050-001.',
+      };
+    }
 
     await createBrokerConnection({
       clerkUserId: userId,
