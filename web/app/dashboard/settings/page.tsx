@@ -21,6 +21,7 @@ import { ValidateConnectionsButton } from '@/components/validate-connections-but
 import { TradingModeToggle } from '@/components/trading-mode-toggle';
 import { ConnectBrokerForm } from '@/components/connect-broker-form';
 import { LiveAckCard } from '@/components/live-ack-card';
+import { RemoveBrokerConnectionButton } from '@/components/remove-broker-connection-button';
 
 /**
  * Reactivate a previously disabled broker row without requiring the user to
@@ -237,54 +238,59 @@ export default async function SettingsPage() {
           </p>
         ) : (
           <ul style={{ marginTop: 16, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {connections.map((c) => (
-              <li
-                key={c.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '12px 16px',
-                  background: 'var(--bg)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                }}
-              >
-                <span>
-                  <strong>{formatBrokerConnection(c).brokerLabel}</strong>
-                  <span style={{ color: 'var(--muted)', marginLeft: 8 }}>
-                    {formatBrokerConnection(c).environment} &middot; {formatBrokerConnection(c).accountLabel}
+            {connections.map((c) => {
+              const display = formatBrokerConnection(c);
+              const removalLabel = `${display.brokerLabel} ${display.environment} account ${display.accountLabel}`;
+              return (
+                <li
+                  key={c.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '12px 16px',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                  }}
+                >
+                  <span>
+                    <strong>{display.brokerLabel}</strong>
+                    <span style={{ color: 'var(--muted)', marginLeft: 8 }}>
+                      {display.environment} &middot; {display.accountLabel}
+                    </span>
                   </span>
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{ color: statusToneColor(formatBrokerConnection(c).statusTone) }}>
-                    {formatBrokerConnection(c).statusLabel}
-                  </span>
-                  {!c.isActive && (
-                    <form action={reactivateBrokerConnectionAction}>
-                      <input type="hidden" name="connectionId" value={c.id} />
-                      <button
-                        type="submit"
-                        style={{
-                          padding: '6px 12px',
-                          background: 'transparent',
-                          color: 'var(--text)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 6,
-                          fontFamily: 'inherit',
-                          fontWeight: 700,
-                          fontSize: 12,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Reactivate
-                      </button>
-                    </form>
-                  )}
-                </div>
-              </li>
-            ))}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <span style={{ color: statusToneColor(display.statusTone) }}>
+                      {display.statusLabel}
+                    </span>
+                    {!c.isActive && (
+                      <form action={reactivateBrokerConnectionAction}>
+                        <input type="hidden" name="connectionId" value={c.id} />
+                        <button
+                          type="submit"
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            color: 'var(--text)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 6,
+                            fontFamily: 'inherit',
+                            fontWeight: 700,
+                            fontSize: 12,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Reactivate
+                        </button>
+                      </form>
+                    )}
+                    <RemoveBrokerConnectionButton connectionId={c.id} accountLabel={removalLabel} />
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
