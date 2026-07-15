@@ -1,15 +1,15 @@
 /**
  * web/lib/futuresProvider.ts
  *
- * Server-only credential + feature-flag layer for the futures providers
- * (NinjaTrader, Topstep). These reuse broker_connections + AES-256-GCM
+ * Server-only credential + feature-flag layer for NinjaTrader, Topstep, and
+ * FTMO connector profiles. These reuse broker_connections + AES-256-GCM
  * encryption, but carry a MULTI-FIELD credential object rather than a single
  * token. The whole object is JSON-encoded and stored in `encrypted_token`
  * (which only ever holds ciphertext). `encrypted_secret` stays null.
  *
  * Credentials are NEVER returned to the browser. The connect Server Actions
  * validate + persist; the proxy decrypts server-side and forwards to the
- * scanner's internal futures endpoints.
+ * matching provider adapter.
  */
 
 import 'server-only';
@@ -23,9 +23,12 @@ import {
 } from './brokerConnections';
 
 export type FuturesProvider = 'ninjatrader' | 'topstep' | 'ftmo';
+export type FtmoPlatform = 'ctrader' | 'mt5' | 'mt4';
 
 export const NINJATRADER_REQUIRED_FIELDS = ['name', 'password', 'appId', 'appVersion', 'cid', 'sec'] as const;
 export const TOPSTEP_REQUIRED_FIELDS = ['userName', 'apiKey'] as const;
+export const FTMO_CTRADER_REQUIRED_FIELDS = ['accountId', 'accessToken', 'refreshToken'] as const;
+export const FTMO_METAAPI_REQUIRED_FIELDS = ['accountId', 'server', 'bridgeAccountId', 'bridgeToken'] as const;
 
 export type FuturesValidation = { ok: boolean; missing: string[]; error?: string };
 
@@ -55,16 +58,33 @@ function validateFields(creds: Record<string, unknown>, required: readonly strin
   return { ok: true, missing: [] };
 }
 
+function validateFtmoCredentials(creds: Record<string, unknown>): FuturesValidation {
+  const platform = String(creds.platform || '').trim().toLowerCase() as FtmoPlatform;
+
+  if (!['ctrader', 'mt5', 'mt4'].includes(platform)) {
+    return {
+      ok: false,
+      missing: ['platform'],
+      error: 'FTMO platform must be cTrader, MetaTrader 5, or MetaTrader 4',
+    };
+  }
+
+  return platform === 'ctrader'
+    ? validateFields(creds, FTMO_CTRADER_REQUIRED_FIELDS)
+    : validateFields(creds, FTMO_METAAPI_REQUIRED_FIELDS);
+}
+
 export function validateFuturesCredentials(provider: FuturesProvider, creds: Record<string, unknown>): FuturesValidation {
-  return provider === 'ninjatrader'
-    ? validateFields(creds, NINJATRADER_REQUIRED_FIELDS)
-    : validateFields(creds, TOPSTEP_REQUIRED_FIELDS);
+  if (provider === 'ninjatrader') return validateFields(creds, NINJATRADER_REQUIRED_FIELDS);
+  if (provider === 'topstep') return validateFields(creds, TOPSTEP_REQUIRED_FIELDS);
+  return validateFtmoCredentials(creds);
 }
 
 /** A stable per-connection account label derived from the credential set. */
 function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknown>): string {
   if (provider === 'ninjatrader') return String(creds.name || '').trim();
-  return String(creds.userName || '').trim();
+  if (provider === 'topstep') return String(creds.userName || '').trim();
+  return String(creds.accountId || '').trim();
 }
 
 const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
@@ -74,7 +94,7 @@ const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
 };
 
 /**
- * Validate + encrypt + persist a futures connection. Returns the created
+ * Validate + encrypt + persist a provider connection. Returns the created
  * connection metadata (no secrets). Deactivates any stale active row for the
  * same (provider, env, account) first — same upsert-by-history pattern as OANDA.
  */
@@ -120,7 +140,7 @@ export async function listFuturesConnections(
 }
 
 /**
- * Decrypt the credential object for a futures connection. SERVER-ONLY — the
+ * Decrypt the credential object for a provider connection. SERVER-ONLY — the
  * returned object must never cross the wire. Returns null if not found.
  */
 export async function resolveFuturesCredentials(
