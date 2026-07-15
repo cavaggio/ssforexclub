@@ -48,6 +48,7 @@ export function ConnectBrokerForm() {
 
       <form
         action={formAction}
+        autoComplete="off"
         style={{
           marginTop: 16,
           display: 'grid',
@@ -84,15 +85,25 @@ export function ConnectBrokerForm() {
           </select>
         </FieldLabel>
 
-        <FieldLabel label="Account ID">
+        <FieldLabel label={broker === 'oanda' ? 'OANDA Account ID' : 'Account ID'}>
           <input
             name="accountId"
             type="text"
-            placeholder="101-xxx-xxxxxxx-xxx"
+            placeholder={broker === 'oanda' ? '101-001-39311050-001' : 'Broker account ID'}
             required
             style={inputStyle}
             autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            inputMode={broker === 'oanda' ? 'numeric' : 'text'}
+            pattern={broker === 'oanda' ? '\\d{3}-\\d{3}-\\d{6,12}-\\d{3}' : undefined}
+            title={broker === 'oanda' ? 'Use the OANDA account ID shown in OANDA, not your email address.' : undefined}
           />
+          {broker === 'oanda' && (
+            <span style={{ color: 'var(--muted)', fontSize: 11 }}>
+              Use the hyphenated OANDA account number, not your email address.
+            </span>
+          )}
         </FieldLabel>
 
         <FieldLabel label="API Token">
@@ -101,7 +112,7 @@ export function ConnectBrokerForm() {
             type="password"
             required
             style={inputStyle}
-            autoComplete="off"
+            autoComplete="new-password"
           />
         </FieldLabel>
 
