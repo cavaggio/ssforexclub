@@ -1,21 +1,36 @@
 /**
  * server/ftmoClient.js
  *
- * FTMO connector scaffold.
+ * FTMO cTrader Open API connector boundary.
  *
  * Important:
  * - FTMO is treated as a prop-firm provider, not as an OANDA account.
- * - Do not silently fall back to OANDA credentials.
- * - Live execution is disabled by default.
- * - cTrader/Open API transport is intentionally separated from the engine logic.
+ * - Signal Stack owns the cTrader Open API app client ID/secret.
+ * - Each user authorizes their own cTrader accounts through OAuth and their
+ *   encrypted access/refresh tokens are supplied per request.
+ * - Live execution remains disabled by default.
  */
 
-const REQUIRED_FTMO_ENV_KEYS = [
-  'FTMO_CTRADER_CLIENT_ID',
-  'FTMO_CTRADER_CLIENT_SECRET',
-  'FTMO_CTRADER_ACCOUNT_ID',
-  'FTMO_CTRADER_ACCESS_TOKEN',
-];
+function firstValue(...values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || '';
+}
+
+function resolveAppCredentials(env = process.env) {
+  return {
+    clientId: firstValue(env.CTRADER_OPEN_API_CLIENT_ID, env.FTMO_CTRADER_CLIENT_ID),
+    clientSecret: firstValue(env.CTRADER_OPEN_API_CLIENT_SECRET, env.FTMO_CTRADER_CLIENT_SECRET),
+  };
+}
+
+function resolveAccountCredentials(credentials = null, env = process.env) {
+  return {
+    accountId: firstValue(credentials?.accountId, env.FTMO_CTRADER_ACCOUNT_ID),
+    accessToken: firstValue(credentials?.accessToken, env.FTMO_CTRADER_ACCESS_TOKEN),
+    refreshToken: firstValue(credentials?.refreshToken, env.FTMO_CTRADER_REFRESH_TOKEN),
+    traderLogin: credentials?.traderLogin == null ? null : String(credentials.traderLogin),
+    isLive: Boolean(credentials?.isLive),
+  };
+}
 
 export function ftmoConfig(env = process.env) {
   return {
@@ -28,41 +43,52 @@ export function ftmoConfig(env = process.env) {
   };
 }
 
-export function validateFtmoCredentials(env = process.env) {
+/**
+ * With no credential object this validates the shared Signal Stack cTrader app.
+ * With a credential object it also validates the selected user's account token.
+ */
+export function validateFtmoCredentials(env = process.env, credentials = null) {
   const config = ftmoConfig(env);
 
   if (!config.enabled) {
-    return {
-      ok: false,
-      error: 'FTMO connector disabled',
-      missing: [],
-    };
+    return { ok: false, error: 'FTMO connector disabled', missing: [] };
   }
 
-  const missing = REQUIRED_FTMO_ENV_KEYS.filter((key) => !String(env[key] || '').trim());
+  if (config.provider !== 'ctrader') {
+    return { ok: false, error: `Unsupported FTMO provider: ${config.provider}`, missing: ['FTMO_PROVIDER=ctrader'] };
+  }
+
+  const app = resolveAppCredentials(env);
+  const missing = [];
+  if (!app.clientId) missing.push('CTRADER_OPEN_API_CLIENT_ID');
+  if (!app.clientSecret) missing.push('CTRADER_OPEN_API_CLIENT_SECRET');
+
+  const hasAccountInput = Boolean(
+    credentials || env.FTMO_CTRADER_ACCOUNT_ID || env.FTMO_CTRADER_ACCESS_TOKEN || env.FTMO_CTRADER_REFRESH_TOKEN,
+  );
+
+  if (hasAccountInput) {
+    const account = resolveAccountCredentials(credentials, env);
+    if (!account.accountId) missing.push('accountId');
+    if (!account.accessToken) missing.push('accessToken');
+    if (!account.refreshToken) missing.push('refreshToken');
+  }
 
   if (missing.length) {
     return {
       ok: false,
-      error: 'FTMO cTrader credentials missing',
+      error: hasAccountInput ? 'FTMO cTrader credentials missing' : 'cTrader Open API app credentials missing',
       missing,
     };
   }
 
-  return {
-    ok: true,
-    missing: [],
-  };
+  return { ok: true, missing: [] };
 }
 
 export function buildFtmoClient({ credentials = null, env = process.env } = {}) {
   const config = ftmoConfig(env);
-
-  if (!config.enabled) {
-    throw new Error('FTMO connector disabled');
-  }
-
-  const validation = validateFtmoCredentials(env);
+  const accountCredentials = resolveAccountCredentials(credentials, env);
+  const validation = validateFtmoCredentials(env, accountCredentials);
 
   if (!validation.ok) {
     const err = new Error(validation.error || 'FTMO cTrader credentials missing');
@@ -70,21 +96,20 @@ export function buildFtmoClient({ credentials = null, env = process.env } = {}) 
     throw err;
   }
 
-  const accountId = credentials?.accountId || env.FTMO_CTRADER_ACCOUNT_ID;
-
-  if (!accountId) {
-    throw new Error('FTMO cTrader credentials missing');
-  }
+  const app = resolveAppCredentials(env);
 
   return {
     provider: 'ftmo',
     adapter: 'ctrader',
-    accountId,
+    accountId: accountCredentials.accountId,
     config,
     credentials: {
-      clientId: credentials?.clientId || env.FTMO_CTRADER_CLIENT_ID,
-      clientSecret: credentials?.clientSecret || env.FTMO_CTRADER_CLIENT_SECRET,
-      accessToken: credentials?.accessToken || env.FTMO_CTRADER_ACCESS_TOKEN,
+      clientId: app.clientId,
+      clientSecret: app.clientSecret,
+      accessToken: accountCredentials.accessToken,
+      refreshToken: accountCredentials.refreshToken,
+      traderLogin: accountCredentials.traderLogin,
+      isLive: accountCredentials.isLive,
     },
   };
 }
