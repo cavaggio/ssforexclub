@@ -1,10 +1,10 @@
 /**
  * web/lib/futuresProvider.ts
  *
- * Server-only credential + feature-flag layer for NinjaTrader, Topstep, and
- * the FTMO MT5 bridge. These reuse broker_connections + AES-256-GCM encryption,
- * but carry a multi-field credential object rather than a single token.
- * Credentials are never returned to the browser.
+ * Server-only credential + feature-flag layer for IBKR futures, Topstep, and
+ * the FTMO MT5 bridge. The legacy canonical value `ninjatrader` is retained for
+ * the primary futures slot so existing database constraints and routes remain
+ * backward-compatible while the user-facing provider is now IBKR.
  */
 
 import 'server-only';
@@ -19,7 +19,10 @@ import {
 
 export type FuturesProvider = 'ninjatrader' | 'topstep' | 'ftmo';
 
-export const NINJATRADER_REQUIRED_FIELDS = ['name', 'password', 'appId', 'appVersion', 'cid', 'sec'] as const;
+// IBKR individual accounts authenticate through Client Portal Gateway / IB
+// Gateway. There is no normal static IBKR API key. The bridge token is optional
+// and belongs to a user-operated secure relay, not to IBKR.
+export const NINJATRADER_REQUIRED_FIELDS = ['accountId', 'gatewayUrl', 'clientId'] as const;
 export const TOPSTEP_REQUIRED_FIELDS = ['userName', 'apiKey'] as const;
 export const FTMO_REQUIRED_FIELDS = ['accountLogin', 'server', 'bridgeUrl', 'bridgeApiKey', 'bridgeSecret'] as const;
 
@@ -27,8 +30,12 @@ export type FuturesValidation = { ok: boolean; missing: string[]; error?: string
 
 const truthy = (v: string | undefined) => String(v || 'false').toLowerCase() === 'true';
 
-export function ninjatraderEnabled(): boolean { return truthy(process.env.NINJATRADER_FUTURES_ENABLED); }
-export function ninjatraderLiveEnabled(): boolean { return truthy(process.env.NINJATRADER_LIVE_EXECUTION_ENABLED); }
+export function ninjatraderEnabled(): boolean {
+  return truthy(process.env.IBKR_FUTURES_ENABLED ?? process.env.NINJATRADER_FUTURES_ENABLED);
+}
+export function ninjatraderLiveEnabled(): boolean {
+  return truthy(process.env.IBKR_LIVE_EXECUTION_ENABLED ?? process.env.NINJATRADER_LIVE_EXECUTION_ENABLED);
+}
 export function topstepEnabled(): boolean { return truthy(process.env.TOPSTEP_ENABLED); }
 export function topstepLiveEnabled(): boolean { return truthy(process.env.TOPSTEP_LIVE_EXECUTION_ENABLED); }
 export function topstepCloudExecutionAllowed(): boolean { return truthy(process.env.TOPSTEP_CLOUD_EXECUTION_ALLOWED); }
@@ -50,7 +57,19 @@ function validateFields(creds: Record<string, unknown>, required: readonly strin
 }
 
 export function validateFuturesCredentials(provider: FuturesProvider, creds: Record<string, unknown>): FuturesValidation {
-  if (provider === 'ninjatrader') return validateFields(creds, NINJATRADER_REQUIRED_FIELDS);
+  if (provider === 'ninjatrader') {
+    const result = validateFields(creds, NINJATRADER_REQUIRED_FIELDS);
+    if (!result.ok) return result;
+    const gatewayUrl = String(creds.gatewayUrl || '').trim();
+    if (!/^https?:\/\//i.test(gatewayUrl)) {
+      return { ok: false, missing: [], error: 'IBKR Gateway / Bridge URL must begin with http:// or https://' };
+    }
+    const clientId = Number(creds.clientId);
+    if (!Number.isInteger(clientId) || clientId < 0 || clientId > 31) {
+      return { ok: false, missing: [], error: 'IBKR API client ID must be an integer from 0 through 31' };
+    }
+    return { ok: true, missing: [] };
+  }
   if (provider === 'topstep') return validateFields(creds, TOPSTEP_REQUIRED_FIELDS);
 
   const result = validateFields(creds, FTMO_REQUIRED_FIELDS);
@@ -65,7 +84,7 @@ export function validateFuturesCredentials(provider: FuturesProvider, creds: Rec
 }
 
 function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknown>): string {
-  if (provider === 'ninjatrader') return String(creds.name || '').trim();
+  if (provider === 'ninjatrader') return String(creds.accountId || '').trim();
   if (provider === 'topstep') return String(creds.userName || '').trim();
   return String(creds.accountLogin || '').trim();
 }
