@@ -3,12 +3,16 @@
  *
  * Authenticated, per-user scanner endpoint. Calls the Railway scanner's
  * internal `/api/internal/oanda/scan` with credentials resolved from the
- * current user's broker connection. Hard-fails (409) when no usable
- * credentials exist — never falls back to platform defaults.
+ * current user's broker connection. Hard-fails when no usable credentials
+ * exist and never falls back to platform defaults.
  */
 
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
+import {
+  applyPrimaryDirectionDisplayPolicy,
+  PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
+} from '@/lib/v3PrimaryDirectionDisplay.js';
 import {
   normalizeScanForV3Display,
   V3_PROVISIONING_POLICY_VERSION,
@@ -44,12 +48,6 @@ function safeText(value: unknown, fallback = ''): string {
   }
 }
 
-/**
- * The legacy scanner can return partial shapes for an individual pair when one
- * of its upstream analyses fails. The dashboard renders rich nested fields and
- * historically assumed all arrays/objects existed. Normalize every card to a
- * render-safe shape so one malformed pair cannot crash the entire dashboard.
- */
 function makeSignalRenderSafe(raw: unknown): AnyRecord {
   const signal: AnyRecord = raw && typeof raw === 'object' ? raw as AnyRecord : {};
   const macro: AnyRecord = signal.macro && typeof signal.macro === 'object' ? signal.macro : {};
@@ -68,6 +66,13 @@ function makeSignalRenderSafe(raw: unknown): AnyRecord {
     rejectionReasons: Array.isArray(signal.rejectionReasons)
       ? signal.rejectionReasons.map((reason: unknown) => safeText(reason)).filter(Boolean)
       : [],
+    dashboardWatchTier: signal.dashboardWatchTier && typeof signal.dashboardWatchTier === 'object'
+      ? {
+          ...signal.dashboardWatchTier,
+          tier: safeText(signal.dashboardWatchTier.tier, 'none'),
+          reason: safeText(signal.dashboardWatchTier.reason),
+        }
+      : null,
     macro: {
       ...macro,
       macroBias: safeText(macro.macroBias, 'ranging'),
@@ -128,14 +133,18 @@ function makeSignalRenderSafe(raw: unknown): AnyRecord {
   };
 }
 
+function safeSignalArray(value: unknown): AnyRecord[] {
+  return Array.isArray(value) ? value.map(makeSignalRenderSafe) : [];
+}
+
 function makeScanRenderSafe(scan: AnyRecord): AnyRecord {
   return {
     ...scan,
-    qualified: Array.isArray(scan.qualified) ? scan.qualified.map(makeSignalRenderSafe) : [],
-    rejected: Array.isArray(scan.rejected) ? scan.rejected.map(makeSignalRenderSafe) : [],
-    v3PrimaryPassedContext: Array.isArray(scan.v3PrimaryPassedContext)
-      ? scan.v3PrimaryPassedContext.map(makeSignalRenderSafe)
-      : [],
+    qualified: safeSignalArray(scan.qualified),
+    rejected: safeSignalArray(scan.rejected),
+    nearQualified: safeSignalArray(scan.nearQualified),
+    hotWatch: safeSignalArray(scan.hotWatch),
+    v3PrimaryPassedContext: safeSignalArray(scan.v3PrimaryPassedContext),
     meta: scan.meta && typeof scan.meta === 'object' ? scan.meta : {},
   };
 }
@@ -163,19 +172,24 @@ async function handle(req: Request) {
       ? envelope.scan as AnyRecord
       : {};
 
-    const normalized = normalizeScanForV3Display(rawScan);
+    // Correct stale legacy LONG/SHORT labels from the authoritative Daily/H4/M15
+    // majority before alignment scoring. This changes dashboard display only.
+    const directionCorrected = applyPrimaryDirectionDisplayPolicy(rawScan);
+    const normalized = normalizeScanForV3Display(directionCorrected);
     const scan = makeScanRenderSafe(normalized);
 
     console.log(
       `[SCANNER_SCAN_POLICY] version=${V3_PROVISIONING_POLICY_VERSION} ` +
+      `directionPolicy=${PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION} ` +
       `alignment=Daily/H4/M15-2of3 legacyConfidenceGates=diagnostic_only ` +
-      `renderSafety=enabled`,
+      `watchDisplay=near_hot_separated renderSafety=enabled`,
     );
 
     return NextResponse.json({
       ...envelope,
       scan,
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
+      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
     });
   } catch (err) {
     console.warn(
@@ -186,8 +200,16 @@ async function handle(req: Request) {
     return NextResponse.json({
       ok: false,
       error: 'Scanner response could not be rendered safely. Please run the scan again.',
-      scan: { qualified: [], rejected: [], v3PrimaryPassedContext: [], meta: {} },
+      scan: {
+        qualified: [],
+        rejected: [],
+        nearQualified: [],
+        hotWatch: [],
+        v3PrimaryPassedContext: [],
+        meta: {},
+      },
       policyVersion: V3_PROVISIONING_POLICY_VERSION,
+      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
     }, { status: 502 });
   }
 }

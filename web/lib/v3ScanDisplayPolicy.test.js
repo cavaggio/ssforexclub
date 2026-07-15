@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   calculateDashboardPrimaryAlignment,
+  classifyDashboardWatchTier,
+  normalizeScanForV3Display,
   normalizeSignalForV3Display,
   V3_PROVISIONING_POLICY_VERSION,
 } from './v3ScanDisplayPolicy.js';
@@ -188,4 +190,84 @@ test('one of three primary timeframes remains rejected at 33', () => {
 
   assert.equal(result.score, 33);
   assert.equal(result.passed, false);
+});
+
+test('wait-for-retest is displayed as Hot Watch instead of rejected', () => {
+  const tier = classifyDashboardWatchTier({
+    direction: 'long',
+    macro: { dailyTrend: 'bullish', h4Trend: 'bearish' },
+    momentum: { m15Trend: 'bullish' },
+    entryTiming: { status: 'wait_for_retest', reason: 'Breakout confirmed; wait for retest.' },
+    rejectionReasons: ['Entry timing: Breakout confirmed; wait for retest.'],
+  });
+
+  assert.equal(tier.tier, 'hot');
+  assert.match(tier.reason, /retest/i);
+});
+
+test('too-early setup is displayed as Near Qualified', () => {
+  const tier = classifyDashboardWatchTier({
+    direction: 'short',
+    macro: { dailyTrend: 'bearish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bearish' },
+    entryTiming: { status: 'too_early', reason: 'Price has not entered the setup zone.' },
+  });
+
+  assert.equal(tier.tier, 'near');
+});
+
+test('hard news and spread blocks remain rejected rather than watched', () => {
+  const news = classifyDashboardWatchTier({
+    direction: 'long',
+    macro: { dailyTrend: 'bullish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bearish' },
+    entryTiming: { status: 'wait_for_retest' },
+    newsRisk: { blocked: true },
+  });
+  const spread = classifyDashboardWatchTier({
+    direction: 'long',
+    macro: { dailyTrend: 'bullish', h4Trend: 'bullish' },
+    momentum: { m15Trend: 'bearish' },
+    entryTiming: { status: 'wait_for_retest' },
+    rejectionReasons: ['V3 native scan rejected: spread 4.2p > 3.5p.'],
+  });
+
+  assert.equal(news.tier, 'none');
+  assert.equal(spread.tier, 'none');
+});
+
+test('scan normalization separates Hot Watch and Near Qualified from red rejections', () => {
+  const scan = normalizeScanForV3Display({
+    qualified: [],
+    rejected: [
+      {
+        pair: 'EUR_USD',
+        direction: 'long',
+        macro: { dailyTrend: 'bullish', h4Trend: 'bearish' },
+        momentum: { m15Trend: 'bullish' },
+        entryTiming: { status: 'wait_for_retest', reason: 'Waiting for retest.' },
+      },
+      {
+        pair: 'GBP_USD',
+        direction: 'short',
+        macro: { dailyTrend: 'bearish', h4Trend: 'bullish' },
+        momentum: { m15Trend: 'bearish' },
+        entryTiming: { status: 'too_early', reason: 'Waiting for setup zone.' },
+      },
+      {
+        pair: 'USD_JPY',
+        direction: 'long',
+        macro: { dailyTrend: 'bullish', h4Trend: 'bullish' },
+        momentum: { m15Trend: 'bearish' },
+        rejectionReasons: ['News block: high-impact USD event'],
+      },
+    ],
+    meta: {},
+  });
+
+  assert.deepEqual(scan.hotWatch.map((signal) => signal.pair), ['EUR_USD']);
+  assert.deepEqual(scan.nearQualified.map((signal) => signal.pair), ['GBP_USD']);
+  assert.deepEqual(scan.rejected.map((signal) => signal.pair), ['USD_JPY']);
+  assert.equal(scan.meta.hotWatchCount, 1);
+  assert.equal(scan.meta.nearQualifiedCount, 1);
 });
