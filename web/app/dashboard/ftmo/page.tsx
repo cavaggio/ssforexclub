@@ -4,8 +4,16 @@ import { ConnectFtmoForm } from '@/components/connect-ftmo-form';
 
 export const dynamic = 'force-dynamic';
 
+type PageProps = {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
+
 function on(value: string | undefined) {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+}
+
+function first(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || '' : value || '';
 }
 
 function Badge({ active }: { active: boolean }) {
@@ -61,8 +69,12 @@ function connectorLabel(value: unknown): string {
   return '—';
 }
 
-export default async function FtmoPage() {
+export default async function FtmoPage({ searchParams }: PageProps) {
   const { userId } = await auth();
+  const params = searchParams ? await searchParams : {};
+  const cTraderResult = first(params.ctrader);
+  const cTraderMessage = first(params.message);
+  const connectedAccounts = first(params.accounts);
 
   const connections = userId
     ? await listFuturesConnections(userId, 'ftmo').catch(() => [])
@@ -82,6 +94,18 @@ export default async function FtmoPage() {
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {cTraderResult === 'connected' && (
+        <div style={successNotice}>
+          cTrader connected successfully. {connectedAccounts || 'One or more'} FTMO account(s) were saved securely.
+        </div>
+      )}
+
+      {cTraderResult === 'error' && (
+        <div style={errorNotice}>
+          cTrader connection failed: {cTraderMessage || 'Unknown authorization error'}
+        </div>
+      )}
+
       <section style={panel}>
         <h2 style={{ margin: 0, fontSize: 22 }}>FTMO Account Connectors</h2>
 
@@ -91,8 +115,8 @@ export default async function FtmoPage() {
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12, lineHeight: 1.5 }}>
-          Safe mode: connection profiles can be stored now, but live FTMO order execution remains
-          disabled until each transport adapter is completed and validated.
+          Safe mode: cTrader authorization and encrypted account storage are available, but live FTMO
+          order execution remains disabled until the trading transport is completed and validated.
         </p>
       </section>
 
@@ -102,7 +126,7 @@ export default async function FtmoPage() {
         <div style={grid}>
           <ConnectorCard
             title="cTrader Open API"
-            status="Recommended"
+            status="OAuth available"
             description="Native cTrader OAuth/Open API connection. Best path for a cloud-hosted Signal Stack integration."
           />
           <ConnectorCard
@@ -128,6 +152,11 @@ export default async function FtmoPage() {
           <Row label="V3 engine" active={useV3} />
           <Row label="ICT engine" active={useICT} />
           <Row label="Saved connection" active={Boolean(active)} />
+
+          <div style={card}>
+            <strong>Saved accounts</strong>
+            <span>{connections.length}</span>
+          </div>
 
           <div style={card}>
             <strong>Saved connector</strong>
@@ -182,4 +211,24 @@ const statusBadge: React.CSSProperties = {
   textTransform: 'uppercase',
   letterSpacing: '0.7px',
   whiteSpace: 'nowrap',
+};
+
+const successNotice: React.CSSProperties = {
+  padding: '12px 16px',
+  background: '#0d3320',
+  border: '1px solid #1a5c38',
+  color: 'var(--good)',
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 700,
+};
+
+const errorNotice: React.CSSProperties = {
+  padding: '12px 16px',
+  background: '#320d0d',
+  border: '1px solid #5c1a1a',
+  color: 'var(--bad)',
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 700,
 };
