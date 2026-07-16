@@ -1618,13 +1618,11 @@ app.get('/api/oanda/diagnostics', async (_req, res) => {
   }
 });
 
-app.get('/api/oanda/account', async (_req, res) => {
-  try {
-    const account = await getAccountSummary();
-    res.json({ account });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get('/api/oanda/account', (_req, res) => {
+  return res.status(410).json({
+    error: 'Legacy OANDA account endpoint disabled',
+    code: 'LEGACY_OANDA_ACCOUNT_ENDPOINT_DISABLED',
+  });
 });
 
 app.get('/api/oanda/instruments', async (_req, res) => {
