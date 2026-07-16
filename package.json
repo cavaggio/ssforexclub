@@ -4,10 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/apply-hardening-build.mjs",
     "dev": "vite",
     "dev:server": "node scripts/start-hardened.mjs",
     "dev:full": "concurrently \"npm run dev:server\" \"npm run dev\"",
-    "build": "vite build",
+    "build": "node scripts/apply-hardening-build.mjs && vite build",
     "preview": "vite preview",
     "start": "node scripts/start-hardened.mjs",
     "test:lifecycle":   "node --test server/oandaTradeLifecycleEngine.test.js",
@@ -34,7 +35,7 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.19",
+    "@types/cors": "^2.4.6",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/react": "^18.2.0",
