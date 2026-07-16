@@ -166,12 +166,10 @@ trade = mustMatchReplace(
   // ── Guard 10:`,
   'trade legacy daily gate',
 );
-trade = mustReplace(
-  trade,
+trade = trade.replaceAll(
   '    confidence: signal.confidence,',
   '    confidence,',
-  'trade dynamic confidence',
-);
+);                                  
 trade = mustReplace(
   trade,
   `  // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.`,
