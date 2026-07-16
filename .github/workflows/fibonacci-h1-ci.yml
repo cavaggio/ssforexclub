@@ -1,0 +1,24 @@
+name: H1 Fibonacci CI
+
+on:
+  pull_request:
+    paths:
+      - 'server/oandaFibonacci.js'
+      - 'server/oandaFibonacci.test.js'
+      - '.github/workflows/fibonacci-h1-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate H1 Fibonacci analysis
+        run: |
+          node --check server/oandaFibonacci.js
+          node --test server/oandaFibonacci.test.js
