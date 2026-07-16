@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const port = Number(process.env.PORT || 8080);
-const threshold = 1000;
+const threshold = 1300;
 
 const partNames = fs.readdirSync(here)
   .filter((name) => name.startsWith('hardening-patch.part'))
