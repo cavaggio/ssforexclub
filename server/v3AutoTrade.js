@@ -1,532 +1,120 @@
-import { getRetraceWatchPairs, evaluateRetraceCandidate } from './retraceWatchMode.js';
-/**
- * server/v3AutoTrade.js
- *
- * Autonomous-entry runner for ONE user on the V3 engine. Reuses the EXISTING V3
- * pipeline with NO change to its gates: scanForexPairs() (the legacy waterfall +
- * V3 scoring) produces qualified signals, and each is routed through executeTrade()
- * — which enforces FOREX_AUTO_TRADE_ENABLED, the live-execution acknowledgement,
- * score/confidence/news/spread/duplicate-lock checks, and dynamic sizing.
- *
- * This is the V3 counterpart to ictAutoTrade.runAutoAiForUser. It is only reached
- * when the user's Auto AI Engine is 'v3'.
- */
-
-import { scanForexPairs } from './oandaScanner.js';
+import { getRetraceWatchPairs } from './retraceWatchMode.js';
+import { scanV3IndependentMarket } from './v3IndependentScanner.js';
 import { executeTrade } from './oandaTrade.js';
-import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
-import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
+import { applyScalpMetadata } from './scalpOnlyPolicy.js';
 
-import { applyScalpMetadata, scalpMinConfidence } from './scalpOnlyPolicy.js';
-function envOn(value, fallback = false) {
-  const raw = value == null ? String(fallback) : String(value);
-  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
-}
-
-function envNum(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function minExecutableRR() {
-  return envNum(process.env.FOREX_MIN_EXECUTABLE_RR || process.env.FOREX_V3_PROMOTE_MIN_RR, 1.5);
-}
-
-function rrCandidateNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function rrFromCandidate(item = {}) {
-  const lifecycleRR = (() => {
-    const sl = Number(item?.lifecycle?.sl?.stopLossPips);
-    const tp = Number(item?.lifecycle?.tp?.takeProfitPips);
-    if (Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) {
-      return +(tp / sl).toFixed(2);
-    }
-    return null;
-  })();
-
-  const nested = item?.v3 || item?.v3Eval || item?.v3Analysis || item?.metadata?.v3 || {};
-
-  return (
-    lifecycleRR ??
-    rrCandidateNumber(item?.expectedRR) ??
-    rrCandidateNumber(item?.rr) ??
-    rrCandidateNumber(item?.riskReward) ??
-    rrCandidateNumber(item?.riskRewardRatio) ??
-    rrCandidateNumber(nested?.expectedRR) ??
-    rrCandidateNumber(nested?.rr) ??
-    rrCandidateNumber(nested?.riskReward) ??
-    null
-  );
-}
-
-function subMinRrFromText(item = {}, minRR = minExecutableRR()) {
-  let text = '';
-  try {
-    text = JSON.stringify(item || {}).toLowerCase();
-  } catch {
-    text = String(item || '').toLowerCase();
-  }
-
-  const patterns = [
-    /final\s*r\s*:?\s*r\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*min\s*([0-9]+(?:\.[0-9]+)?)/i,
-    /r\s*:?\s*r\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*min\s*([0-9]+(?:\.[0-9]+)?)/i,
-    /risk\s*reward\s*([0-9]+(?:\.[0-9]+)?)\s*<\s*(?:minimum|min)\s*([0-9]+(?:\.[0-9]+)?)/i,
-  ];
-
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (!m) continue;
-    const actual = Number(m[1]);
-    const min = Number(m[2] || minRR);
-    if (Number.isFinite(actual) && Number.isFinite(min) && actual < Math.max(minRR, min)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function isSubMinRrCandidate(item = {}, minRR = minExecutableRR()) {
-  const rr = rrFromCandidate(item);
-  if (Number.isFinite(rr) && rr < minRR) return true;
-  return subMinRrFromText(item, minRR);
-}
-
-function getPipSizeLocal(pair = '') {
-  return String(pair).includes('JPY') ? 0.01 : 0.0001;
-}
-
-function roundPriceLocal(price, pair = '') {
-  if (!Number.isFinite(price)) return null;
-  return Number(price.toFixed(String(pair).includes('JPY') ? 3 : 5));
-}
-
-function pickV3Target(v3 = {}, minRR = 1.5) {
-  const targets = v3?.targets || {};
-  const choices = [targets.tp1, targets.tp2, targets.tp3].filter(Boolean);
-
-  for (const t of choices) {
-    const pips = Math.abs(Number(t?.pips));
-    const sl = Math.abs(Number(v3?.slPipsEst));
-    if (Number.isFinite(pips) && Number.isFinite(sl) && sl > 0 && pips / sl >= minRR) {
-      return t;
-    }
-  }
-
-  return null;
-}
-
-function buildV3PropFirmCandidate(item = {}, v3 = {}, minRR = 1.5) {
-  const pair = item?.pair || v3?.pair;
-  const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
-  const entry = Number(item?.entry ?? item?.entryPrice ?? item?.currentPrice ?? v3?.entry ?? v3?.entryPrice);
-
-  if (!pair || !direction || !Number.isFinite(entry)) return null;
-
-  const slPips = Math.abs(Number(v3?.slPipsEst));
-  if (!Number.isFinite(slPips) || slPips <= 0) return null;
-
-  const target = pickV3Target(v3, minRR);
-  if (!target || !Number.isFinite(Number(target.price))) return null;
-
-  const pipSize = getPipSizeLocal(pair);
-  const stopLoss = direction === 'long'
-    ? roundPriceLocal(entry - slPips * pipSize, pair)
-    : roundPriceLocal(entry + slPips * pipSize, pair);
-
-  const takeProfit = roundPriceLocal(Number(target.price), pair);
-  const rewardPips = Math.abs(Number(target.pips));
-  const rr = +(rewardPips / slPips).toFixed(2);
-
-  if (!Number.isFinite(stopLoss) || !Number.isFinite(takeProfit) || rr < minRR) return null;
-
-  return {
-    pair,
-    direction,
-    entry,
-    entryPrice: entry,
-    stopLoss,
-    targetProfit: takeProfit,
-    takeProfit,
-    expectedRR: rr,
-    rr,
-    stopLossPips: +slPips.toFixed(1),
-    takeProfitPips: +rewardPips.toFixed(1),
-    targetSource: target.source || v3?.targets?.targetSource || 'v3_liquidity',
-    lifecycle: {
-      allowed: true,
-      sl: {
-        stopLossPips: +slPips.toFixed(1),
-        stopLossPrice: stopLoss,
-        invalidationReason: 'V3 promoted liquidity/invalidation stop',
-      },
-      tp: {
-        allowed: true,
-        takeProfitPips: +rewardPips.toFixed(1),
-        takeProfitPrice: takeProfit,
-        targetReason: `V3 promoted target from ${target.source || 'liquidity'}`,
-        targetSource: target.source || v3?.targets?.targetSource || 'v3_liquidity',
-      },
-      source: 'v3_promoted_lifecycle',
-    },
-  };
-}
-
-function normalizeV3Direction(value) {
-  const v = String(value || '').toLowerCase();
-  if (v === 'buy') return 'long';
-  if (v === 'sell') return 'short';
-  if (v === 'long' || v === 'short') return v;
-  return null;
-}
-
-function institutionalFlowOpposesV3(item = {}, direction = null) {
-  const flow = item?.institutionalFlow || {};
-  if (!direction || !flow?.detected || !flow?.direction || flow.direction === 'neutral') return false;
-
-  const tradeSign = direction === 'long' ? 'bullish' : direction === 'short' ? 'bearish' : null;
-  if (!tradeSign) return false;
-
-  return flow.direction !== tradeSign;
-}
-
-
-function safeV3Promotions(scan, log) {
-  const promoted = [];
-  const watchCandidates = [];
-
-  if (!envOn(process.env.FOREX_V3_PROMOTE_ONLY, false)) {
-    promoted.watchCandidates = watchCandidates;
-    return promoted;
-  }
-
-  const candidates = [
-    ...(Array.isArray(scan?.qualified) ? scan.qualified : []),
-    ...(Array.isArray(scan?.rejected) ? scan.rejected : []),
-  ];
-
-  const minRR = envNum(process.env.FOREX_V3_PROMOTE_MIN_RR, 1.5);
-
-  for (const item of candidates) {
-    const v3 = item?.v3 || item?.v3Eval || item?.v3Analysis || item?.metadata?.v3 || null;
-    if (!v3) continue;
-
-    const pair = item?.pair || v3?.pair;
-    const direction = normalizeV3Direction(item?.direction || v3?.direction || v3?.signal);
-    const rawV3Score = envNum(v3?.score, NaN);
-    const v3Qualified = v3?.qualified === true;
-    const v3Early = v3?.earlyTrigger === true;
-    const pdScore = envNum(v3?.premiumDiscount?.premiumDiscountScore, 0);
-    const liqScore = envNum(v3?.liquidityIntent?.intentScore ?? v3?.liquidityIntent?.score, 0);
-
-    const v3ExecutionConfidence = (() => {
-      if (!Number.isFinite(rawV3Score)) return NaN;
-      let c = rawV3Score;
-      if (v3Qualified) c += 14;
-      if (v3Early) c += 5;
-      if (pdScore >= 0.75) c += 5;
-      if (liqScore >= 0.65) c += 6;
-      return Math.max(0, Math.min(100, Math.round(c)));
-    })();
-
-    const legacyConfidence = envNum(item?.confidence ?? v3?.confidence, NaN);
-    const entryQualityConfidence = Number.isFinite(v3ExecutionConfidence)
-      ? Math.max(Number.isFinite(legacyConfidence) ? legacyConfidence : 0, v3ExecutionConfidence)
-      : legacyConfidence;
-    const tpHitConfidence = computeV3EntryTpHitConfidence({
-      ...item,
-      ...v3,
-      confidence: entryQualityConfidence,
-      entryQualityConfidence,
-      v3,
-    });
-    // Downstream generic confidence fields remain as a compatibility alias,
-    // but for pure V3 they now mean TP-hit confidence, not legacy entry quality.
-    const confidence = tpHitConfidence;
-
-    const builtV3Candidate = buildV3PropFirmCandidate(item, v3, minRR);
-    const rr = envNum(
-      item?.expectedRR ??
-      item?.rr ??
-      builtV3Candidate?.expectedRR ??
-      v3?.expectedRR ??
-      v3?.rr,
-      NaN
-    );
-
-    const entry = Number(
-      item?.entry ??
-      item?.entryPrice ??
-      item?.currentPrice ??
-      builtV3Candidate?.entry ??
-      v3?.entry ??
-      v3?.entryPrice
-    );
-    const stopLoss = Number(
-      item?.stopLoss ??
-      item?.sl ??
-      builtV3Candidate?.stopLoss ??
-      v3?.stopLoss ??
-      v3?.sl
-    );
-    const targetProfit = Number(
-      item?.targetProfit ??
-      item?.takeProfit ??
-      item?.tp ??
-      builtV3Candidate?.targetProfit ??
-      v3?.targetProfit ??
-      v3?.takeProfit ??
-      v3?.tp
-    );
-
-    const qualityCandidate = {
-      ...item,
-      ...v3,
-      ...(builtV3Candidate || {}),
-      pair,
-      direction,
-      confidence,
-      tpHitConfidence,
-      entryQualityConfidence,
-      expectedRR: rr,
-      rr,
-      entry,
-      entryPrice: entry,
-      stopLoss,
-      targetProfit,
-      takeProfit: targetProfit,
-      v3,
-    };
-
-    const stage1 = evaluateV3SetupStage(qualityCandidate);
-    const stage2 = stage1.allowed
-      ? evaluateV3TriggerStage(qualityCandidate)
-      : {
-          stage: 2,
-          allowed: false,
-          state: 'blocked',
-          reasons: ['stage 1 setup did not pass'],
-          primaryTriggers: [],
-          supports: [],
-          checkedAt: new Date().toISOString(),
-        };
-
-    const confirmation = {
-      stage1,
-      stage2,
-      checkedAt: new Date().toISOString(),
-    };
-
-    if (stage1.allowed && !stage2.allowed) {
-      watchCandidates.push({
-        pair,
-        direction,
-        confidence,
-        expectedRR: rr,
-        v3Score: rawV3Score,
-        state: stage2.state,
-        reasons: stage2.reasons,
-        primaryTriggers: stage2.primaryTriggers,
-        supports: stage2.supports,
-        qualityConfirmation: confirmation,
-      });
-      log(
-        `quality-watch pair=${pair || 'unknown'} dir=${direction || 'none'} ` +
-        `score=${Number.isFinite(rawV3Score) ? rawV3Score : 'n/a'} ` +
-        `conf=${Number.isFinite(confidence) ? confidence : 'n/a'} ` +
-        `rr=${Number.isFinite(rr) ? rr : 'n/a'} ` +
-        `reason="${stage2.reasons.join('; ')}"`
-      );
-      continue;
-    }
-
-    const text = [
-      item?.reason,
-      item?.rejectionReason,
-      item?.finalQualifiedStatus,
-      item?.entryTiming?.status,
-      v3?.reason,
-      v3?.rejectionReason,
-    ].filter(Boolean).join(' ').toLowerCase();
-
-    const hardTextBlock =
-      text.includes('news_block') ||
-      text.includes('news block') ||
-      text.includes('spread too high') ||
-      text.includes('spread too wide') ||
-      text.includes('insufficient margin') ||
-      text.includes('drawdown') ||
-      text.includes('risk cap') ||
-      text.includes('daily loss') ||
-      text.includes('duplicate') ||
-      text.includes('missing stop') ||
-      text.includes('missing take profit');
-
-    const safe =
-      pair &&
-      direction &&
-      stage1.allowed &&
-      stage2.allowed &&
-      Number.isFinite(entry) &&
-      Number.isFinite(stopLoss) &&
-      Number.isFinite(targetProfit) &&
-      Number.isFinite(confidence) &&
-      confidence >= scalpMinConfidence() &&
-      !hardTextBlock;
-
-    if (!safe) {
-      const reasons = [
-        ...stage1.reasons,
-        ...stage2.reasons,
-        ...(hardTextBlock ? ['protected hard blocker remains in scanner result'] : []),
-      ];
-
-      log(
-        `quality-reject pair=${pair || 'unknown'} dir=${direction || 'none'} ` +
-        `score=${Number.isFinite(rawV3Score) ? rawV3Score : 'n/a'} ` +
-        `conf=${Number.isFinite(confidence) ? confidence : 'n/a'} ` +
-        `rr=${Number.isFinite(rr) ? rr : 'n/a'} ` +
-        `reason="${reasons.join('; ') || 'missing executable fields'}"`
-      );
-      continue;
-    }
-
-    promoted.push({
-      ...qualityCandidate,
-      source: 'v3_promoted_quality_confirmed',
-      finalQualifiedStatus: 'v3_quality_confirmed',
-      qualityConfirmation: confirmation,
-    });
-
-    log(
-      `quality-ready pair=${pair} dir=${direction} conf=${confidence} ` +
-      `rawV3Score=${Number.isFinite(rawV3Score) ? rawV3Score : 'n/a'} rr=${rr} ` +
-      `triggers=${stage2.primaryTriggers.join(',') || 'none'} ` +
-      `supports=${stage2.supports.join(',') || 'none'}`
-    );
-  }
-
-  promoted.watchCandidates = watchCandidates;
-  return promoted;
-}
+/**
+ * Autonomous V3 runner for one authenticated OANDA user.
+ *
+ * Architecture rule: V3 reads raw OANDA pricing/candles through
+ * scanV3IndependentMarket(). It does not call oandaScanner, consume legacy
+ * qualified/rejected arrays, inherit legacy direction, or blend legacy
+ * confidence into a V3 candidate.
+ */
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
 
+function prioritizeRetraceWatchPairs(pairs = []) {
+  const watched = getRetraceWatchPairs();
+  const basePairs = Array.isArray(pairs) ? pairs : [];
+  return [...new Set([...watched, ...basePairs])];
+}
+
 function pairOf(item) {
-  return item?.pair || item?.instrument || item?.symbol || item?.signal?.pair || null;
+  return item?.pair || item?.instrument || item?.symbol || null;
 }
 
-function textOf(item) {
-  try { return JSON.stringify(item || {}).toLowerCase(); }
-  catch { return String(item || '').toLowerCase(); }
-}
-
-function buildV3WatchState(scan, qualified = []) {
-  const nearQualifiedPairs = new Set();
-  const hotPairs = new Set();
+function buildIndependentWatchState(scan, qualified = []) {
+  const hotPairs = new Set(qualified.map(pairOf).filter(Boolean));
+  const nearQualifiedPairs = new Set(
+    (Array.isArray(scan?.watchCandidates) ? scan.watchCandidates : [])
+      .map(pairOf)
+      .filter(Boolean),
+  );
   const lateEntryPairs = new Set();
 
-  for (const sig of qualified) {
-    const pair = pairOf(sig);
-    if (pair && !isSubMinRrCandidate(sig)) hotPairs.add(pair);
-  }
-
-  const rejected = Array.isArray(scan?.rejected) ? scan.rejected
-    : Array.isArray(scan?.rejections) ? scan.rejections
-    : Array.isArray(scan?.signals) ? scan.signals
-    : [];
-
-  for (const item of rejected) {
+  for (const item of Array.isArray(scan?.rejected) ? scan.rejected : []) {
     const pair = pairOf(item);
     if (!pair) continue;
-
-    const text = textOf(item);
-    const confidence = Number(item?.tpHitConfidence ?? item?.confidence ?? item?.score ?? item?.v3?.score ?? 0);
-
-    if (isSubMinRrCandidate(item)) {
-      continue;
-    }
-
-    if (!isActiveOpportunityWindow(new Date()) && (text.includes('late_entry') || text.includes('overextended'))) {
+    const text = JSON.stringify(item?.rejectionReasons || item?.reason || '').toLowerCase();
+    if (text.includes('late') || text.includes('remaining opportunity')) {
       lateEntryPairs.add(pair);
-      continue;
+      nearQualifiedPairs.delete(pair);
+      hotPairs.delete(pair);
     }
-
-    if (
-      confidence >= scalpMinConfidence() ||
-      text.includes('near') ||
-      text.includes('valid_entry') ||
-      text.includes('liquidity_sweep') ||
-      text.includes('fvg') ||
-      text.includes('order block') ||
-      text.includes('order_block')
-    ) {
-      nearQualifiedPairs.add(pair);
-    }
-  }
-
-  for (const pair of lateEntryPairs) {
-    nearQualifiedPairs.delete(pair);
-    hotPairs.delete(pair);
   }
 
   return {
-    nearQualifiedPairs: Array.from(nearQualifiedPairs),
-    hotPairs: Array.from(hotPairs),
-    lateEntryPairs: Array.from(lateEntryPairs),
+    hotPairs: [...hotPairs],
+    nearQualifiedPairs: [...nearQualifiedPairs],
+    lateEntryPairs: [...lateEntryPairs],
   };
 }
 
-export async function runAutoV3ForUser({ client, now = new Date(), runId = null, scanMode = 'full', pairs = null } = {}) {
+export async function runAutoV3ForUser({
+  client,
+  now = new Date(),
+  runId = null,
+  scanMode = 'full',
+  pairs = null,
+} = {}) {
   const tag = `[AUTO_AI][V3][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
-  const log = (m) => console.log(`${tag} account=${account} engine=v3 ${m}`);
-  void now;
+  const log = (message) => console.log(`${tag} account=${account} engine=v3 ${message}`);
   const requestedPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
   const scanPairs = requestedPairs ? prioritizeRetraceWatchPairs(requestedPairs) : null;
 
-  log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
+  log(
+    `independent scan started scanMode=${scanMode} ` +
+    `pairs=${scanPairs?.length ? scanPairs.join(',') : 'V3_WATCHLIST'} ` +
+    'legacyScannerUsed=false',
+  );
 
-  const scan = await scanForexPairs(scanPairs, { client, scanMode });
-  const legacyQualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
+  const scan = await scanV3IndependentMarket({
+    pairs: scanPairs,
+    client,
+    now,
+    scanMode,
+    log,
+  });
 
-  const promotionBatch = safeV3Promotions(scan, log);
-  const stageWatchCandidates = Array.isArray(promotionBatch.watchCandidates)
-    ? promotionBatch.watchCandidates
+  const qualified = (Array.isArray(scan?.qualified) ? scan.qualified : []).map((signal) =>
+    applyScalpMetadata({
+      ...signal,
+      source: 'v3_pure_auto_ai',
+      strategy: 'V3',
+      engine: 'v3',
+      tradeStyle: 'SCALP',
+      scalpOnly: true,
+      selectedLogicType: 'v3_pure',
+      architecture: 'independent_v3_raw_market_data',
+      legacyScannerUsed: false,
+      legacyDirection: null,
+    }),
+  );
+
+  const stageWatchCandidates = Array.isArray(scan?.watchCandidates)
+    ? scan.watchCandidates
     : [];
-
-  const promoted = promotionBatch.map((sig) => applyScalpMetadata({
-    ...sig,
-    source: 'v3_pure_auto_ai',
-    strategy: 'V3',
-    tradeStyle: 'SCALP',
-    scalpOnly: true,
-    selectedLogicType: 'v3_pure',
-  }));
-
-  const useLegacyQualified = envOn(process.env.FOREX_V3_AUTO_USE_LEGACY_QUALIFIED, false);
-  const qualified = useLegacyQualified ? [...legacyQualified, ...promoted] : promoted;
-
-  if (!useLegacyQualified && legacyQualified.length) {
-    log(`pure-v3 mode ignored legacyQualified=${legacyQualified.length}; set FOREX_V3_AUTO_USE_LEGACY_QUALIFIED=true only for hybrid testing`);
-  }
-
-  const watchState = buildV3WatchState(scan, qualified);
+  const watchState = buildIndependentWatchState(scan, qualified);
 
   if (!qualified.length) {
-    log(`scan complete qualified=0 executed=0 skipped=0 v3Promoted=0 qualityWatch=${stageWatchCandidates.length}`);
+    log(
+      `independent scan complete qualified=0 executed=0 skipped=0 ` +
+      `qualityWatch=${stageWatchCandidates.length} legacyScannerUsed=false`,
+    );
     return {
       engine: 'v3',
+      architecture: 'independent_v3_raw_market_data',
+      legacyScannerUsed: false,
       scanned: scan?.meta?.pairsScanned ?? 0,
       qualified: 0,
       executed: [],
       skipped: [],
       v3Promoted: 0,
+      independentV3Qualified: 0,
       qualityWatch: stageWatchCandidates.length,
       watchCandidates: stageWatchCandidates,
       ...watchState,
@@ -535,216 +123,110 @@ export async function runAutoV3ForUser({ client, now = new Date(), runId = null,
 
   const executed = [];
   const skipped = [];
-  for (const sig of qualified) {
-    // executeTrade reads signal.environment for its live-execution guard; align it
-    // with the per-request client (the /auto endpoint requires environment=live).
-    sig.environment = client?.environment || sig.environment;
-    const res = await executeTrade(sig, { client, autoAi: true });
-    if (res?.success) {
+
+  for (const signal of qualified) {
+    signal.environment = client?.environment || signal.environment;
+    const result = await executeTrade(signal, { client, autoAi: true });
+
+    if (result?.success) {
       executed.push({
-        pair: sig.pair,
-        direction: sig.direction,
-        tradeId: res.tradeId,
-        fillPrice: res.fillPrice,
-        units: res.units,
-        stopLoss: res.sizing?.stopLoss ?? sig.stopLoss,
-        takeProfit: res.sizing?.takeProfit ?? sig.takeProfit,
-        confidence: res.tpHitConfidence ?? sig.tpHitConfidence ?? sig.confidence,
-        tpHitConfidence: res.tpHitConfidence ?? sig.tpHitConfidence ?? sig.confidence,
-        entryQualityConfidence: sig.entryQualityConfidence ?? null,
-        actualFillRR: res.actualFillRR ?? res.sizing?.riskReward ?? null,
-        postFillTpAdjusted: res.postFillTpAdjusted === true,
-        expectedRR: sig.expectedRR ?? sig.rr,
-        source: sig.source,
-        strategy: sig.strategy ?? 'V3',
-        signal: sig,
+        pair: signal.pair,
+        direction: signal.direction,
+        tradeId: result.tradeId,
+        fillPrice: result.fillPrice,
+        units: result.units,
+        stopLoss: result.sizing?.stopLoss ?? signal.stopLoss,
+        takeProfit: result.sizing?.takeProfit ?? signal.takeProfit,
+        confidence: result.tpHitConfidence ?? signal.tpHitConfidence ?? signal.confidence,
+        tpHitConfidence: result.tpHitConfidence ?? signal.tpHitConfidence ?? signal.confidence,
+        entryQualityConfidence: signal.entryQualityConfidence ?? null,
+        actualFillRR: result.actualFillRR ?? result.sizing?.riskReward ?? null,
+        postFillTpAdjusted: result.postFillTpAdjusted === true,
+        expectedRR: signal.expectedRR ?? signal.rr,
+        source: signal.source,
+        strategy: 'V3',
+        architecture: 'independent_v3_raw_market_data',
+        legacyScannerUsed: false,
+        signal,
       });
-      log(`trade executed pair=${sig.pair} dir=${sig.direction} id=${res.tradeId}`);
+      log(`trade executed pair=${signal.pair} dir=${signal.direction} id=${result.tradeId}`);
     } else {
-      skipped.push({ pair: sig.pair, reason: res?.reason || res?.rejectReason || 'not executed' });
-      log(`execution skipped pair=${sig.pair} reason="${res?.reason || res?.rejectReason || 'not executed'}"`);
+      const reason = result?.reason || result?.rejectReason || 'not executed';
+      skipped.push({ pair: signal.pair, direction: signal.direction, reason });
+      log(`execution skipped pair=${signal.pair} dir=${signal.direction} reason="${reason}"`);
     }
   }
-  log(`scan complete qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length} v3Promoted=${promoted.length}`);
-  return { engine: 'v3', scanned: scan?.meta?.pairsScanned ?? qualified.length, qualified: qualified.length, executed, skipped, v3Promoted: promoted.length, ...watchState };
+
+  log(
+    `independent scan complete qualified=${qualified.length} executed=${executed.length} ` +
+    `skipped=${skipped.length} qualityWatch=${stageWatchCandidates.length} legacyScannerUsed=false`,
+  );
+
+  return {
+    engine: 'v3',
+    architecture: 'independent_v3_raw_market_data',
+    legacyScannerUsed: false,
+    scanned: scan?.meta?.pairsScanned ?? qualified.length,
+    qualified: qualified.length,
+    executed,
+    skipped,
+    v3Promoted: qualified.length,
+    independentV3Qualified: qualified.length,
+    qualityWatch: stageWatchCandidates.length,
+    watchCandidates: stageWatchCandidates,
+    ...watchState,
+  };
 }
 
-
-// June 23 soft-filter scoring
-// These filters should influence confidence, not hard-reject otherwise valid trades.
+// June 23 soft-filter scoring remains exported for compatibility with existing
+// tests and diagnostics. It is not used to source or qualify independent V3
+// candidates.
 export function applyJune23SoftFilterScoring(candidate = {}) {
   let confidenceAdjustment = 0;
   const softReasons = [];
 
   if (candidate.regimeAligned === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Regime aligned: +1 confidence");
+    softReasons.push('Regime aligned: +1 confidence');
   } else if (candidate.regimeAligned === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Regime not aligned: -1 confidence");
+    softReasons.push('Regime not aligned: -1 confidence');
   }
 
   if (candidate.liquidityIntentStrong === true) {
     confidenceAdjustment += 2;
-    softReasons.push("Strong liquidity intent: +2 confidence");
+    softReasons.push('Strong liquidity intent: +2 confidence');
   } else if (candidate.liquidityIntentStrong === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Weak liquidity intent: -1 confidence");
+    softReasons.push('Weak liquidity intent: -1 confidence');
   }
 
   if (candidate.calibrationPositive === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Positive calibration: +1 confidence");
+    softReasons.push('Positive calibration: +1 confidence');
   } else if (candidate.calibrationPositive === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Negative calibration: -1 confidence");
+    softReasons.push('Negative calibration: -1 confidence');
   }
 
   if (candidate.smtDivergence === true) {
     confidenceAdjustment += 1;
-    softReasons.push("SMT divergence present: +1 confidence");
+    softReasons.push('SMT divergence present: +1 confidence');
   }
 
   if (candidate.sessionNarrativeAligned === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Session narrative aligned: +1 confidence");
+    softReasons.push('Session narrative aligned: +1 confidence');
   }
 
   const baseConfidence = Number(candidate.confidence ?? 0);
-  const finalConfidence = Math.max(0, Math.min(100, baseConfidence + confidenceAdjustment));
+  const confidence = Math.max(0, Math.min(100, baseConfidence + confidenceAdjustment));
 
   return {
     ...candidate,
     baseConfidence,
-    confidence: finalConfidence,
+    confidence,
     confidenceAdjustment,
     softReasons,
   };
-}
-
-
-
-
-
-
-// === OPPORTUNITY RANKING PATCH ===
-function getNYMinutes(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-
-  const get = (type) =>
-    Number(parts.find((part) => part.type === type)?.value ?? 0);
-
-  const hour = get("hour") === 24 ? 0 : get("hour");
-  return hour * 60 + get("minute");
-}
-
-function isActiveOpportunityWindow(date = new Date()) {
-  const minutes = getNYMinutes(date);
-  return minutes >= 2 * 60 + 15 && minutes < 11 * 60;
-}
-
-function isProtectedHardBlock(reason = "") {
-  const r = String(reason).toLowerCase();
-  return (
-    r.includes("rr < 1.5") ||
-    r.includes("risk reward below") ||
-    r.includes("spread too high") ||
-    r.includes("duplicate") ||
-    r.includes("max trades") ||
-    r.includes("daily loss") ||
-    r.includes("missing stop") ||
-    r.includes("missing take profit") ||
-    r.includes("invalid broker") ||
-    r.includes("credentials") ||
-    r.includes("live trading disabled") ||
-    r.includes("execution disabled")
-  );
-}
-
-function convertLateEntryToTradableStatus(status, reason = "", now = new Date()) {
-  if (!isActiveOpportunityWindow(now)) return { status, reason };
-
-  const s = String(status || "").toLowerCase();
-  const r = String(reason || "").toLowerCase();
-
-  if (
-    s === "late_entry" ||
-    r.includes("late entry") ||
-    r.includes("overextended") ||
-    r.includes("flow opposes") ||
-    r.includes("institutional flow")
-  ) {
-    return {
-      status: "valid_entry",
-      reason: `Active-window tradable opportunity: ${reason || status}`,
-      warning: true,
-    };
-  }
-
-  return { status, reason };
-}
-
-function rankOpportunity(candidate = {}) {
-  const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
-  const confidence = Number(candidate.confidence ?? candidate.score ?? candidate.alignScore ?? 0);
-  const spreadOk = candidate.spreadOk !== false;
-  const duplicate = candidate.duplicate === true || candidate.hasDuplicate === true;
-
-  if (rr < 1.5) return { mode: "NONE", score: 0, reject: "RR < 1.5" };
-  if (!spreadOk) return { mode: "NONE", score: 0, reject: "spread too high" };
-  if (duplicate) return { mode: "NONE", score: 0, reject: "duplicate active trade" };
-
-  let score = 0;
-  score += Math.min(confidence, 100);
-  score += Math.min(rr * 12, 40);
-
-  if (candidate.entryStatus === "valid_entry") score += 15;
-  if (candidate.entryStatus === "wait_for_retest") score += 8;
-  if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
-
-  if (confidence >= 85 && rr >= 1.5) {
-    return { mode: "SCALP", score, reject: null };
-  }
-
-  return { mode: "NONE", score, reject: "confidence below opportunity threshold" };
-}
-
-function softenActiveWindowRejects(reasons = [], now = new Date()) {
-  if (!isActiveOpportunityWindow(now)) return reasons;
-
-  return reasons.filter((reason) => {
-    const r = String(reason).toLowerCase();
-
-    if (isProtectedHardBlock(r)) return true;
-
-    if (
-      r.includes("late_entry") ||
-      r.includes("late entry") ||
-      r.includes("overextended") ||
-      r.includes("flow opposes") ||
-      r.includes("institutional flow") ||
-      r.includes("missing smt") ||
-      r.includes("missing fvg") ||
-      r.includes("mixed ema") ||
-      r.includes("liquidity proxy")
-    ) {
-      return false;
-    }
-
-    return true;
-  });
-}
-// === END OPPORTUNITY RANKING PATCH ===
-
-
-
-function prioritizeRetraceWatchPairs(pairs = []) {
-  const watched = getRetraceWatchPairs();
-  const basePairs = Array.isArray(pairs) ? pairs : [];
-  return [...new Set([...watched, ...basePairs])];
 }
