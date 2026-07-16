@@ -21,6 +21,13 @@ type WatchSignal = {
   entryTiming?: { status?: string; reason?: string } | null;
   alignment?: { timeframeAlignmentScore?: number } | null;
   v3?: { score?: number } | null;
+  fibonacci?: {
+    enabled?: boolean;
+    timeframeUsed?: string | null;
+    swingHigh?: number | null;
+    swingLow?: number | null;
+    retracementLevels?: { level382?: number | null } | null;
+  } | null;
   dashboardWatchTier?: { tier?: string; reason?: string } | null;
   watchTier?: { tier?: string; reason?: string } | null;
 };
@@ -54,6 +61,15 @@ function finite(...values: unknown[]): number | null {
   return null;
 }
 
+function formatWatchPrice(signal: WatchSignal, value: unknown): string {
+  const parsed = finite(value);
+  if (parsed == null) return '—';
+  const pair = String(signal.pair || signal.instrument || '').toUpperCase();
+  if (pair === 'XAU_USD' || pair === 'XAG_USD') return parsed.toFixed(2);
+  if (pair.includes('JPY')) return parsed.toFixed(3);
+  return parsed.toFixed(5);
+}
+
 function watchReason(signal: WatchSignal, tier: WatchTier): string {
   return String(
     signal.dashboardWatchTier?.reason ||
@@ -77,6 +93,7 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
   const alignment = finite(signal.alignment?.timeframeAlignmentScore);
   const rr = finite(signal.expectedRR, signal.rr, signal.riskReward);
   const timing = signal.entryTiming?.status?.replace(/_/g, ' ') || (hot ? 'trigger pending' : 'setup developing');
+  const fibonacci = signal.fibonacci;
 
   return (
     <article
@@ -138,6 +155,13 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
         <Metric label="V3 score" value={v3Score == null ? '—' : `${v3Score}`} />
         <Metric label="TP confidence" value={confidence == null ? '—' : `${confidence}%`} />
         <Metric label="R:R" value={rr == null ? '—' : `${rr.toFixed(2)}R`} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(75px, 1fr))', gap: 8 }}>
+        <Metric label="Fib timeframe" value={fibonacci?.timeframeUsed || '—'} />
+        <Metric label="Swing high" value={formatWatchPrice(signal, fibonacci?.swingHigh)} />
+        <Metric label="Swing low" value={formatWatchPrice(signal, fibonacci?.swingLow)} />
+        <Metric label="Fib 38.2%" value={formatWatchPrice(signal, fibonacci?.retracementLevels?.level382)} />
       </div>
 
       {signal.spreadPips != null && Number.isFinite(Number(signal.spreadPips)) && (
