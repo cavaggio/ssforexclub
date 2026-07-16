@@ -45,7 +45,7 @@ test('Daily/H4 disagreement hard-rejects even when H4 and M15 align', () => {
   assert.match(result.reason, /Daily and H4 must both align/);
 });
 
-test('2 of 3 can derive direction when the legacy macro direction is ranging', () => {
+test('derived majority direction still hard-rejects when Daily and H4 disagree', () => {
   const result = evaluatePrimaryTimeframeAlignment({
     timeframes: {
       daily: 'bullish',
@@ -57,7 +57,9 @@ test('2 of 3 can derive direction when the legacy macro direction is ranging', (
   assert.equal(result.expected, 'bullish');
   assert.equal(result.explicitDirection, false);
   assert.equal(result.score, 67);
-  assert.equal(result.passed, true);
+  assert.equal(result.dailyH4Aligned, false);
+  assert.equal(result.passed, false);
+  assert.match(result.reason, /Daily and H4 must both align/);
 });
 
 test('1 of 3 aligned scores 33 and rejects', () => {
