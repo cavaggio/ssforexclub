@@ -33,6 +33,7 @@ function extractV3(signal = {}) {
 }
 
 function eventTimestamp(event = {}) {
+  if (!event || typeof event !== 'object') return null;
   const raw = event.time || event.timestamp || event.candleTime || event.detectedAt || null;
   const ms = raw ? Date.parse(raw) : NaN;
   return Number.isFinite(ms) ? ms : null;
