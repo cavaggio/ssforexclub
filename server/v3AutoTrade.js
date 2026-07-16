@@ -1,4 +1,3 @@
-import { getRetraceWatchPairs } from './retraceWatchMode.js';
 import { scanV3IndependentMarket } from './v3IndependentScanner.js';
 import { executeTrade } from './oandaTrade.js';
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
@@ -8,18 +7,12 @@ import { applyScalpMetadata } from './scalpOnlyPolicy.js';
  *
  * Architecture rule: V3 reads raw OANDA pricing/candles through
  * scanV3IndependentMarket(). It does not call oandaScanner, consume legacy
- * qualified/rejected arrays, inherit legacy direction, or blend legacy
- * confidence into a V3 candidate.
+ * qualified/rejected arrays, inherit legacy direction, blend legacy confidence,
+ * or read a shared legacy retrace-watch registry.
  */
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
-}
-
-function prioritizeRetraceWatchPairs(pairs = []) {
-  const watched = getRetraceWatchPairs();
-  const basePairs = Array.isArray(pairs) ? pairs : [];
-  return [...new Set([...watched, ...basePairs])];
 }
 
 function pairOf(item) {
@@ -63,13 +56,14 @@ export async function runAutoV3ForUser({
   const tag = `[AUTO_AI][V3][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (message) => console.log(`${tag} account=${account} engine=v3 ${message}`);
-  const requestedPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
-  const scanPairs = requestedPairs ? prioritizeRetraceWatchPairs(requestedPairs) : null;
+  const scanPairs = Array.isArray(pairs) && pairs.length
+    ? [...new Set(pairs.map((pair) => String(pair).toUpperCase()))]
+    : null;
 
   log(
     `independent scan started scanMode=${scanMode} ` +
     `pairs=${scanPairs?.length ? scanPairs.join(',') : 'V3_WATCHLIST'} ` +
-    'legacyScannerUsed=false',
+    'legacyScannerUsed=false sharedRetraceWatchUsed=false',
   );
 
   const scan = await scanV3IndependentMarket({
@@ -92,6 +86,7 @@ export async function runAutoV3ForUser({
       architecture: 'independent_v3_raw_market_data',
       legacyScannerUsed: false,
       legacyDirection: null,
+      sharedRetraceWatchUsed: false,
     }),
   );
 
@@ -109,6 +104,7 @@ export async function runAutoV3ForUser({
       engine: 'v3',
       architecture: 'independent_v3_raw_market_data',
       legacyScannerUsed: false,
+      sharedRetraceWatchUsed: false,
       scanned: scan?.meta?.pairsScanned ?? 0,
       qualified: 0,
       executed: [],
@@ -147,6 +143,7 @@ export async function runAutoV3ForUser({
         strategy: 'V3',
         architecture: 'independent_v3_raw_market_data',
         legacyScannerUsed: false,
+        sharedRetraceWatchUsed: false,
         signal,
       });
       log(`trade executed pair=${signal.pair} dir=${signal.direction} id=${result.tradeId}`);
@@ -166,6 +163,7 @@ export async function runAutoV3ForUser({
     engine: 'v3',
     architecture: 'independent_v3_raw_market_data',
     legacyScannerUsed: false,
+    sharedRetraceWatchUsed: false,
     scanned: scan?.meta?.pairsScanned ?? qualified.length,
     qualified: qualified.length,
     executed,
