@@ -1,0 +1,71 @@
+name: Apply production risk hardening
+
+on:
+  push:
+    branches:
+      - agent/production-risk-hardening
+    paths:
+      - 'scripts/hardening-patch.part*'
+      - '.github/workflows/apply-production-risk-hardening.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[risk-hardening-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/production-risk-hardening
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Assemble patch
+        run: cat scripts/hardening-patch.part* > /tmp/apply-production-risk-hardening.mjs
+
+      - name: Validate and apply patch
+        run: |
+          node --check /tmp/apply-production-risk-hardening.mjs
+          node /tmp/apply-production-risk-hardening.mjs
+
+      - name: Validate changed source
+        run: |
+          node --check server/riskManager.js
+          node --check server/oandaRiskSizing.js
+          node --check server/tradeDecisionEngine.js
+          node --check server/executionSafetyPolicy.js
+          node --check server/v3QualityConfirmation.js
+          node --check server/v3IndependentScanner.js
+          node --check server/oandaTrade.js
+          node --check server/ictExecution.js
+
+      - name: Run production-risk tests
+        run: |
+          node --test \
+            server/riskManager.test.js \
+            server/executionSafetyPolicy.test.js \
+            server/v3QualityConfirmation.test.js \
+            server/v3IndependentScanner.test.js
+
+      - name: Verify forbidden execution patterns are gone
+        run: |
+          ! grep -RInE "maxDailyLossPercent: 2\.8|RISK_DAILY_MAX_DRAWDOWN_PERCENT \|\| '2\.8'|FOREX_MAX_DAILY_LOSS_PERCENT \|\| '2'" server
+          ! grep -RInE "MAX_RISK_PERCENT.*1\.4|maxRiskPerTradePercent.*1\.4" server
+          ! grep -n "structureConfirmed: true" server/ictExecution.js
+          ! grep -n "liquidityConfirmed: true" server/ictExecution.js
+          ! grep -n "premiumDiscountConfirmed: true" server/ictExecution.js
+          ! grep -n "TP-hit confidence.*reasons.push" server/v3QualityConfirmation.js
+
+      - name: Commit tested hardening changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server
+          git commit -m "Harden execution risk and entry controls [risk-hardening-applied]"
+          git push origin agent/production-risk-hardening
