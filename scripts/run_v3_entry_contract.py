@@ -74,6 +74,12 @@ if strict_helpers not in source:
     raise RuntimeError('Unable to locate V3 patch helper definitions')
 source = source.replace(strict_helpers, resilient_helpers, 1)
 
+source += """
+followup_path = ROOT / 'scripts' / 'apply_v3_entry_contract_fixes.py'
+followup_namespace = {'__file__': str(followup_path), '__name__': '__main__'}
+exec(compile(followup_path.read_text(encoding='utf-8'), str(followup_path), 'exec'), followup_namespace, followup_namespace)
+"""
+
 postconditions = r'''
 
 required = {
@@ -88,6 +94,12 @@ required = {
     'server/v3IndependentScanner.js': ["deriveV3EntryTiming", "refreshIndependentV3CandidateForExecution", "candidate.directionLock"],
     'server/v3AutoTrade.js': ["refreshIndependentV3CandidateForExecution", "execution skipped pair="],
     'server/executionPolicy.js': ["ENTRY_TIMING_STATUSES", "evaluateOpposingSweepBlock", "entryTiming must be populated"],
+    'server/v3EntryContract.js': [
+        "if (!event || typeof event !== 'object') return null",
+        "selectExecutablePrice",
+        "repriceExecutableGeometry",
+        "validateDirectionLock",
+    ],
     'server/oandaTrade.js': [
         "repriceExecutableGeometry",
         "buildOandaMarketOrderPayload",
