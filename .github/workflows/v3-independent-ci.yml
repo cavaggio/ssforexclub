@@ -1,0 +1,35 @@
+name: Independent V3 CI
+
+on:
+  pull_request:
+    paths:
+      - 'server/v3AutoTrade.js'
+      - 'server/v3IndependentScanner.js'
+      - 'server/v3IndependentScanner.test.js'
+      - '.github/workflows/v3-independent-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/v3AutoTrade.js'
+      - 'server/v3IndependentScanner.js'
+      - 'server/v3IndependentScanner.test.js'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax checks
+        run: |
+          node --check server/v3IndependentScanner.js
+          node --check server/v3AutoTrade.js
+      - name: Independent V3 tests
+        run: node --test server/v3IndependentScanner.test.js
+      - name: Assert legacy scanner is disconnected
+        run: |
+          ! grep -q "oandaScanner" server/v3AutoTrade.js
+          ! grep -q "scanForexPairs" server/v3AutoTrade.js
+          ! grep -q "legacyQualified" server/v3AutoTrade.js
