@@ -9,7 +9,25 @@ function firstNumber(...values) {
   for (const value of values) { const n = Number(value); if (Number.isFinite(n)) return n; }
   return null;
 }
-function extractV3(signal = {}) { return signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || {}; }
+function extractV3(signal = {}) {
+  return signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || {};
+}
+function isV3ExecutionSignal(signal = {}) {
+  const engine = firstText(
+    signal.engine,
+    signal.strategy,
+    signal.selectedLogicType,
+    signal.source,
+    signal.architecture,
+  ).toLowerCase();
+  return Boolean(
+    signal.v3 ||
+    signal.v3Eval ||
+    signal.v3Analysis ||
+    signal.metadata?.v3 ||
+    engine.includes('v3')
+  );
+}
 function timingStatus(signal = {}) {
   return firstText(signal.entryTiming?.status, signal.timingStatus, signal.v3?.entryTiming?.status).toLowerCase();
 }
@@ -42,15 +60,22 @@ export function evaluateUniversalEntryPolicy(signal = {}) {
   const reasons = [];
   const status = timingStatus(signal);
   const direction = signal.direction;
+  const v3Execution = isV3ExecutionSignal(signal);
   const sweepBlock = evaluateOpposingSweepBlock(signal, direction);
-  if (!ALLOWED_TIMING.has(status)) reasons.push('entryTiming must be populated with a recognized terminal status');
-  else if (status !== 'valid_entry') reasons.push(`entry timing ${status} is not executable`);
+
+  if (v3Execution) {
+    if (!ALLOWED_TIMING.has(status)) reasons.push('entryTiming must be populated with a recognized terminal status');
+    else if (status !== 'valid_entry') reasons.push(`entry timing ${status} is not executable`);
+  }
   if (pendingSweep(signal)) reasons.push('liquidity sweep is pending');
   if (!sweepBlock.allowed) reasons.push(sweepBlock.reason);
-  if (rangeState(signal) && !confirmedBreakoutRetest(signal, direction)) reasons.push('range/consolidation requires a confirmed close outside the range and successful retest');
+  if (v3Execution && rangeState(signal) && !confirmedBreakoutRetest(signal, direction)) {
+    reasons.push('range/consolidation requires a confirmed close outside the range and successful retest');
+  }
   return {
     allowed: reasons.length === 0,
     reasons,
+    v3Execution,
     timingStatus: status || null,
     opposingSweep: sweepBlock.opposingSweep,
     reversalOverride: sweepBlock.reversalOverride,
