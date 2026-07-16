@@ -1,0 +1,258 @@
+eservations.delete(token);
+  }
+}
+
+function reservedRiskForAccount(accountId, dayKey, nowMs = Date.now()) {
+  cleanupProjectedRiskReservations(nowMs);
+  let total = 0;
+  for (const reservation of projectedRiskReservations.values()) {
+    if (reservation.accountId === accountKey(accountId) && reservation.dayKey === dayKey) {
+      total += Number(reservation.riskUSD) || 0;
+    }
+  }
+  return +total.toFixed(2);
+}
+
+export function previewProjectedRiskBudget({
+  accountId,
+  balanceUSD,
+  openRiskUSD = 0,
+  requestedRiskUSD = 0,
+  now = new Date(),
+} = {}, cfg = riskConfig()) {
+  const lock = checkDailyRiskLock({ accountId, balanceUSD, now }, cfg);
+  const dayKey = nyDateKey(now);
+  const realizedLossUSD = Math.max(0, -(Number(lock.realizedPnL) || 0));
+  const openRisk = Math.max(0, Number(openRiskUSD) || 0);
+  const requested = Math.max(0, Number(requestedRiskUSD) || 0);
+  const reservedRiskUSD = reservedRiskForAccount(accountId, dayKey, now.getTime());
+  const remainingBeforeCandidateUSD = +Math.max(
+    0,
+    lock.lossLimit - realizedLossUSD - openRisk - reservedRiskUSD
+  ).toFixed(2);
+  const approvedRiskUSD = +Math.min(requested, remainingBeforeCandidateUSD).toFixed(2);
+  const projectedLossUSD = +(realizedLossUSD + openRisk + reservedRiskUSD + approvedRiskUSD).toFixed(2);
+  const allowed = !lock.tradingLocked && approvedRiskUSD > 0;
+
+  return {
+    allowed,
+    capped: requested > approvedRiskUSD + 0.005,
+    tradingLocked: lock.tradingLocked,
+    startingBalance: lock.startingBalance,
+    dailyMaxLossPercent: cfg.dailyMaxDrawdownPercent,
+    dailyLossLimitUSD: lock.lossLimit,
+    realizedLossUSD,
+    openRiskUSD: +openRisk.toFixed(2),
+    reservedRiskUSD,
+    requestedRiskUSD: +requested.toFixed(2),
+    approvedRiskUSD,
+    remainingBeforeCandidateUSD,
+    projectedLossUSD,
+    projectedLossPercent: lock.startingBalance > 0
+      ? +((projectedLossUSD / lock.startingBalance) * 100).toFixed(4)
+      : null,
+    reason: allowed
+      ? null
+      : lock.reason || 'No projected daily risk budget remains.',
+  };
+}
+
+export function reserveProjectedRiskBudget({
+  accountId,
+  balanceUSD,
+  openRiskUSD = 0,
+  requestedRiskUSD = 0,
+  now = new Date(),
+  ttlMs = 120000,
+  requireFullAmount = true,
+} = {}, cfg = riskConfig()) {
+  const preview = previewProjectedRiskBudget({
+    accountId,
+    balanceUSD,
+    openRiskUSD,
+    requestedRiskUSD,
+    now,
+  }, cfg);
+
+  if (
+    !preview.allowed ||
+    (requireFullAmount && preview.approvedRiskUSD + 0.005 < preview.requestedRiskUSD)
+  ) {
+    return {
+      ...preview,
+      allowed: false,
+      reason: preview.reason ||
+        'Projected daily risk only permits $' + preview.approvedRiskUSD.toFixed(2) +
+        ' of $' + preview.requestedRiskUSD.toFixed(2) + ' requested.',
+    };
+  }
+
+  const token = \`\${accountKey(accountId)}:\${Date.now()}:\${Math.random().toString(36).slice(2)}\`;
+  projectedRiskReservations.set(token, {
+    accountId: accountKey(accountId),
+    dayKey: nyDateKey(now),
+    riskUSD: preview.approvedRiskUSD,
+    expiresAt: Date.now() + ttlMs,
+  });
+  return { ...preview, allowed: true, token };
+}
+
+export function releaseProjectedRiskReservation(token) {
+  if (token) projectedRiskReservations.delete(token);
+}
+
+export function commitProjectedRiskReservation(token, ttlMs = 120000) {
+  const reservation = token ? projectedRiskReservations.get(token) : null;
+  if (!reservation) return false;
+  reservation.expiresAt = Date.now() + ttlMs;
+  return true;
+}
+
+`;
+risk = mustReplace(
+  risk,
+  "/** Manual/admin reset of all daily baselines (e.g. broker daily reset hook). */",
+  `${riskFunctions}/** Manual/admin reset of all daily baselines (e.g. broker daily reset hook). */`,
+  'risk projected functions',
+);
+risk = mustReplace(
+  risk,
+  `  dailyState.clear();
+  console.log(\`[DAILY RISK LOCK] reset — cleared \${cleared} account baseline(s)\`);`,
+  `  dailyState.clear();
+  projectedRiskReservations.clear();
+  console.log(\`[DAILY RISK LOCK] reset — cleared \${cleared} account baseline(s) and projected reservations\`);`,
+  'risk reset reservations',
+);
+write('server/riskManager.js', risk);
+
+// ---------------------------------------------------------------------------
+// Dynamic sizing ceiling
+// ---------------------------------------------------------------------------
+let sizing = read('server/oandaRiskSizing.js');
+sizing = mustReplace(
+  sizing,
+  ' *     FOREX_MAX_RISK_PERCENT          (default 2.0)   risk ceiling at full conviction',
+  ' *     FOREX_MAX_RISK_PERCENT          (deprecated; canonical ceiling is 1.25%)',
+  'sizing docs',
+);
+sizing = mustReplace(
+  sizing,
+  "export const MAX_RISK_PERCENT          = parseFloat(process.env.FOREX_MAX_RISK_PERCENT || '1.4');",
+  "export const MAX_RISK_PERCENT          = 1.25;",
+  'sizing maximum',
+);
+write('server/oandaRiskSizing.js', sizing);
+
+// ---------------------------------------------------------------------------
+// Central decision policy: canonical loss value and no softened safety rejects
+// ---------------------------------------------------------------------------
+let decision = read('server/tradeDecisionEngine.js');
+decision = mustReplace(
+  decision,
+  '// Centralized execution policy for June 23 restore logic.',
+  `// Centralized execution policy for June 23 restore logic.
+import { DAILY_MAX_LOSS_PERCENT } from './riskManager.js';`,
+  'decision import',
+);
+decision = mustReplace(
+  decision,
+  '  maxDailyLossPercent: 2.8,',
+  '  maxDailyLossPercent: DAILY_MAX_LOSS_PERCENT,',
+  'decision daily loss',
+);
+decision = mustMatchReplace(
+  decision,
+  /export function softenRejectReasons\(reasons = \[\], now = new Date\(\)\) \{[\s\S]*?\n\}/,
+  `export function softenRejectReasons(reasons = []) {
+  // Production safety reasons are never removed because the clock is inside a session.
+  return Array.isArray(reasons) ? [...reasons] : [];
+}`,
+  'decision reject softening',
+);
+decision = mustReplace(
+  decision,
+  `    r.includes("execution disabled")
+  );`,
+  `    r.includes("execution disabled") ||
+    r.includes("too_early") ||
+    r.includes("late_entry") ||
+    r.includes("wait_for_retest") ||
+    r.includes("pending sweep") ||
+    r.includes("flow opposes") ||
+    r.includes("institutional flow") ||
+    r.includes("ranging market") ||
+    r.includes("consolidat")
+  );`,
+  'decision hard rejects',
+);
+write('server/tradeDecisionEngine.js', decision);
+
+// ---------------------------------------------------------------------------
+// V3: TP confidence is diagnostic, hard market-state policy owns entry
+// ---------------------------------------------------------------------------
+let quality = read('server/v3QualityConfirmation.js');
+quality = mustReplace(
+  quality,
+  `} from './v3TpConfidence.js';`,
+  `} from './v3TpConfidence.js';
+import { evaluateHardEntryPolicy } from './executionSafetyPolicy.js';`,
+  'quality policy import',
+);
+quality = mustMatchReplace(
+  quality,
+  /\n  const minTpHitConfidence = Math\.max\(85, envNumber\([\s\S]*?\n  \)\);/,
+  '',
+  'quality min tp confidence',
+);
+quality = mustReplace(
+  quality,
+  "  if (tpHitConfidence < minTpHitConfidence) reasons.push(`TP-hit confidence ${tpHitConfidence} < ${minTpHitConfidence}`);\n",
+  '',
+  'quality stage1 TP reject',
+);
+quality = mustReplace(
+  quality,
+  `      minConfidence: minTpHitConfidence,
+      minTpHitConfidence,`,
+  `      minConfidence: null,
+      minTpHitConfidence: null,
+      tpConfidencePolicy: 'diagnostic_only_not_entry_confirmation',`,
+  'quality stage1 metrics',
+);
+quality = mustReplace(
+  quality,
+  `  const minSupports = envNumber('V3_QUALITY_TRIGGER_MIN_SUPPORTS', 1);
+  const reasons = [];`,
+  `  const minSupports = envNumber('V3_QUALITY_TRIGGER_MIN_SUPPORTS', 1);
+  const hardPolicy = evaluateHardEntryPolicy(signal);
+  const reasons = [...hardPolicy.reasons];`,
+  'quality stage2 hard policy',
+);
+quality = mustReplace(
+  quality,
+  `      minSupports,
+    },`,
+  `      minSupports,
+      hardPolicy: hardPolicy.metrics,
+    },`,
+  'quality stage2 metrics',
+);
+quality = mustMatchReplace(
+  quality,
+  /\n  if \(!tpConfidence\.allowed\) \{[\s\S]*?\n  \}/,
+  '',
+  'quality stage3 TP reject',
+);
+quality = mustReplace(
+  quality,
+  `      minimumTpHitConfidence: tpConfidence.minimumEntryConfidence,
+      tpConfidence,`,
+  `      minimumTpHitConfidence: null,
+      tpConfidencePolicy: 'diagnostic_only_not_entry_confirmation',
+      tpConfidence,`,
+  'quality stage3 metrics',
+);
+write('server/v3QualityConfirmation.js', quality);
+
+let independent = read('server
