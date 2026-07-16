@@ -1,0 +1,18 @@
+// Disambiguate ICT's protective-price pip size from the execution sizing pip size.
+// This keeps later replacements deterministic without changing behavior.
+{
+  let preIct = read('server/ictExecution.js');
+  preIct = mustReplace(
+    preIct,
+    `function validateFreshProtectivePrices({ pair, direction, quote, stopLoss, targetProfit }) {
+  const pipSize = getPipSize(pair);
+  const bufferPips = Number(process.env.ICT_EXECUTION_PRICE_BUFFER_PIPS || 2);
+  const minBuffer = pipSize * bufferPips;`,
+    `function validateFreshProtectivePrices({ pair, direction, quote, stopLoss, targetProfit }) {
+  const protectivePipSize = getPipSize(pair);
+  const bufferPips = Number(process.env.ICT_EXECUTION_PRICE_BUFFER_PIPS || 2);
+  const minBuffer = protectivePipSize * bufferPips;`,
+    'ict protective pip-size disambiguation',
+  );
+  write('server/ictExecution.js', preIct);
+}
