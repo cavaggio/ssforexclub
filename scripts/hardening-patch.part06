@@ -10,3 +10,4 @@
 write('server/v3IndependentScanner.test.js', independentTest);
 
 console.log('Production risk hardening patch applied.');
+// trigger: workflow now exists on this branch
