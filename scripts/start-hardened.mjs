@@ -48,8 +48,8 @@ try {
     .sort()
     .map((name) => fs.readFileSync(path.join(here, name), 'utf8'));
 
-  if (parts.length !== 7) {
-    throw new Error(`Expected 7 production-hardening patch parts, found ${parts.length}`);
+  if (parts.length !== 8) {
+    throw new Error(`Expected 8 production-hardening patch parts, found ${parts.length}`);
   }
 
   const patchPath = path.join('/tmp', 'apply-production-risk-hardening.mjs');
