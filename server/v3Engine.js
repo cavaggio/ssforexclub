@@ -25,6 +25,8 @@ import { analyzePremiumDiscount } from './premiumDiscount.js';
 import { scoreV3, deriveDirection } from './v3ExecutionModel.js';
 import { detectFibSetup } from './oandaFibonacci.js';
 import { getPipSize } from './pipMath.js';
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
+import { derivePrimaryTimeframes, directionFromDailyH4 } from './v3EntryContract.js';
 
 export const V3_MODE = String(process.env.FOREX_V3_ENGINE_MODE || 'off').toLowerCase();
 export function isV3Enabled() { return V3_MODE === 'shadow' || V3_MODE === 'active'; }
@@ -67,12 +69,16 @@ export function evaluateV3({
     ? currentPrice
     : (m15Candles.length ? m15Candles[m15Candles.length - 1].close : null);
 
+  const timeframes = derivePrimaryTimeframes({ dailyCandles, h4Candles, m15Candles });
+  const direction = directionFromDailyH4(timeframes);
+  const primaryTimeframeAlignment = evaluatePrimaryTimeframeAlignment({ timeframes }, direction);
+
   const liquidity = analyzeLiquidity({ pair, dailyCandles, h4Candles, h1Candles, m15Candles, currentPrice: price, atrPips });
   const structure = analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles });
   const session = analyzeSession({ now, h1Candles, atrPips, atrHistorical });
   const volatility = analyzeVolatilityExpansion({ pair, candles: m15Candles.length ? m15Candles : h1Candles, atrPips, atrHistorical });
 
-  const direction = deriveDirection({ structure, liquidity, session });
+  const structureDirection = deriveDirection({ structure, liquidity, session });
 
   // Fib swing — computed ONCE; feeds both the premium/discount engine and the
   // entry-distance-from-origin KPI (avoids calling detectFibSetup twice).
@@ -113,13 +119,19 @@ export function evaluateV3({
 
   return {
     mode: V3_MODE,
-    direction: scored.direction,
+    direction: primaryTimeframeAlignment.passed ? scored.direction : null,
+    structureDirection,
+    timeframes,
+    primaryTimeframeAlignment,
     legacyDirection,
     directionAgrees: scored.direction != null && legacyDirection != null && scored.direction === legacyDirection,
     score: scored.score,
-    qualified: scored.qualified,
+    qualified: scored.qualified && primaryTimeframeAlignment.passed,
     earlyTrigger: scored.earlyTrigger,
-    rejectionReasons: scored.rejectionReasons,
+    rejectionReasons: [
+      ...scored.rejectionReasons,
+      ...(primaryTimeframeAlignment.passed ? [] : [primaryTimeframeAlignment.reason]),
+    ],
     narrative: scored.narrative,
     pillars: scored.pillars,
     entryDistanceFromOriginPct,

@@ -1,4 +1,4 @@
-import { scanV3IndependentMarket } from './v3IndependentScanner.js';
+import { scanV3IndependentMarket, refreshIndependentV3CandidateForExecution } from './v3IndependentScanner.js';
 import { executeTrade } from './oandaTrade.js';
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
 
@@ -120,7 +120,27 @@ export async function runAutoV3ForUser({
   const executed = [];
   const skipped = [];
 
-  for (const signal of qualified) {
+  for (let signal of qualified) {
+    const refreshed = await refreshIndependentV3CandidateForExecution({ candidate: signal, client, now: new Date(), log });
+    if (!refreshed.allowed) {
+      skipped.push({ pair: signal.pair, direction: signal.direction, reason: refreshed.reason });
+      log(`execution skipped pair=${signal.pair} dir=${signal.direction} reason="${refreshed.reason}"`);
+      continue;
+    }
+    signal = applyScalpMetadata({
+      ...signal,
+      ...refreshed.candidate,
+      source: 'v3_pure_auto_ai',
+      strategy: 'V3',
+      engine: 'v3',
+      tradeStyle: 'SCALP',
+      scalpOnly: true,
+      selectedLogicType: 'v3_pure',
+      architecture: 'independent_v3_raw_market_data',
+      legacyScannerUsed: false,
+      legacyDirection: null,
+      sharedRetraceWatchUsed: false,
+    });
     signal.environment = client?.environment || signal.environment;
     const result = await executeTrade(signal, { client, autoAi: true });
 

@@ -4,6 +4,7 @@ import { evaluateV3 } from './v3Engine.js';
 import { getForexNewsRisk } from './oandaNewsRisk.js';
 import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
 import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
+import { deriveV3EntryTiming, validateDirectionLock } from './v3EntryContract.js';
 
 const DEFAULT_V3_WATCHLIST = [
   'EUR_USD',
@@ -182,6 +183,9 @@ export function buildIndependentV3Candidate({
     },
   };
 
+  candidate.entryTiming = deriveV3EntryTiming(candidate);
+  candidate.v3.entryTiming = candidate.entryTiming;
+
   const tpHitConfidence = computeV3EntryTpHitConfidence(candidate);
   candidate.tpHitConfidence = tpHitConfidence;
   candidate.confidence = entryQualityConfidence;
@@ -332,6 +336,12 @@ export async function scanV3IndependentMarket({
         stage2,
         checkedAt: new Date().toISOString(),
       };
+      candidate.directionLock = {
+        candidateDirection: candidate.direction,
+        confirmedDirection: stage2.metrics?.lockedDirection || stage2.metrics?.direction || candidate.direction,
+        freshDirection: stage2.metrics?.direction || candidate.direction,
+        stage2CheckedAt: stage2.checkedAt,
+      };
 
       const reasons = [
         ...(v3?.qualified === true ? [] : (v3?.rejectionReasons || ['V3-native qualification failed'])),
@@ -396,4 +406,45 @@ export async function scanV3IndependentMarket({
       generatedAt: new Date().toISOString(),
     },
   };
+}
+
+
+export async function refreshIndependentV3CandidateForExecution({ candidate, client, now = new Date(), log = () => {} } = {}) {
+  const pair = candidate?.pair;
+  if (!pair) return { allowed: false, reason: 'execution refresh missing pair', candidate: null };
+
+  const refreshScan = await scanV3IndependentMarket({
+    pairs: [pair],
+    client,
+    now,
+    scanMode: 'stage2_execution_refresh',
+    log,
+  });
+  const freshCandidate = refreshScan.qualified.find((item) => item.pair === pair) || null;
+  if (!freshCandidate) {
+    const rejection = refreshScan.rejected.find((item) => item.pair === pair);
+    return {
+      allowed: false,
+      reason: rejection?.rejectionReasons?.join('; ') || rejection?.reason || 'fresh Stage 2 confirmation failed',
+      candidate: null,
+      refreshScan,
+    };
+  }
+
+  const lock = validateDirectionLock({
+    candidateDirection: candidate.direction,
+    confirmedDirection: candidate.qualityConfirmation?.stage2?.metrics?.lockedDirection || candidate.directionLock?.confirmedDirection || candidate.direction,
+    freshDirection: freshCandidate.direction,
+  });
+  if (!lock.allowed) {
+    return { allowed: false, reason: lock.reasons.join('; '), candidate: null, refreshScan, directionLock: lock };
+  }
+
+  freshCandidate.directionLock = {
+    candidateDirection: lock.candidateDirection,
+    confirmedDirection: lock.confirmedDirection,
+    freshDirection: lock.freshDirection,
+    stage2CheckedAt: freshCandidate.qualityConfirmation?.stage2?.checkedAt || new Date().toISOString(),
+  };
+  return { allowed: true, reason: null, candidate: freshCandidate, refreshScan, directionLock: lock };
 }

@@ -25,20 +25,24 @@ test('3 of 3 aligned scores 100 and passes; context conflicts stay diagnostic', 
   assert.deepEqual(result.contextConflicts.sort(), ['h1', 'm30', 'm5'].sort());
 });
 
-test('2 of 3 aligned scores exactly 67 and passes with one opposing timeframe', () => {
+test('Daily and H4 aligned score 67 and pass when M15 opposes', () => {
   const result = evaluatePrimaryTimeframeAlignment({
-    timeframes: {
-      daily: 'bearish',
-      h4: 'bullish',
-      m15: 'bullish',
-    },
+    timeframes: { daily: 'bullish', h4: 'bullish', m15: 'bearish' },
   }, 'long');
-
   assert.equal(result.passed, true);
   assert.equal(result.score, 67);
-  assert.deepEqual(result.alignedTimeframes.sort(), ['h4', 'm15']);
-  assert.deepEqual(result.opposingTimeframes, ['daily']);
-  assert.match(result.reason, /diagnostic only/i);
+  assert.equal(result.dailyH4Aligned, true);
+  assert.deepEqual(result.alignedTimeframes.sort(), ['daily', 'h4']);
+});
+
+test('Daily/H4 disagreement hard-rejects even when H4 and M15 align', () => {
+  const result = evaluatePrimaryTimeframeAlignment({
+    timeframes: { daily: 'bearish', h4: 'bullish', m15: 'bullish' },
+  }, 'long');
+  assert.equal(result.score, 67);
+  assert.equal(result.dailyH4Aligned, false);
+  assert.equal(result.passed, false);
+  assert.match(result.reason, /Daily and H4 must both align/);
 });
 
 test('2 of 3 can derive direction when the legacy macro direction is ranging', () => {

@@ -3,7 +3,7 @@
  *
  * HARD GATE:
  *   Daily + H4 + M15 are the only directional decision timeframes.
- *   Two of the three aligned with the intended direction = 67/100 and PASS.
+ *   Daily and H4 must both align with the intended direction. That hard pair scores 67/100; aligned M15 raises the score to 100/100.
  *
  * SOFT CONTEXT ONLY:
  *   H1 + M30 + M5 may warn/conflict, but they must not reject an otherwise valid trade.
@@ -12,7 +12,7 @@
 export const PRIMARY_ALIGNMENT_TIMEFRAMES = ['daily', 'h4', 'm15'];
 export const CONTEXT_ALIGNMENT_TIMEFRAMES = ['h1', 'm30', 'm5'];
 export const PRIMARY_ALIGNMENT_MIN_SCORE = 67;
-export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-2of3-2026-07-14';
+export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-daily-h4-hard-2026-07-16';
 
 function norm(value) {
   const s = String(value || '').trim().toLowerCase();
@@ -141,14 +141,15 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
   // Exact policy values: 0, 33, 67, 100. Do not derive a directionless 50%.
   const scores = [0, 33, 67, 100];
   const score = scores[alignedTimeframes.length] ?? 0;
-  const passed = score >= PRIMARY_ALIGNMENT_MIN_SCORE;
+  const dailyH4Aligned = biases.daily === expected && biases.h4 === expected;
+  const passed = dailyH4Aligned && score >= PRIMARY_ALIGNMENT_MIN_SCORE;
   const failures = [...opposingTimeframes, ...neutralTimeframes];
 
   let reason;
   if (!passed) {
-    reason =
-      `Primary timeframe alignment failed: Daily/H4/M15 score ${score}/100 < ` +
-      `${PRIMARY_ALIGNMENT_MIN_SCORE}/100 for ${expected}.`;
+    reason = dailyH4Aligned
+      ? `Primary timeframe alignment failed: Daily/H4/M15 score ${score}/100 < ${PRIMARY_ALIGNMENT_MIN_SCORE}/100 for ${expected}.`
+      : `Primary timeframe alignment failed: Daily and H4 must both align with ${expected}; Daily=${biases.daily}, H4=${biases.h4}.`;
   } else if (opposingTimeframes.length || neutralTimeframes.length) {
     const diagnostics = [
       opposingTimeframes.length ? `opposing=${opposingTimeframes.join(',')}` : null,
@@ -172,6 +173,7 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
     explicitDirection: Boolean(explicitExpected),
     policyVersion: PRIMARY_ALIGNMENT_POLICY_VERSION,
     minimumScore: PRIMARY_ALIGNMENT_MIN_SCORE,
+    dailyH4Aligned,
     primaryTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES,
     contextTimeframes: CONTEXT_ALIGNMENT_TIMEFRAMES,
     biases,

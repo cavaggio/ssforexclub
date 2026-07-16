@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
   evaluateV3SetupStage,
   evaluateV3TriggerStage,
-  evaluateV3FreshExecutionStage,
 } from './v3QualityConfirmation.js';
 
 function baseSignal() {
@@ -19,6 +18,7 @@ function baseSignal() {
     expectedRR: 1.6,
     spreadPips: 1.2,
     atrPips: 20,
+    entryTiming: { status: 'valid_entry', retestDetected: true, retest: { direction: 'bullish', time: '2026-07-16T12:20:00.000Z' } },
     qualityConfirmation: {
       checkedAt: new Date().toISOString(),
     },
@@ -29,6 +29,7 @@ function baseSignal() {
       score: 72,
       direction: 'long',
       entryDistanceFromOriginPct: 0.42,
+      timeframes: { daily: 'bullish', h4: 'bullish', m15: 'bullish' },
       targets: {
         accepted: true,
         tp1: { price: 1.10320 },
@@ -36,7 +37,7 @@ function baseSignal() {
       structure: {
         structureTrend: 'bullish',
         bosDetected: true,
-        bos: { direction: 'bullish' },
+        bos: { direction: 'bullish', time: '2026-07-16T12:10:00.000Z' },
         chochDetected: false,
       },
       liquidity: {
@@ -156,50 +157,14 @@ test('Compressed market alone remains watch-only', () => {
   assert.equal(result.state, 'watch');
 });
 
-test('Stage 3 accepts a fresh, low-drift executable price', () => {
-  const signal = baseSignal();
-  const result = evaluateV3FreshExecutionStage(signal, {
-    currentPrice: 1.10005,
-    currentSpreadPips: 1.1,
-    maxSpreadPips: 3.5,
-    now: new Date(),
-  });
-  assert.equal(result.allowed, true, result.reasons.join('; '));
-});
 
-test('Stage 3 does not penalize internal V3 structure opposition', () => {
+test('Stage 2 blocks a confirmed opposing sweep', () => {
   const signal = baseSignal();
-  signal.v3.structure.structureTrend = 'bearish';
-  const result = evaluateV3FreshExecutionStage(signal, {
-    currentPrice: 1.10005,
-    currentSpreadPips: 1.1,
-    maxSpreadPips: 3.5,
-    now: new Date(),
-  });
-  assert.equal(result.allowed, true, result.reasons.join('; '));
-});
-
-test('Stage 3 rejects stale confirmation', () => {
-  const signal = baseSignal();
-  signal.qualityConfirmation.checkedAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-  const result = evaluateV3FreshExecutionStage(signal, {
-    currentPrice: 1.10005,
-    currentSpreadPips: 1.1,
-    maxSpreadPips: 3.5,
-    now: new Date(),
-  });
+  signal.v3.liquidity = {
+    liquiditySweepDetected: true,
+    liquiditySweep: { subtype: 'confirmed_sweep', pending: false, direction: 'bearish', time: '2026-07-16T12:15:00.000Z' },
+  };
+  const result = evaluateV3TriggerStage(signal);
   assert.equal(result.allowed, false);
-  assert.match(result.reasons.join(' '), /signal age/);
-});
-
-test('Stage 3 rejects excessive price drift', () => {
-  const signal = baseSignal();
-  const result = evaluateV3FreshExecutionStage(signal, {
-    currentPrice: 1.10040,
-    currentSpreadPips: 1.1,
-    maxSpreadPips: 3.5,
-    now: new Date(),
-  });
-  assert.equal(result.allowed, false);
-  assert.match(result.reasons.join(' '), /price drift/);
+  assert.match(result.reasons.join(' '), /opposes long/);
 });

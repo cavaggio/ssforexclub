@@ -1,15 +1,12 @@
-import {
-  computeV3EntryTpHitConfidence,
-  computeV3TpHitConfidence,
-} from './v3TpConfidence.js';
+import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
+import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
+import { evaluateStage2EntryContract } from './v3EntryContract.js';
 
 /**
- * Three-stage V3 quality confirmation.
+ * Two-stage V3 quality confirmation.
  *
  * Stage 1: Is this a valid setup worth watching?
  * Stage 2: Is there a fresh, direction-specific execution trigger?
- * Stage 3: Immediately before order submission, is the signal still fresh and
- *          geometrically valid at the current executable price?
  *
  * This module is pure. It does not call OANDA and does not place orders.
  */
@@ -206,6 +203,7 @@ export function evaluateV3SetupStage(signal = {}) {
   const v3 = extractV3(signal);
   const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
   const pair = signal.pair || v3.pair || null;
+  const alignment = evaluatePrimaryTimeframeAlignment(v3, direction);
   const score = firstNumber(v3.score, signal.v3Score, signal.score, 0) ?? 0;
   const entryQualityConfidence = firstNumber(signal.entryQualityConfidence, signal.confidence, v3.confidence, 0) ?? 0;
   const tpHitConfidence = computeV3EntryTpHitConfidence(signal);
@@ -231,6 +229,7 @@ export function evaluateV3SetupStage(signal = {}) {
   const reasons = [];
   if (!pair) reasons.push('missing pair');
   if (!direction) reasons.push('missing V3 direction');
+  if (!alignment.passed) reasons.push(alignment.reason);
   if (score < minScore) reasons.push(`V3 score ${score} < ${minScore}`);
   if (!Number.isFinite(rr) || rr < minRR) reasons.push(`geometric R:R ${rr ?? 'n/a'} < ${minRR}`);
   if (!targetsAccepted) reasons.push('remaining opportunity rejected');
@@ -245,6 +244,7 @@ export function evaluateV3SetupStage(signal = {}) {
     metrics: {
       pair,
       direction,
+      alignment,
       score,
       confidence: tpHitConfidence,
       tpHitConfidence,
@@ -271,6 +271,7 @@ export function evaluateV3SetupStage(signal = {}) {
 export function evaluateV3TriggerStage(signal = {}) {
   const v3 = extractV3(signal);
   const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
+  const entryContract = evaluateStage2EntryContract(signal);
   const sweep = confirmedAlignedSweep(v3, direction);
   const retest = confirmedNativeRetest(signal, direction);
   const breaks = alignedStructureBreak(v3, direction);
@@ -301,7 +302,7 @@ export function evaluateV3TriggerStage(signal = {}) {
   if (alignedLiquidityIntent(v3, direction)) supports.push('liquidity_intent_aligned');
 
   const minSupports = envNumber('V3_QUALITY_TRIGGER_MIN_SUPPORTS', 1);
-  const reasons = [];
+  const reasons = [...entryContract.reasons];
 
   if (!direction) reasons.push('missing direction');
   if (sweep.pending) reasons.push('liquidity sweep is pending; close-back-inside confirmation is missing');
@@ -324,6 +325,11 @@ export function evaluateV3TriggerStage(signal = {}) {
     supports,
     metrics: {
       direction,
+      alignment: entryContract.alignment,
+      entryTiming: entryContract.entryTiming,
+      sweepBlock: entryContract.sweepBlock,
+      reversal: entryContract.reversal,
+      lockedDirection: entryContract.lockedDirection,
       pendingSweep: sweep.pending,
       confirmedSweep: sweep.confirmed,
       confirmedRetest: retest.confirmed,
@@ -336,174 +342,6 @@ export function evaluateV3TriggerStage(signal = {}) {
       minSupports,
     },
     checkedAt: new Date().toISOString(),
-  };
-}
-
-function parseTimestamp(value) {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-function firstTargetPrice(signal, v3) {
-  return firstNumber(
-    v3?.targets?.tp1?.price,
-    signal?.targets?.tp1?.price,
-    signal?.lifecycle?.tp?.takeProfitPrice,
-    signal?.takeProfit,
-    signal?.targetProfit,
-  );
-}
-
-export function evaluateV3FreshExecutionStage(signal = {}, context = {}) {
-  const nowMs = context.now instanceof Date ? context.now.getTime() : Date.now();
-  const v3 = extractV3(signal);
-  const pair = signal.pair || v3.pair || '';
-  const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
-  const currentPrice = numberOrNull(context.currentPrice);
-  const currentSpreadPips = numberOrNull(context.currentSpreadPips);
-  const maxSpreadPips = firstNumber(
-    context.maxSpreadPips,
-    pair === 'XAU_USD' || pair === 'XAG_USD'
-      ? envNumber('METALS_MAX_SPREAD_PIPS', 50)
-      : envNumber('FOREX_MAX_SPREAD_PIPS', 3.5),
-  );
-
-  const sourceEntry = firstNumber(signal.entry, signal.entryPrice, signal.currentPrice);
-  const stopLoss = firstNumber(signal.stopLoss, signal.sl, signal.lifecycle?.sl?.stopLossPrice);
-  const takeProfit = firstNumber(signal.takeProfit, signal.targetProfit, signal.tp, signal.lifecycle?.tp?.takeProfitPrice);
-  const atrPips = firstNumber(signal.atrPips, signal.momentum?.atrPips, v3.atrPips);
-  const entryDistance = firstNumber(v3.entryDistanceFromOriginPct, signal.entryDistanceFromOriginPct);
-
-  const timestamp = parseTimestamp(
-    signal?.qualityConfirmation?.checkedAt ||
-    signal?.qualityConfirmation?.stage2?.checkedAt ||
-    signal.generatedAt ||
-    signal.scannedAt ||
-    signal.createdAt
-  );
-
-  const maxAgeSec = envNumber('V3_QUALITY_MAX_SIGNAL_AGE_SEC', 600);
-  const maxPriceDriftAtr = envNumber('V3_QUALITY_MAX_PRICE_DRIFT_ATR', 0.15);
-  const maxEntryDistance = envNumber('V3_QUALITY_MAX_ENTRY_DISTANCE', 0.55);
-  const minRR = envNumber('FOREX_MIN_EXECUTABLE_RR', 1.5);
-
-  const ageSec = timestamp === null ? null : Math.max(0, (nowMs - timestamp) / 1000);
-  const pipSize = pipSizeFor(pair);
-  const driftPips =
-    currentPrice !== null && sourceEntry !== null
-      ? Math.abs(currentPrice - sourceEntry) / pipSize
-      : null;
-  const driftAtr =
-    driftPips !== null && atrPips !== null && atrPips > 0
-      ? driftPips / atrPips
-      : null;
-
-  const liveRR = computePriceRR({
-    direction,
-    entry: currentPrice,
-    stopLoss,
-    takeProfit,
-  });
-
-  const tp1 = firstTargetPrice(signal, v3);
-  const firstTargetReached =
-    currentPrice !== null &&
-    tp1 !== null &&
-    (
-      (direction === 'long' && currentPrice >= tp1) ||
-      (direction === 'short' && currentPrice <= tp1)
-    );
-
-  const stage2 = evaluateV3TriggerStage(signal);
-  const tpConfidence = computeV3TpHitConfidence({
-    mode: 'entry',
-    direction,
-    entryPrice: sourceEntry,
-    currentPrice,
-    stopLoss,
-    takeProfit,
-    liveRR,
-    stage2Allowed: stage2.allowed,
-    primaryTriggerCount: stage2.primaryTriggers.length,
-    supportCount: stage2.supports.length,
-    confirmedRetest: stage2.metrics.confirmedRetest,
-    confirmedSweep: stage2.metrics.confirmedSweep,
-    alignedChoch: stage2.metrics.alignedChoch,
-    alignedBos: stage2.metrics.alignedBos,
-    compressionExpansion: stage2.metrics.compressionExpansion,
-    currentSpreadPips,
-    maxSpreadPips,
-    driftAtr,
-    maxPriceDriftAtr,
-    firstTargetReached,
-    // Internal structure opposition is intentionally excluded from execution
-    // confidence while the Daily/H4/M15 aggregate gate is authoritative.
-    structureOpposes: false,
-    newsBlocked: signal?.newsRisk?.blocked === true || v3?.newsRisk?.blocked === true,
-  });
-  const reasons = [];
-
-  if (currentPrice === null) reasons.push('fresh executable price unavailable');
-  if (timestamp === null) reasons.push('signal confirmation timestamp missing');
-  if (ageSec !== null && ageSec > maxAgeSec) reasons.push(`signal age ${ageSec.toFixed(0)}s > ${maxAgeSec}s`);
-  if (driftAtr !== null && driftAtr > maxPriceDriftAtr) {
-    reasons.push(`price drift ${driftAtr.toFixed(3)} ATR > ${maxPriceDriftAtr} ATR`);
-  }
-  if (entryDistance !== null && entryDistance > maxEntryDistance) {
-    reasons.push(`entry distance ${entryDistance} > ${maxEntryDistance} of impulse`);
-  }
-  if (!Number.isFinite(liveRR) || liveRR < minRR) {
-    reasons.push(`live-price R:R ${liveRR ?? 'n/a'} < ${minRR}`);
-  }
-  if (firstTargetReached) reasons.push('price has already reached the first liquidity target');
-  if (
-    currentSpreadPips !== null &&
-    maxSpreadPips !== null &&
-    currentSpreadPips > maxSpreadPips
-  ) {
-    reasons.push(`fresh spread ${currentSpreadPips} > ${maxSpreadPips}`);
-  }
-  if (!stage2.allowed) reasons.push(`stage-2 trigger no longer valid: ${stage2.reasons.join('; ')}`);
-  if (!tpConfidence.allowed) {
-    reasons.push(
-      `TP-hit confidence ${tpConfidence.tpHitConfidence}% < ` +
-      `${tpConfidence.minimumEntryConfidence}%`
-    );
-  }
-
-  return {
-    stage: 3,
-    allowed: reasons.length === 0,
-    state: reasons.length === 0 ? 'execute' : 'blocked',
-    reasons,
-    metrics: {
-      pair,
-      direction,
-      currentPrice,
-      sourceEntry,
-      stopLoss,
-      takeProfit,
-      liveRR,
-      minRR,
-      ageSec,
-      maxAgeSec,
-      atrPips,
-      driftPips,
-      driftAtr,
-      maxPriceDriftAtr,
-      entryDistance,
-      maxEntryDistance,
-      tp1,
-      firstTargetReached,
-      currentSpreadPips,
-      maxSpreadPips,
-      confirmedRetest: stage2.metrics.confirmedRetest,
-      tpHitConfidence: tpConfidence.tpHitConfidence,
-      minimumTpHitConfidence: tpConfidence.minimumEntryConfidence,
-      tpConfidence,
-    },
-    checkedAt: new Date(nowMs).toISOString(),
   };
 }
 

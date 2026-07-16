@@ -46,6 +46,7 @@ import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinim
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -641,6 +642,8 @@ export async function executeTrade(signal, options = {}) {
     entry, stopLoss, takeProfit, spreadPips,
   } = signal;
   const pureV3Execution = isPureV3ExecutionSignal(signal);
+  let executableEntry = Number(entry);
+  let executableGeometry = null;
   const entryQualityConfidence = Number(
     signal.entryQualityConfidence ?? signalConfidence ?? signal.v3?.confidence ?? 0
   );
@@ -814,6 +817,19 @@ export async function executeTrade(signal, options = {}) {
   const universalPolicy = evaluateUniversalEntryPolicy(signal);
   if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
 
+  if (pureV3Execution) {
+    const stage2 = signal.qualityConfirmation?.stage2;
+    if (stage2?.allowed !== true) {
+      return blocked('Pure V3 execution requires a successful Stage 2 confirmation immediately before submission');
+    }
+    const directionLock = validateDirectionLock({
+      candidateDirection: direction,
+      confirmedDirection: signal.directionLock?.confirmedDirection || stage2.metrics?.lockedDirection,
+      freshDirection: signal.directionLock?.freshDirection || stage2.metrics?.direction,
+    });
+    if (!directionLock.allowed) return blocked(`Direction lock rejected: ${directionLock.reasons.join('; ')}`);
+  }
+
   // ── Guard 4: SL and TP present ────────────────────────────────────────────
   if (!stopLoss || !takeProfit) {
     return blocked('stopLoss or takeProfit not set on signal');
@@ -886,6 +902,33 @@ export async function executeTrade(signal, options = {}) {
     return blocked(dailyLock.reason);
   }
 
+  if (pureV3Execution) {
+    let freshPricing;
+    try {
+      const pricingPayload = await getPricing([pair], { client });
+      freshPricing = Array.isArray(pricingPayload)
+        ? pricingPayload.find((row) => row?.instrument === pair || row?.pair === pair || row?.symbol === pair)
+        : pricingPayload?.[pair] || pricingPayload?.[String(pair).replace('_', '/')] || pricingPayload;
+    } catch (err) {
+      return blocked(`Executable quote fetch failed: ${err.message}`);
+    }
+
+    executableGeometry = repriceExecutableGeometry(signal, freshPricing || {}, {
+      minRR: MIN_EXECUTABLE_RR,
+      maxSpreadPips: maxSpread,
+      maxPriceDriftAtr: Number(process.env.V3_QUALITY_MAX_PRICE_DRIFT_ATR || 0.15),
+    });
+    executionLog.push(logEntry('V3_EXECUTABLE_GEOMETRY', executableGeometry));
+    if (!executableGeometry.allowed) {
+      return blocked(`Executable geometry rejected: ${executableGeometry.reasons.join('; ')}`);
+    }
+    executableEntry = executableGeometry.entry;
+    signal.entry = executableEntry;
+    signal.entryPrice = executableEntry;
+    signal.currentPrice = executableEntry;
+    signal.spreadPips = executableGeometry.spreadPips;
+  }
+
   // ── Guard 10: Dynamic risk sizing + pre-trade margin check ──────────────
   // Recompute server-side: confidence drives risk budget; the signal carries
   // the lifecycle result (SL/TP/hold), but if it's stale or missing, recompute
@@ -943,7 +986,13 @@ export async function executeTrade(signal, options = {}) {
 
   // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.
   let slPips, slPriceFromLifecycle, tpPips, tpPriceFromLifecycle;
-  if (signal.lifecycle?.sl && signal.lifecycle?.tp && signal.lifecycle.tp.allowed !== false) {
+  if (pureV3Execution && executableGeometry) {
+    slPips = executableGeometry.stopDistancePips;
+    slPriceFromLifecycle = executableGeometry.stopLoss;
+    tpPips = executableGeometry.targetDistancePips;
+    tpPriceFromLifecycle = executableGeometry.takeProfit;
+    console.log(`[TRADE] Repriced V3 geometry from ${executableGeometry.priceSide}: entry=${executableEntry} SL=${slPips.toFixed(1)}p TP=${tpPips.toFixed(1)}p RR=${executableGeometry.riskReward}`);
+  } else if (signal.lifecycle?.sl && signal.lifecycle?.tp && signal.lifecycle.tp.allowed !== false) {
     slPips                = signal.lifecycle.sl.stopLossPips;
     slPriceFromLifecycle  = signal.lifecycle.sl.stopLossPrice;
     tpPips                = signal.lifecycle.tp.takeProfitPips;
@@ -956,7 +1005,7 @@ export async function executeTrade(signal, options = {}) {
       getCandles(pair, 'H1',  80, { client }).catch(() => []),
     ]);
     const lifecycle = computeTradeLifecycle({
-      pair, direction, entryPrice: entry,
+      pair, direction, entryPrice: executableEntry,
       atrPips: signal.momentum?.atrPips,
       m15Candles: m15CandlesLive,
       h1Candles:  h1CandlesLive,
@@ -982,7 +1031,7 @@ export async function executeTrade(signal, options = {}) {
   const scalpLifecycle = normalizeScalpLifecycle({
     pair,
     direction,
-    entryPrice: entry,
+    entryPrice: executableEntry,
     atrPips: signal.atrPips ?? signal.momentum?.atrPips,
     lifecycle: {
       allowed: true,
@@ -1013,7 +1062,7 @@ export async function executeTrade(signal, options = {}) {
   const sizing = computeFixedDollarSizing({
     pair,
     direction,
-    entryPrice: entry,
+    entryPrice: executableEntry,
     targetRiskUSD: dynamicRisk.riskUSD,
     stopLossPips:   slPips,
     stopLossPrice:  slPriceFromLifecycle,
@@ -1033,80 +1082,6 @@ export async function executeTrade(signal, options = {}) {
     return blocked(
       `Risk reward ${Number.isFinite(finalSizingRR) ? finalSizingRR : 'n/a'} < minimum ${MIN_EXECUTABLE_RR} after sizing`
     );
-  }
-
-  // Stage 3: fetch a fresh executable price immediately before submission.
-  // The old synthetic TP-probability gate reused confidence/score/alignment and
-  // added strict thresholds without new market information. This gate instead
-  // validates age, price drift, live R:R, spread, first-target status, and the
-  // already-confirmed Stage-2 price-action trigger.
-  if (autoAi && pureV3Execution) {
-    let freshPricing;
-    try {
-      const pricingPayload = await getPricing([pair], { client });
-      freshPricing =
-        pricingPayload?.[pair] ??
-        pricingPayload?.[String(pair).replace('_', '/')] ??
-        (Array.isArray(pricingPayload)
-          ? pricingPayload.find((row) =>
-              row?.instrument === pair ||
-              row?.pair === pair ||
-              row?.symbol === pair
-            )
-          : null);
-    } catch (err) {
-      return blocked(`Stage-3 fresh-price validation failed: ${err.message}`);
-    }
-
-    const freshPrice = Number(
-      freshPricing?.mid ??
-      freshPricing?.midPrice ??
-      freshPricing?.price ??
-      (
-        Number.isFinite(Number(freshPricing?.bid)) &&
-        Number.isFinite(Number(freshPricing?.ask))
-          ? (Number(freshPricing.bid) + Number(freshPricing.ask)) / 2
-          : NaN
-      )
-    );
-
-    const freshSpreadPips = Number(
-      freshPricing?.spreadPips ??
-      (
-        Number.isFinite(Number(freshPricing?.bid)) &&
-        Number.isFinite(Number(freshPricing?.ask))
-          ? (Number(freshPricing.ask) - Number(freshPricing.bid)) / pipSize
-          : NaN
-      )
-    );
-
-    const executionSignalForFreshness = {
-      ...signal,
-      stopLoss: sizing?.stopLoss ?? signal.stopLoss,
-      takeProfit: sizing?.takeProfit ?? signal.takeProfit ?? signal.targetProfit,
-      targetProfit: sizing?.takeProfit ?? signal.targetProfit ?? signal.takeProfit,
-    };
-
-    const freshnessGate = evaluateV3FreshExecutionStage(executionSignalForFreshness, {
-      currentPrice: freshPrice,
-      currentSpreadPips: freshSpreadPips,
-      maxSpreadPips: maxSpread,
-      now: new Date(),
-    });
-
-    executionLog.push(logEntry('V3_QUALITY_STAGE_3', freshnessGate.metrics));
-
-    console.log(
-      `[V3_QUALITY_STAGE_3] ${pair} ${direction} allowed=${freshnessGate.allowed} ` +
-      `ageSec=${freshnessGate.metrics.ageSec ?? 'n/a'} ` +
-      `driftAtr=${freshnessGate.metrics.driftAtr ?? 'n/a'} ` +
-      `liveRR=${freshnessGate.metrics.liveRR ?? 'n/a'} ` +
-      `spread=${freshnessGate.metrics.currentSpreadPips ?? 'n/a'}`
-    );
-
-    if (!freshnessGate.allowed) {
-      return blocked(`Stage-3 fresh execution rejected: ${freshnessGate.reasons.join('; ')}`);
-    }
   }
 
   let units                 = sizing.signedUnits;
@@ -1282,17 +1257,13 @@ export async function executeTrade(signal, options = {}) {
   if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
   const executionReservationHash = executionReservation.hash;
 
-  const orderPayload = {
-    order: {
-      type:               'MARKET',
-      instrument:         pair,
-      units:              units.toString(),
-      timeInForce:        'IOC',
-      positionFill:       'DEFAULT',
-      stopLossOnFill:     { price: slPrice.toFixed(priceDecimals), timeInForce: 'GTC' },
-      takeProfitOnFill:   { price: tpPrice.toFixed(priceDecimals), timeInForce: 'GTC' },
-    },
-  };
+  const orderPayload = buildOandaMarketOrderPayload({
+    pair,
+    signedUnits: units,
+    stopLoss: slPrice,
+    takeProfit: tpPrice,
+    priceDecimals,
+  });
 
   console.log(`[ORDER_PAYLOAD] ${pair} ${direction} atomic IOC MARKET + SL/TP onFill`);
   console.log(`[ORDER_PAYLOAD]`, JSON.stringify(orderPayload));
@@ -1381,7 +1352,7 @@ export async function executeTrade(signal, options = {}) {
   const fillInfo        = extractFillTx(orderFillTransaction);
   const tradeId         = fillInfo.tradeId;
   await markExecutionOpen({ hash: executionReservationHash, tradeId });
-  const fillPrice       = parseFloat(fillInfo.price || entry);
+  const fillPrice       = parseFloat(fillInfo.price || executableEntry);
   const tradeMarginUsed = parseFloat(
     fillInfo.initialMarginRequired || fillInfo.marginRequired || 0
   );

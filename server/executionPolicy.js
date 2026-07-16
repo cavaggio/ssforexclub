@@ -1,11 +1,9 @@
-const BLOCKED_TIMING = new Set(['too_early','late_entry','wait_for_retest','pending_sweep','pending','early','late']);
+import { ENTRY_TIMING_STATUSES, evaluateOpposingSweepBlock } from './v3EntryContract.js';
 
-function directionSign(direction) {
-  const d = String(direction || '').toLowerCase();
-  return d === 'long' || d === 'buy' ? 'bullish' : d === 'short' || d === 'sell' ? 'bearish' : null;
-}
+const ALLOWED_TIMING = new Set(ENTRY_TIMING_STATUSES);
+
 function firstText(...values) {
-  return values.find((v) => typeof v === 'string' && v.trim())?.trim() || '';
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim() || '';
 }
 function firstNumber(...values) {
   for (const value of values) { const n = Number(value); if (Number.isFinite(n)) return n; }
@@ -17,39 +15,46 @@ function timingStatus(signal = {}) {
 }
 function pendingSweep(signal = {}) {
   const v3 = extractV3(signal); const sweep = v3.liquidity?.liquiditySweep || signal.liquiditySweep || {};
-  return sweep.pending === true || String(sweep.subtype || '').toLowerCase() === 'pending_sweep' || timingStatus(signal) === 'pending_sweep';
-}
-function opposingFlow(signal = {}, direction) {
-  const sign = directionSign(direction); const flow = signal.institutionalFlow || extractV3(signal).institutionalFlow || {};
-  const dir = String(flow.direction || '').toLowerCase();
-  return flow.detected === true && dir && dir !== 'neutral' && dir !== sign;
+  return sweep.pending === true || String(sweep.subtype || '').toLowerCase() === 'pending_sweep';
 }
 function rangeState(signal = {}) {
-  const v3 = extractV3(signal); const s = v3.structure || signal.structure || {}; const r = v3.marketRegime || signal.marketRegime || {};
-  const state = firstText(signal.marketState, signal.regime, r.regime, r.state, s.marketState, s.structureTrend).toLowerCase();
+  const v3 = extractV3(signal); const structure = v3.structure || signal.structure || {}; const regime = v3.marketRegime || signal.marketRegime || {};
+  const state = firstText(signal.marketState, signal.regime, regime.regime, regime.state, structure.marketState, structure.structureTrend).toLowerCase();
   return state.includes('rang') || state.includes('consolidat') || state.includes('choppy') || state.includes('whipsaw');
 }
 function confirmedBreakoutRetest(signal = {}, direction) {
-  const v3 = extractV3(signal); const s = v3.structure || signal.structure || {}; const t = signal.entryTiming || {};
-  const sign = directionSign(direction);
-  const breakDirection = firstText(signal.rangeBreakout?.direction, s.breakoutDirection, s.bos?.direction, s.choch?.direction).toLowerCase();
-  const closeOutside = signal.rangeBreakout?.closeOutside === true || s.closeOutsideRange === true || s.rangeBreakConfirmed === true;
-  const retest = t.retestDetected === true && String(t.status || '').toLowerCase() === 'valid_entry';
+  const v3 = extractV3(signal); const structure = v3.structure || signal.structure || {}; const timing = signal.entryTiming || {};
+  const sign = direction === 'long' ? 'bullish' : direction === 'short' ? 'bearish' : null;
+  const breakDirection = firstText(signal.rangeBreakout?.direction, structure.breakoutDirection, structure.bos?.direction, structure.choch?.direction).toLowerCase();
+  const closeOutside = signal.rangeBreakout?.closeOutside === true || structure.closeOutsideRange === true || structure.rangeBreakConfirmed === true;
+  const retest = timing.retestDetected === true && timing.status === 'valid_entry';
   return closeOutside && retest && (!breakDirection || breakDirection === sign);
 }
 export function setupFingerprint(signal = {}, accountId = '') {
-  const v3 = extractV3(signal); const s = v3.structure || signal.structure || {}; const l = v3.liquidity || signal.liquidity || {};
-  const triggerTime = firstText(signal.triggerCandleTime, signal.signalTimestamp, signal.generatedAt, s.bos?.time, s.choch?.time, l.liquiditySweep?.time);
-  const rangeHigh = firstNumber(signal.rangeHigh, signal.range?.high, s.rangeHigh, s.range?.high, v3.liquidity?.dealingRange?.high);
-  const rangeLow = firstNumber(signal.rangeLow, signal.range?.low, s.rangeLow, s.range?.low, v3.liquidity?.dealingRange?.low);
-  const event = firstText(l.liquiditySweep?.poolSource, l.liquiditySweep?.subtype, s.choch?.direction, s.bos?.direction, 'none');
+  const v3 = extractV3(signal); const structure = v3.structure || signal.structure || {}; const liquidity = v3.liquidity || signal.liquidity || {};
+  const triggerTime = firstText(signal.triggerCandleTime, signal.signalTimestamp, signal.generatedAt, structure.bos?.time, structure.choch?.time, liquidity.liquiditySweep?.time);
+  const rangeHigh = firstNumber(signal.rangeHigh, signal.range?.high, structure.rangeHigh, structure.range?.high, v3.liquidity?.dealingRange?.high);
+  const rangeLow = firstNumber(signal.rangeLow, signal.range?.low, structure.rangeLow, structure.range?.low, v3.liquidity?.dealingRange?.low);
+  const event = firstText(liquidity.liquiditySweep?.sweptSource, liquidity.liquiditySweep?.subtype, structure.choch?.direction, structure.bos?.direction, 'none');
   return [accountId || 'default', signal.pair || signal.instrument || 'unknown', signal.direction || 'none', signal.session?.name || signal.session || 'none', rangeHigh ?? 'na', rangeLow ?? 'na', event, triggerTime || 'na'].join('|');
 }
 export function evaluateUniversalEntryPolicy(signal = {}) {
-  const reasons = []; const status = timingStatus(signal); const direction = signal.direction;
-  if (BLOCKED_TIMING.has(status)) reasons.push(`entry timing ${status} is not executable`);
+  const reasons = [];
+  const status = timingStatus(signal);
+  const direction = signal.direction;
+  const sweepBlock = evaluateOpposingSweepBlock(signal, direction);
+  if (!ALLOWED_TIMING.has(status)) reasons.push('entryTiming must be populated with a recognized terminal status');
+  else if (status !== 'valid_entry') reasons.push(`entry timing ${status} is not executable`);
   if (pendingSweep(signal)) reasons.push('liquidity sweep is pending');
-  if (opposingFlow(signal, direction)) reasons.push('institutional flow opposes the proposed direction');
+  if (!sweepBlock.allowed) reasons.push(sweepBlock.reason);
   if (rangeState(signal) && !confirmedBreakoutRetest(signal, direction)) reasons.push('range/consolidation requires a confirmed close outside the range and successful retest');
-  return { allowed: reasons.length === 0, reasons, timingStatus: status || null, rangeDetected: rangeState(signal), breakoutRetestConfirmed: confirmedBreakoutRetest(signal, direction) };
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    timingStatus: status || null,
+    opposingSweep: sweepBlock.opposingSweep,
+    reversalOverride: sweepBlock.reversalOverride,
+    rangeDetected: rangeState(signal),
+    breakoutRetestConfirmed: confirmedBreakoutRetest(signal, direction),
+  };
 }

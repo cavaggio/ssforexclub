@@ -115,6 +115,7 @@ export function detectLiquiditySweep({ candles, pair }) {
         type: 'liquidity_sweep',
         subtype: 'confirmed_sweep',
         direction: 'bearish',
+        time: last.time || null,
         sweptPriceLevel: +lookbackHigh.toFixed(precision),
         sweptPips,
         pending: false,
@@ -143,6 +144,7 @@ export function detectLiquiditySweep({ candles, pair }) {
         type: 'liquidity_sweep',
         subtype: 'confirmed_sweep',
         direction: 'bullish',
+        time: last.time || null,
         sweptPriceLevel: +lookbackLow.toFixed(precision),
         sweptPips,
         pending: false,
@@ -181,6 +183,7 @@ export function detectBreakOfStructure({ candles, direction, pair }) {
       return {
         type: 'break_of_structure',
         direction: 'bullish',
+        time: last.time || null,
         brokenLevel: +mostRecentHigh.price.toFixed(pricePrecision(pair)),
         reason: `Last bar closed above swing high ${mostRecentHigh.price.toFixed(pricePrecision(pair))} — bullish BOS`,
       };
@@ -193,6 +196,7 @@ export function detectBreakOfStructure({ candles, direction, pair }) {
       return {
         type: 'break_of_structure',
         direction: 'bearish',
+        time: last.time || null,
         brokenLevel: +mostRecentLow.price.toFixed(pricePrecision(pair)),
         reason: `Last bar closed below swing low ${mostRecentLow.price.toFixed(pricePrecision(pair))} — bearish BOS`,
       };
@@ -224,6 +228,7 @@ export function detectChangeOfCharacter({ candles, priorTrend, pair }) {
       return {
         type: 'choch',
         direction: 'bearish',
+        time: last.time || null,
         brokenLevel: +lastLow.price.toFixed(pricePrecision(pair)),
         reason: `Bullish trend printed lower-low ${lastLow.price.toFixed(pricePrecision(pair))} then closed beneath it — bearish CHoCH`,
       };
@@ -236,6 +241,7 @@ export function detectChangeOfCharacter({ candles, priorTrend, pair }) {
       return {
         type: 'choch',
         direction: 'bullish',
+        time: last.time || null,
         brokenLevel: +lastHigh.price.toFixed(pricePrecision(pair)),
         reason: `Bearish trend printed higher-high ${lastHigh.price.toFixed(pricePrecision(pair))} then closed above it — bullish CHoCH`,
       };
