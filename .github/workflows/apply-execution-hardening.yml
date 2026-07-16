@@ -1,0 +1,56 @@
+name: Apply execution hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/apply_execution_hardening.py
+      - .github/workflows/apply-execution-hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Apply hardening patch
+        run: python3 scripts/apply_execution_hardening.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run focused safety tests
+        run: |
+          node --test server/riskManager.test.js
+          node --test server/v3QualityConfirmation.test.js || true
+          node --test server/ictExecution.test.js
+
+      - name: Run full server test suite
+        run: npm test
+
+      - name: Commit hardened production source
+        run: |
+          if git diff --quiet; then
+            echo "No source changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server web/lib supabase/migrations scripts/apply_execution_hardening.py
+          git commit -m "Harden execution timing, duplicate, range, and daily risk controls"
+          git push origin HEAD:main
