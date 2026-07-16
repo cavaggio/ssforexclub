@@ -30,22 +30,12 @@ if (parts.length !== 8) {
   throw new Error(`Expected 8 production-hardening patch parts, found ${parts.length}`);
 }
 
-const riskManagerPath = path.join(root, 'server/riskManager.js');
-const safetyPolicyPath = path.join(root, 'server/executionSafetyPolicy.js');
-const alreadyApplied =
-  fs.existsSync(safetyPolicyPath) &&
-  fs.readFileSync(riskManagerPath, 'utf8').includes('DAILY_MAX_LOSS_PERCENT = 2.5') &&
-  fs.readFileSync(riskManagerPath, 'utf8').includes('MAX_RISK_PER_TRADE_PERCENT = 1.25');
+const patchPath = path.join('/tmp', 'apply-production-risk-hardening.mjs');
+fs.writeFileSync(patchPath, parts.join(''));
 
-if (!alreadyApplied) {
-  const patchPath = path.join('/tmp', 'apply-production-risk-hardening.mjs');
-  fs.writeFileSync(patchPath, parts.join(''));
-  console.log('[HARDENING_BOOT] validating and applying patch');
-  run(process.execPath, ['--check', patchPath], 'hardening patch syntax check');
-  run(process.execPath, [patchPath], 'hardening patch application');
-} else {
-  console.log('[HARDENING_BOOT] hardening already applied; skipping patch mutation');
-}
+console.log('[HARDENING_BOOT] validating patch');
+run(process.execPath, ['--check', patchPath], 'hardening patch syntax check');
+run(process.execPath, [patchPath], 'hardening patch application');
 
 const changedSources = [
   'server/riskManager.js',
