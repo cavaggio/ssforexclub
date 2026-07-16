@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import {
   evaluateV3SetupStage,
   evaluateV3TriggerStage,
-  evaluateV3FreshExecutionStage,
 } from './v3QualityConfirmation.js';
 import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
+import { repriceExecutableGeometry } from './v3EntryContract.js';
 
 function retestSignal() {
   return {
@@ -26,6 +26,7 @@ function retestSignal() {
         direction: 'bullish',
         timeframe: 'M15',
         level: 1.10000,
+        time: '2026-07-16T12:20:00.000Z',
       },
     },
     qualityConfirmation: {
@@ -37,6 +38,7 @@ function retestSignal() {
       qualified: false,
       earlyTrigger: false,
       entryDistanceFromOriginPct: 0.42,
+      timeframes: { daily: 'bullish', h4: 'bullish', m15: 'bullish' },
       targets: {
         accepted: true,
         tp1: { price: 1.10320 },
@@ -90,6 +92,7 @@ test('confirmed retest is a Stage 2 primary trigger', () => {
   assert.equal(result.allowed, true, result.reasons.join('; '));
   assert.ok(result.primaryTriggers.includes('confirmed_retest'));
   assert.equal(result.metrics.confirmedRetest, true);
+  assert.equal(result.metrics.entryTiming.status, 'valid_entry');
 });
 
 test('confirmed retest can pass Stage 1 without an explicit confidence override', () => {
@@ -100,16 +103,23 @@ test('confirmed retest can pass Stage 1 without an explicit confidence override'
   assert.ok(result.metrics.tpHitConfidence >= 85);
 });
 
-test('confirmed retest remains valid through fresh execution checks', () => {
+test('Stage 2-confirmed retest is repriced from executable ask without a Stage 3 gate', () => {
   const signal = retestSignal();
-  const result = evaluateV3FreshExecutionStage(signal, {
-    currentPrice: 1.10005,
-    currentSpreadPips: 1.1,
+  const stage2 = evaluateV3TriggerStage(signal);
+  assert.equal(stage2.allowed, true, stage2.reasons.join('; '));
+
+  const geometry = repriceExecutableGeometry(signal, {
+    bid: 1.10000,
+    ask: 1.10005,
+    spreadPips: 0.5,
+  }, {
+    minRR: 1.5,
     maxSpreadPips: 3.5,
-    now: new Date(),
+    maxPriceDriftAtr: 0.15,
   });
 
-  assert.equal(result.allowed, true, result.reasons.join('; '));
-  assert.equal(result.metrics.confirmedRetest, true);
-  assert.ok(result.metrics.tpHitConfidence >= result.metrics.minimumTpHitConfidence);
+  assert.equal(geometry.allowed, true, geometry.reasons.join('; '));
+  assert.equal(geometry.priceSide, 'ask');
+  assert.equal(geometry.entry, 1.10005);
+  assert.ok(geometry.riskReward >= 1.5);
 });
