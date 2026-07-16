@@ -67,9 +67,10 @@ test('insufficient margin blocks the paper trade with the exact message', async 
   assert.equal(r.reason, 'Account margin restriction would be exceeded.');
 });
 
-test('total open Auto AI risk above 4.5% blocks a new trade', async () => {
+test('open stop risk exhausts the stricter daily-loss budget before the portfolio cap', async () => {
   // Existing open trade: 250,000 EUR_USD, entry 1.10, stop 1.08 → $5,000 risk
-  // on a $10,000 account = 50% open risk, well above the 4.5% cap.
+  // on a $10,000 account. The 2.5% projected daily-loss budget must fail first,
+  // before the redundant 4.5% total-open-risk cap is evaluated.
   const heavyOpen = async () => [
     { instrument: 'EUR_USD', currentUnits: '250000', price: '1.10', stopLossOrder: { price: '1.08' } },
   ];
@@ -77,5 +78,5 @@ test('total open Auto AI risk above 4.5% blocks a new trade', async () => {
     getAnalysis: goodAnalysis(), getOpen: heavyOpen,
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /exceed max 4\.5%/);
+  assert.match(r.reason, /No uncommitted daily loss budget remains/);
 });
