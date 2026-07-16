@@ -28,46 +28,46 @@ test('defaults are 1.25% per trade, 2.5% daily drawdown, 85 confidence', () => {
   assert.equal(cfg.autoExecutionMinConfidence, 85);
 });
 
-// ── 1. Risk per trade (1.4% hard cap) ───────────────────────────────────────
+// ── 1. Risk per trade (1.25% hard cap) ──────────────────────────────────────
 
-test('risk budget is 1.4% of balance', () => {
+test('risk budget is 1.25% of balance', () => {
   assert.equal(computeRiskBudgetUSD(10000), 125);
 });
 
-test('per-trade risk percent is clamped to 1.4%', () => {
+test('per-trade risk percent is clamped to 1.25%', () => {
   assert.equal(capPerTradeRiskPercent(2.0), 1.25);
   assert.equal(capPerTradeRiskPercent(1.0), 1.0);
 });
 
-test('actual risk at exactly 1.4% is allowed', () => {
+test('actual risk at exactly 1.25% is allowed', () => {
   const r = checkRiskPerTrade({ balanceUSD: 10000, actualDollarRisk: 125 });
   assert.equal(r.passed, true);
 });
 
-test('actual risk above 1.4% is rejected', () => {
-  // $200 on a $10k account = 2% > 1.4% cap (beyond the rounding tolerance).
+test('actual risk above 1.25% is rejected', () => {
+  // $200 on a $10k account = 2% > 1.25% cap (beyond the rounding tolerance).
   const r = checkRiskPerTrade({ balanceUSD: 10000, actualDollarRisk: 200 });
   assert.equal(r.passed, false);
   assert.match(r.reason, /exceeds hard cap 1\.25%/);
 });
 
-// ── 2. Daily max-drawdown circuit breaker (2.8%) ────────────────────────────
+// ── 2. Daily max-drawdown circuit breaker (2.5%) ────────────────────────────
 
-test('daily realized loss within 2.8% keeps trading unlocked', () => {
+test('daily realized loss within 2.5% keeps trading unlocked', () => {
   resetDailyRisk();
   // First observation sets the day's starting balance.
   checkDailyRiskLock({ accountId: 'ACC-A', balanceUSD: 10000, now: NOW });
-  // Down $200 (2%) — still under the $280 (2.8%) limit.
+  // Down $200 (2%) — still under the $250 (2.5%) limit.
   const r = checkDailyRiskLock({ accountId: 'ACC-A', balanceUSD: 9800, now: NOW });
   assert.equal(r.tradingLocked, false);
   assert.equal(r.startingBalance, 10000);
-  assert.equal(r.lossLimit, 280);
+  assert.equal(r.lossLimit, 250);
 });
 
-test('daily realized loss beyond 2.8% locks new entries', () => {
+test('daily realized loss beyond 2.5% locks new entries', () => {
   resetDailyRisk();
   checkDailyRiskLock({ accountId: 'ACC-B', balanceUSD: 10000, now: NOW });
-  // Down $300 (3%) — breaches the $280 (2.8%) limit.
+  // Down $300 (3%) — breaches the $250 (2.5%) limit.
   const r = checkDailyRiskLock({ accountId: 'ACC-B', balanceUSD: 9700, now: NOW });
   assert.equal(r.tradingLocked, true);
   assert.match(r.reason, /Daily drawdown limit reached/);
@@ -116,7 +116,7 @@ test('insufficient margin is blocked with the exact message', () => {
   assert.equal(r.reason, 'Account margin restriction would be exceeded.');
 });
 
-// ── 5. Dashboard status ──────────────────────────────────────────────────────
+// ── 5. Dashboard status ─────────────────────────────────────────────────────
 
 test('getRiskStatus surfaces the documented panel fields', () => {
   resetDailyRisk();
