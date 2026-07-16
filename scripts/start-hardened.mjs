@@ -15,6 +15,21 @@ const productionParts = [
   'hardening-patch.part04',
 ];
 
+function run(command, args, label) {
+  const result = spawnSync(command, args, {
+    cwd: root,
+    encoding: 'utf8',
+    env: process.env,
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = `${result.stderr || result.stdout || ''}`.trim().slice(-6000);
+    throw new Error(`${label} failed with exit code ${result.status}${detail ? `: ${detail}` : ''}`);
+  }
+}
+
 for (const name of productionParts) {
   if (!fs.existsSync(path.join(here, name))) {
     throw new Error(`Missing production hardening segment: ${name}`);
@@ -26,29 +41,33 @@ fs.writeFileSync(
   patchPath,
   productionParts.map((name) => fs.readFileSync(path.join(here, name), 'utf8')).join(''),
 );
+run(process.execPath, ['--check', patchPath], 'production hardening patch syntax');
+run(process.execPath, [patchPath], 'production hardening patch application');
 
-const result = spawnSync(process.execPath, ['--check', patchPath], {
-  cwd: root,
-  encoding: 'utf8',
-  env: process.env,
-});
-if (result.stdout) process.stdout.write(result.stdout);
-if (result.stderr) process.stderr.write(result.stderr);
-if (result.error) throw result.error;
-if (result.status !== 0) {
-  throw new Error(`Production hardening patch syntax failed with exit code ${result.status}`);
+const changedSources = [
+  'server/riskManager.js',
+  'server/oandaRiskSizing.js',
+  'server/tradeDecisionEngine.js',
+  'server/executionSafetyPolicy.js',
+  'server/v3QualityConfirmation.js',
+  'server/v3IndependentScanner.js',
+  'server/oandaTrade.js',
+  'server/ictExecution.js',
+];
+for (const source of changedSources) {
+  run(process.execPath, ['--check', source], `syntax check ${source}`);
 }
 
 const payload = JSON.stringify({
   ok: true,
-  phase: 'production_patch_syntax_passed',
+  phase: 'production_patch_applied_and_sources_valid',
   tradingEnabled: false,
-  productionParts,
+  changedSources,
 });
 http.createServer((req, res) => {
   res.statusCode = req.url === '/api/health' || req.url === '/health' || req.url === '/' ? 200 : 503;
   res.setHeader('content-type', 'application/json');
   res.end(payload);
 }).listen(port, '0.0.0.0', () => {
-  console.log(`[HARDENING_PROBE] production patch syntax passed; trading-disabled probe listening on ${port}`);
+  console.log(`[HARDENING_PROBE] production patch applied and source checks passed; trading-disabled probe listening on ${port}`);
 });
