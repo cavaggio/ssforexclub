@@ -147,6 +147,9 @@ test('Compressed market alone remains watch-only', () => {
   const signal = baseSignal();
   signal.v3.structure.bosDetected = false;
   signal.v3.structure.bos = null;
+  signal.entryTiming = { status: 'valid_entry', retestDetected: false, retest: null };
+  signal.v3.entryTiming = signal.entryTiming;
+  signal.institutionalFlow.signals = [];
   signal.v3.volatility = {
     volatilityState: 'compressed',
     compressionDetected: true,
@@ -156,7 +159,6 @@ test('Compressed market alone remains watch-only', () => {
   assert.equal(result.allowed, false);
   assert.equal(result.state, 'watch');
 });
-
 
 test('Stage 2 blocks a confirmed opposing sweep', () => {
   const signal = baseSignal();
