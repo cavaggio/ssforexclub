@@ -31,17 +31,21 @@ import {
 } from './oandaRiskSizing.js';
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
-import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
+import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';
 import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
+  reserveDailyLossBudget,
   checkAutoExecutionConfidence,
 } from './riskManager.js';
 import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
 import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
+
+import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -65,7 +69,6 @@ export function dailyTradeCap() {
 export function isDailyTradeCapReached(count) {
   return Number(count) >= dailyTradeCap();
 }
-const MAX_DAILY_LOSS_PERCENT= parseFloat(process.env.FOREX_MAX_DAILY_LOSS_PERCENT || '2');
 const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS       || '5.0');
 const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
@@ -644,15 +647,15 @@ export async function executeTrade(signal, options = {}) {
   const tpHitConfidence = pureV3Execution
     ? computeV3EntryTpHitConfidence(signal)
     : null;
-  const confidence = pureV3Execution ? tpHitConfidence : Number(signalConfidence);
+  const confidence = Number(entryQualityConfidence); // TP confidence is diagnostic only
 
   if (pureV3Execution) {
     signal.entryQualityConfidence = Number.isFinite(entryQualityConfidence) ? entryQualityConfidence : null;
     signal.tpHitConfidence = tpHitConfidence;
     signal.tpProbability = +(tpHitConfidence / 100).toFixed(3);
     signal.slProbability = +(1 - signal.tpProbability).toFixed(3);
-    // Generic confidence remains a compatibility alias only.
-    signal.confidence = tpHitConfidence;
+    signal.tpConfidencePolicy = 'diagnostic_only';
+    signal.confidence = entryQualityConfidence;
   }
 
   const tradeKey = `${pair}_${direction}`;
@@ -705,17 +708,9 @@ export async function executeTrade(signal, options = {}) {
   }
 
   // ── Guard 3: Entry execution probability ─────────────────────────────────
-  const configuredV3TpFloor = Number(
-    process.env.V3_MIN_TP_HIT_CONFIDENCE || process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || 85
-  );
-  const executionConfidenceFloor = pureV3Execution
-    ? Math.max(85, Number.isFinite(configuredV3TpFloor) ? configuredV3TpFloor : 85)
-    : MIN_CONFIDENCE;
+  const executionConfidenceFloor = MIN_CONFIDENCE;
   if (!Number.isFinite(confidence) || confidence < executionConfidenceFloor) {
-    return blocked(
-      `${pureV3Execution ? 'TP-hit confidence' : 'Confidence'} ${Number.isFinite(confidence) ? confidence : 'n/a'}% ` +
-      `< minimum ${executionConfidenceFloor}%`
-    );
+    return blocked(`Entry-quality confidence ${Number.isFinite(confidence) ? confidence : 'n/a'}% < minimum ${executionConfidenceFloor}%`);
   }
   if (isExplicitSwingSignal(signal)) {
     return blocked('Scalp-only execution: swing trade signals are disabled.');
@@ -816,6 +811,9 @@ export async function executeTrade(signal, options = {}) {
     }
   }
 
+  const universalPolicy = evaluateUniversalEntryPolicy(signal);
+  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+
   // ── Guard 4: SL and TP present ────────────────────────────────────────────
   if (!stopLoss || !takeProfit) {
     return blocked('stopLoss or takeProfit not set on signal');
@@ -888,15 +886,6 @@ export async function executeTrade(signal, options = {}) {
     return blocked(dailyLock.reason);
   }
 
-  if (dailyStartBalance === null) dailyStartBalance = balanceUSD;
-  const maxAllowedLossUSD = dailyStartBalance * (MAX_DAILY_LOSS_PERCENT / 100);
-  if (dailyLossUSD >= maxAllowedLossUSD) {
-    return blocked(
-      `Daily loss cap: $${dailyLossUSD.toFixed(2)} >= $${maxAllowedLossUSD.toFixed(2)} ` +
-      `(${MAX_DAILY_LOSS_PERCENT}% of $${dailyStartBalance.toFixed(2)})`
-    );
-  }
-
   // ── Guard 10: Dynamic risk sizing + pre-trade margin check ──────────────
   // Recompute server-side: confidence drives risk budget; the signal carries
   // the lifecycle result (SL/TP/hold), but if it's stale or missing, recompute
@@ -935,6 +924,21 @@ export async function executeTrade(signal, options = {}) {
       dynamicRisk.riskPercent = cap;
       dynamicRisk.riskUSD = cappedRiskUSD;
     }
+  }
+
+  let openTradesForBudget = [];
+  try { openTradesForBudget = (await getOpenTrades({ client })) || []; }
+  catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
+  const dailyBudget = reserveDailyLossBudget({
+    accountId: client?.accountId,
+    balanceUSD,
+    openRiskUSD: computeOpenRiskUSD(openTradesForBudget),
+    requestedRiskUSD: dynamicRisk.riskUSD,
+  });
+  if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
+  if (dailyBudget.capped) {
+    dynamicRisk.riskUSD = dailyBudget.approvedRiskUSD;
+    dynamicRisk.riskPercent = +((dailyBudget.approvedRiskUSD / balanceUSD) * 100).toFixed(4);
   }
 
   // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.
@@ -1273,6 +1277,11 @@ export async function executeTrade(signal, options = {}) {
   // SL/TP cannot be missed even on partial slippage.
   // ═══════════════════════════════════════════════════════════════════════════
 
+  const setupKey = setupFingerprint(signal, accountId);
+  const executionReservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
+  if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
+  const executionReservationHash = executionReservation.hash;
+
   const orderPayload = {
     order: {
       type:               'MARKET',
@@ -1306,6 +1315,7 @@ export async function executeTrade(signal, options = {}) {
   } catch (err) {
     console.error(`[TRADE] ✗ Order submission error: ${err.message}`);
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
+    await releaseExecution(executionReservationHash, 'failed');
     return {
       success:        false,
       blocked:        false,
@@ -1332,6 +1342,7 @@ export async function executeTrade(signal, options = {}) {
     const cancelReason = cancelInfo.reason || cancelInfo.cancelReason || 'UNKNOWN';
     console.log(`[TRADE] ✗ Order CANCELLED by OANDA: ${cancelReason}`);
     executionLog.push(logEntry('ORDER_CANCEL', { transaction: cancelInfo, cancelReason }));
+    await releaseExecution(executionReservationHash, 'cancelled');
     return {
       success:        false,
       blocked:        false,
@@ -1369,6 +1380,7 @@ export async function executeTrade(signal, options = {}) {
   // broker fill because market slippage can change geometric R:R after submission.
   const fillInfo        = extractFillTx(orderFillTransaction);
   const tradeId         = fillInfo.tradeId;
+  await markExecutionOpen({ hash: executionReservationHash, tradeId });
   const fillPrice       = parseFloat(fillInfo.price || entry);
   const tradeMarginUsed = parseFloat(
     fillInfo.initialMarginRequired || fillInfo.marginRequired || 0
@@ -1498,104 +1510,7 @@ export async function executeTrade(signal, options = {}) {
       oandaResponse,
     };
   }
-
-  // Reprice V3 TP-hit confidence using actual broker geometry. When slippage makes
-  // the attached target less probable, first try the nearest legal 1.5R TP. If the
-  // position still cannot maintain the 85% TP-hit floor, flatten it immediately.
-  let postFillTpHitConfidence = pureV3Execution
-    ? repriceV3TpHitConfidence({
-        baseConfidence: tpHitConfidence,
-        originalRR: finalSizingRR,
-        actualRR: actualFillRR,
-      })
-    : null;
-
-  if (
-    pureV3Execution &&
-    (!Number.isFinite(postFillTpHitConfidence) || postFillTpHitConfidence < executionConfidenceFloor)
-  ) {
-    const minimumTp = priceForMinimumRR({
-      direction,
-      fillPrice,
-      stopLoss: slPrice,
-      minRR: MIN_EXECUTABLE_RR,
-      priceDecimals,
-    });
-
-    // A farther-than-minimum TP may be pulled in, but never below the universal RR floor.
-    if (
-      Number.isFinite(minimumTp) &&
-      Number.isFinite(actualFillRR) &&
-      actualFillRR > MIN_EXECUTABLE_RR + 0.0001 &&
-      minimumTp !== effectiveTpPrice
-    ) {
-      try {
-        if (!tradeId) throw new Error('missing tradeId for TP-confidence repair');
-        const dependentOrderPath = `/v3/accounts/${accountId}/trades/${tradeId}/orders`;
-        const dependentOrderBody = {
-          takeProfit: { price: minimumTp.toFixed(priceDecimals), timeInForce: 'GTC' },
-        };
-        if (client) await client.put(dependentOrderPath, dependentOrderBody);
-        else await oandaPut(dependentOrderPath, dependentOrderBody);
-
-        const previousTp = effectiveTpPrice;
-        effectiveTpPrice = minimumTp;
-        actualFillRR = computePostFillRiskReward({
-          direction,
-          entry: fillPrice,
-          stopLoss: slPrice,
-          takeProfit: effectiveTpPrice,
-        });
-        postFillTpAdjusted = true;
-        postFillTpHitConfidence = repriceV3TpHitConfidence({
-          baseConfidence: tpHitConfidence,
-          originalRR: finalSizingRR,
-          actualRR: actualFillRR,
-        });
-        executionLog.push(logEntry('POST_FILL_TP_CONFIDENCE_REPAIRED', {
-          previousTakeProfit: previousTp,
-          repairedTakeProfit: effectiveTpPrice,
-          actualFillRR,
-          postFillTpHitConfidence,
-          minimumTpHitConfidence: executionConfidenceFloor,
-        }));
-      } catch (confidenceRepairError) {
-        executionLog.push(logEntry('POST_FILL_TP_CONFIDENCE_REPAIR_FAILED', {
-          error: confidenceRepairError?.message || String(confidenceRepairError),
-        }));
-      }
-    }
-
-    if (!Number.isFinite(postFillTpHitConfidence) || postFillTpHitConfidence < executionConfidenceFloor) {
-      let closedAfterFill = false;
-      let closeError = null;
-      try {
-        await flattenPostFillTrade('post-fill TP-hit confidence below execution floor');
-        closedAfterFill = true;
-      } catch (err) {
-        closeError = err?.message || String(err);
-      }
-      return {
-        success: false,
-        blocked: false,
-        executionState: 'POST_FILL_TP_CONFIDENCE_REJECTED',
-        reason:
-          `Post-fill TP-hit confidence ${Number.isFinite(postFillTpHitConfidence) ? postFillTpHitConfidence : 'n/a'}% ` +
-          `< ${executionConfidenceFloor}%; fill was ${closedAfterFill ? 'closed immediately' : 'NOT closed automatically'}.`,
-        tradeId,
-        fillPrice,
-        actualFillRR,
-        tpHitConfidence: postFillTpHitConfidence,
-        minimumTpHitConfidence: executionConfidenceFloor,
-        closedAfterFill,
-        closeError,
-        sizing,
-        executionLog,
-        oandaResponse,
-      };
-    }
-  }
-
+  const postFillTpHitConfidence = pureV3Execution ? repriceV3TpHitConfidence({ baseConfidence: tpHitConfidence, originalRR: finalSizingRR, actualRR: actualFillRR }) : null;
   if (pureV3Execution) {
     signal.preFillTpHitConfidence = tpHitConfidence;
     signal.tpHitConfidence = postFillTpHitConfidence;

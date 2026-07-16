@@ -212,10 +212,6 @@ export function evaluateV3SetupStage(signal = {}) {
   const rr = getSignalRR(signal);
 
   const minScore = envNumber('V3_QUALITY_SETUP_MIN_SCORE', 62);
-  const minTpHitConfidence = Math.max(85, envNumber(
-    'V3_QUALITY_SETUP_MIN_TP_HIT_CONFIDENCE',
-    envNumber('V3_QUALITY_SETUP_MIN_CONFIDENCE', 85),
-  ));
   const minRR = envNumber('FOREX_MIN_EXECUTABLE_RR', 1.5);
   const maxSpread = pair === 'XAU_USD' || pair === 'XAG_USD'
     ? envNumber('METALS_MAX_SPREAD_PIPS', 50)
@@ -236,7 +232,6 @@ export function evaluateV3SetupStage(signal = {}) {
   if (!pair) reasons.push('missing pair');
   if (!direction) reasons.push('missing V3 direction');
   if (score < minScore) reasons.push(`V3 score ${score} < ${minScore}`);
-  if (tpHitConfidence < minTpHitConfidence) reasons.push(`TP-hit confidence ${tpHitConfidence} < ${minTpHitConfidence}`);
   if (!Number.isFinite(rr) || rr < minRR) reasons.push(`geometric R:R ${rr ?? 'n/a'} < ${minRR}`);
   if (!targetsAccepted) reasons.push('remaining opportunity rejected');
   if (newsBlocked) reasons.push('news block active');
@@ -256,8 +251,9 @@ export function evaluateV3SetupStage(signal = {}) {
       entryQualityConfidence,
       rr,
       minScore,
-      minConfidence: minTpHitConfidence,
-      minTpHitConfidence,
+      minConfidence: null,
+      minTpHitConfidence: null,
+      tpConfidencePolicy: 'diagnostic_only',
       minRR,
       spread,
       maxSpread,

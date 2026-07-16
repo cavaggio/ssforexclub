@@ -3,7 +3,7 @@
 export const TRADE_DECISION_POLICY = {
   minConfidence: 85,
   minRR: 1.5,
-  maxDailyLossPercent: 2.8,
+  maxDailyLossPercent: 2.5,
   requireStructureConfirmation: true,
   requireLiquidityConfirmation: true,
   requireExpectedRRConfirmation: true,

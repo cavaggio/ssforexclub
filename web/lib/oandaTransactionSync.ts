@@ -329,6 +329,12 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
 
         if (result.ok) logged += 1;
         else failed += 1;
+
+        if (result.ok && closeReason === 'SL_HIT' && event.tradeId) {
+          const supabase = getServerSupabase();
+          const lockedUntil = new Date(Date.now() + Number(process.env.POST_LOSS_REENTRY_LOCK_HOURS || 24) * 3600000).toISOString();
+          await supabase.from('execution_reservations').update({ status: 'loss_locked', locked_until: lockedUntil, updated_at: new Date().toISOString() }).eq('trade_id', String(event.tradeId));
+        }
       }
     }
 

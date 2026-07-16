@@ -184,7 +184,8 @@ export function buildIndependentV3Candidate({
 
   const tpHitConfidence = computeV3EntryTpHitConfidence(candidate);
   candidate.tpHitConfidence = tpHitConfidence;
-  candidate.confidence = tpHitConfidence;
+  candidate.confidence = entryQualityConfidence;
+  candidate.tpConfidencePolicy = 'diagnostic_only';
   candidate.tpProbability = Number((tpHitConfidence / 100).toFixed(3));
   candidate.slProbability = Number((1 - candidate.tpProbability).toFixed(3));
 
