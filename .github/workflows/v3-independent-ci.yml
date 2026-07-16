@@ -33,3 +33,5 @@ jobs:
           ! grep -q "oandaScanner" server/v3AutoTrade.js
           ! grep -q "scanForexPairs" server/v3AutoTrade.js
           ! grep -q "legacyQualified" server/v3AutoTrade.js
+          ! grep -q "retraceWatchMode" server/v3AutoTrade.js
+          ! grep -q "getRetraceWatchPairs" server/v3AutoTrade.js

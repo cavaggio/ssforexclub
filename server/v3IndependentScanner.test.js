@@ -72,10 +72,12 @@ test('candidate rejects a target on the wrong side of the V3 direction', () => {
   assert.equal(candidate, null);
 });
 
-test('V3 auto runner has no legacy scanner import or scanForexPairs call', () => {
+test('V3 auto runner has no legacy scanner or shared retrace-watch dependency', () => {
   const source = fs.readFileSync(path.join(__dirname, 'v3AutoTrade.js'), 'utf8');
   assert.equal(source.includes("from './oandaScanner.js'"), false);
   assert.equal(source.includes('scanForexPairs('), false);
   assert.equal(source.includes('legacyQualified'), false);
+  assert.equal(source.includes('retraceWatchMode'), false);
+  assert.equal(source.includes('getRetraceWatchPairs'), false);
   assert.equal(source.includes('scan?.qualified) ? scan.qualified'), true);
 });
