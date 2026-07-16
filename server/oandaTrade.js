@@ -41,7 +41,6 @@ import {
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
 } from './riskManager.js';
-import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
 import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
