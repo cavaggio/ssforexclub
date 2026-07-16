@@ -71,7 +71,35 @@ jobs:
           server/autoAiRouter.test.js
       - name: Entry-contract integration tests
         run: node --test server/v3EntryContract.integration.test.js
-      - name: Full test suite
-        run: npm test
+      - name: Full test suite with diagnostic
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set +e
+          npm test > /tmp/v3-full-suite.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "status=${status}"
+              cat /tmp/v3-full-suite.log
+            } > server/v3FullSuiteDiagnostics.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add server/v3FullSuiteDiagnostics.txt
+            git commit -m "Record V3 full-suite failure [skip ci]" || true
+            git push origin HEAD:"${HEAD_BRANCH}"
+          else
+            rm -f server/v3FullSuiteDiagnostics.txt
+            if ! git diff --quiet -- server/v3FullSuiteDiagnostics.txt; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add -A server/v3FullSuiteDiagnostics.txt
+              git commit -m "Remove V3 full-suite diagnostic [skip ci]"
+              git push origin HEAD:"${HEAD_BRANCH}"
+            fi
+          fi
+          cat /tmp/v3-full-suite.log
+          exit "$status"
       - name: Production build
         run: npm run build
