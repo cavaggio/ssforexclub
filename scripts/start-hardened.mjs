@@ -24,8 +24,8 @@ function run(command, args, label) {
 const partNames = fs.readdirSync(here)
   .filter((name) => name.startsWith('hardening-patch.part'))
   .sort();
-if (partNames.length !== 8) {
-  throw new Error(`Expected 8 production-hardening patch parts, found ${partNames.length}`);
+if (partNames.length !== 7) {
+  throw new Error(`Expected 7 production-hardening patch parts, found ${partNames.length}`);
 }
 
 const riskManagerPath = path.join(root, 'server/riskManager.js');
