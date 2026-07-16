@@ -7,10 +7,10 @@
  * per-engine duplication (hardening requirement #6).
  *
  * Controls owned here:
- *   1. Dynamic risk per trade — HARD cap at RISK_MAX_PER_TRADE_PERCENT (1.4%).
+ *   1. Dynamic risk per trade — HARD cap at RISK_MAX_PER_TRADE_PERCENT (1.25%).
  *      No confidence/quality score may override it.
  *   2. Daily max-drawdown circuit breaker — RISK_DAILY_MAX_DRAWDOWN_PERCENT
- *      (2.8%) of the day's starting balance. When hit, new entries are locked
+ *      (2.5%) of the day's starting balance. When hit, new entries are locked
  *      (open-position management is unaffected). Resets at New York midnight.
  *   3. Auto-execution confidence floor — RISK_AUTO_EXECUTION_MIN_CONFIDENCE (85).
  *   4. Margin availability — never submit an order whose required margin exceeds
@@ -33,8 +33,8 @@ const RISK_TOLERANCE = 0.005; // 0.5%
 
 export function riskConfig() {
   return {
-    maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
-    dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),
+    maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.25'),
+    dailyMaxDrawdownPercent: 2.5,
     autoExecutionMinConfidence: Math.max(85, parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '85')),
   };
 }
@@ -157,6 +157,25 @@ export function checkDailyRiskLock({ accountId, balanceUSD, now = new Date() }, 
         `breached -$${lossLimit.toFixed(2)} (${cfg.dailyMaxDrawdownPercent}% of $${startingBalance.toFixed(2)}). ` +
         `New entries are locked until NY-midnight reset; open trades keep being managed.`
       : null,
+  };
+}
+
+/** Size a new order to the uncommitted remainder of the fixed 2.5% daily budget. */
+export function reserveDailyLossBudget({ accountId, balanceUSD, openRiskUSD = 0, requestedRiskUSD = 0, now = new Date() } = {}) {
+  const lock = checkDailyRiskLock({ accountId, balanceUSD, now });
+  const openRisk = Math.max(0, Number(openRiskUSD) || 0);
+  const requested = Math.max(0, Number(requestedRiskUSD) || 0);
+  const remainingAfterOpenRisk = Math.max(0, lock.remainingLossBudget - openRisk);
+  const approvedRiskUSD = Math.floor(Math.min(requested, remainingAfterOpenRisk) * 100) / 100;
+  return {
+    allowed: !lock.tradingLocked && approvedRiskUSD > 0,
+    capped: approvedRiskUSD + 0.005 < requested,
+    approvedRiskUSD,
+    requestedRiskUSD: requested,
+    openRiskUSD: openRisk,
+    remainingDailyBudgetUSD: lock.remainingLossBudget,
+    remainingAfterOpenRiskUSD: remainingAfterOpenRisk,
+    reason: lock.tradingLocked ? lock.reason : approvedRiskUSD <= 0 ? 'No uncommitted daily loss budget remains.' : null,
   };
 }
 

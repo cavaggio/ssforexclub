@@ -24,12 +24,13 @@ import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 import { getAccountSummary, getCandles, getOpenTrades, getPricing } from './oandaMarketData.js';
-import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';
+import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
+  reserveDailyLossBudget,
   checkAutoExecutionConfidence,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
@@ -37,6 +38,8 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 
+import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 import { isExplicitSwingSignal } from './scalpOnlyPolicy.js';
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
@@ -167,6 +170,9 @@ export async function executeIctTrade(params = {}, {
     if (!confCheck.passed) return blocked(confCheck.reason);
   }
 
+  const universalPolicy = evaluateUniversalEntryPolicy({ ...analysis, pair, direction });
+  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+
   // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
   const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
   if (news?.blocked) {
@@ -208,7 +214,12 @@ export async function executeIctTrade(params = {}, {
   const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
   // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
   const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
-  const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
+  const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
+  let openTradesForBudget = [];
+  try { const openFn = getOpen || (() => getOpenTrades({ client })); openTradesForBudget = (await openFn()) || []; } catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
+  const dailyBudget = reserveDailyLossBudget({ accountId: client.accountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
+  if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
+  const targetRiskUSD = dailyBudget.approvedRiskUSD;
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
     stopLossPips: slPips, stopLossPrice: stopLoss,
@@ -340,60 +351,14 @@ export async function executeIctTrade(params = {}, {
 
   let resp;
   try {
-
-    const signal = analysis && typeof analysis === 'object' ? analysis : {};
-
-    const confidence = Number(analysis?.confidence ?? signal?.confidence ?? 0);
-    const riskReward = Number(analysis?.rr ?? analysis?.riskReward ?? analysis?.expectedRR ?? signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? 0);
-    const expectedRR = riskReward;
-
-    // ICT already applied its own confidence gate above.
-    // Auto AI keeps the 90% floor, but manual/live ICT execution must respect cfg.minConfidence.
-    const june23GateConfidence = autoAi
-      ? confidence
-      : Math.max(confidence, 90);
-
-    const startingDailyBalance = Number(balanceUSD || 0);
-    const currentBalance = Number(balanceUSD || 0);
-    const realizedPnL = 0;
-    const dailyDrawdownPercent = 0;
-    const totalOpenRiskPercent = 0;
-
-    // June 23 restored centralized decision gate
-    const june23Decision = evaluateTradeCandidate({
-      confidence: june23GateConfidence,
-      rr: Number(riskReward ?? signal?.rr ?? signal?.riskReward ?? signal?.expectedRR ?? analysis?.rr ?? analysis?.riskReward ?? analysis?.expectedRR ?? expectedRR ?? 0),
-
-      structureConfirmed: true,
-
-      liquidityConfirmed: true,
-
-      expectedRRConfirmed: Number(riskReward ?? expectedRR ?? analysis?.rr ?? 0) >= Number(config?.minRR ?? 1.5),
-
-      premiumDiscountConfirmed: true,
-
-      regimeAligned: signal?.regimeAligned ?? analysis?.regimeAligned,
-      liquidityIntentStrong: signal?.liquidityIntentStrong ?? analysis?.liquidityIntentStrong,
-      calibrationPositive: signal?.calibrationPositive ?? analysis?.calibrationPositive,
-      smtDivergence: signal?.smtDivergence ?? analysis?.smtDivergence,
-      sessionNarrativeAligned: signal?.sessionNarrativeAligned ?? analysis?.sessionNarrativeAligned,
-    }, {
-      startingDailyBalance: startingDailyBalance ?? account?.startingDailyBalance ?? balanceUSD,
-      currentBalance: currentBalance ?? account?.balance ?? balanceUSD,
-    });
-
-    if (!june23Decision.allowed) {
-      return {
-        executed: false,
-        skipped: true,
-        reason: june23Decision.reason,
-        confidence: june23Decision.confidence,
-        rr: june23Decision.rr,
-      };
-    }
-
+    const executionSignal = { ...analysis, pair, direction, entry, stopLoss, takeProfit: targetProfit };
+    const setupKey = setupFingerprint(executionSignal, accountId);
+    const reservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
+    if (!reservation.allowed) return blocked(`Atomic setup reservation rejected: ${reservation.reason}`);
+    params.__reservationHash = reservation.hash;
     resp = await client.post(`/v3/accounts/${accountId}/orders`, orderPayload);
   } catch (err) {
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'failed');
     rec(`rejected: submit error ${err.message}`);
     return { success: false, blocked: false, executionState: 'REJECTED', reason: `Order submission failed: ${err.message}`, sizing, executionLog: log };
   }
@@ -403,6 +368,7 @@ export async function executeIctTrade(params = {}, {
     const friendlyReason = reason === 'TAKE_PROFIT_ON_FILL_LOSS'
       ? 'Order cancelled by OANDA: TAKE_PROFIT_ON_FILL_LOSS — the take-profit was no longer safely beyond the actual fill price. Signal/target was stale or too close after spread. Refresh the signal and execute only if TP is still beyond current executable price.'
       : `Order cancelled by OANDA: ${reason}`;
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'cancelled');
     rec(`rejected: cancelled by OANDA (${reason})`);
     return { success: false, blocked: false, executionState: 'CANCELLED', reason: friendlyReason, sizing, oandaResponse: resp, executionLog: log };
   }
@@ -415,6 +381,7 @@ export async function executeIctTrade(params = {}, {
   // Filled — SL/TP attached atomically on fill. Register the shared lock.
   registerTradeLock(pair, direction);
   const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;
+  if (params.__reservationHash) await markExecutionOpen({ hash: params.__reservationHash, tradeId });
   const fillPrice = parseFloat(fill.price ?? entry);
   // Projected hold-time for the ICT lifecycle reassessment (recorded at open).
   const holdMinutes = estimateHoldMinutes(analysis.setupType, analysis.concepts?.killzone);

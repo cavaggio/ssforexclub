@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the central caps to their documented defaults (1.4% / 2.8% / 85).
+// Pin the central caps to their documented defaults (1.25% / 2.5% / 85).
 delete process.env.RISK_MAX_PER_TRADE_PERCENT;
 delete process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT;
 delete process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE;
@@ -21,26 +21,26 @@ const {
 
 const NOW = new Date('2026-06-10T15:00:00Z');
 
-test('defaults are 1.4% per trade, 2.8% daily drawdown, 85 confidence', () => {
+test('defaults are 1.25% per trade, 2.5% daily drawdown, 85 confidence', () => {
   const cfg = riskConfig();
-  assert.equal(cfg.maxRiskPerTradePercent, 1.4);
-  assert.equal(cfg.dailyMaxDrawdownPercent, 2.8);
+  assert.equal(cfg.maxRiskPerTradePercent, 1.25);
+  assert.equal(cfg.dailyMaxDrawdownPercent, 2.5);
   assert.equal(cfg.autoExecutionMinConfidence, 85);
 });
 
 // ── 1. Risk per trade (1.4% hard cap) ───────────────────────────────────────
 
 test('risk budget is 1.4% of balance', () => {
-  assert.equal(computeRiskBudgetUSD(10000), 140);
+  assert.equal(computeRiskBudgetUSD(10000), 125);
 });
 
 test('per-trade risk percent is clamped to 1.4%', () => {
-  assert.equal(capPerTradeRiskPercent(2.0), 1.4);
+  assert.equal(capPerTradeRiskPercent(2.0), 1.25);
   assert.equal(capPerTradeRiskPercent(1.0), 1.0);
 });
 
 test('actual risk at exactly 1.4% is allowed', () => {
-  const r = checkRiskPerTrade({ balanceUSD: 10000, actualDollarRisk: 140 });
+  const r = checkRiskPerTrade({ balanceUSD: 10000, actualDollarRisk: 125 });
   assert.equal(r.passed, true);
 });
 
@@ -48,7 +48,7 @@ test('actual risk above 1.4% is rejected', () => {
   // $200 on a $10k account = 2% > 1.4% cap (beyond the rounding tolerance).
   const r = checkRiskPerTrade({ balanceUSD: 10000, actualDollarRisk: 200 });
   assert.equal(r.passed, false);
-  assert.match(r.reason, /exceeds hard cap 1\.4%/);
+  assert.match(r.reason, /exceeds hard cap 1\.25%/);
 });
 
 // ── 2. Daily max-drawdown circuit breaker (2.8%) ────────────────────────────
@@ -122,10 +122,10 @@ test('getRiskStatus surfaces the documented panel fields', () => {
   resetDailyRisk();
   const s = getRiskStatus({ accountId: 'ACC-S', balanceUSD: 10000, now: NOW });
   assert.equal(s.accountBalance, 10000);
-  assert.equal(s.riskPerTradePercent, 1.4);
-  assert.equal(s.riskAmountUSD, 140);
-  assert.equal(s.dailyLossLimitPercent, 2.8);
-  assert.equal(s.dailyLossLimitUSD, 280);
+  assert.equal(s.riskPerTradePercent, 1.25);
+  assert.equal(s.riskAmountUSD, 125);
+  assert.equal(s.dailyLossLimitPercent, 2.5);
+  assert.equal(s.dailyLossLimitUSD, 250);
   assert.equal(s.autoExecutionConfidenceThreshold, 85);
   assert.equal(s.tradingLocked, false);
 });
