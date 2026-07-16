@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { buildIndependentV3Candidate } from './v3IndependentScanner.js';
 import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
+import { evaluateUniversalEntryPolicy } from './executionPolicy.js';
 import {
   buildOandaMarketOrderPayload,
   deriveV3EntryTiming,
@@ -216,4 +217,29 @@ test('direction lock rejects a freshly recalculated opposite side', () => {
   });
   assert.equal(lock.allowed, false);
   assert.match(lock.reasons.join(' '), /freshly recalculated direction short/);
+});
+
+test('V3 execution rejects a missing terminal entryTiming status', () => {
+  const result = evaluateUniversalEntryPolicy({
+    pair: 'EUR_USD',
+    direction: 'long',
+    engine: 'v3',
+    v3: { direction: 'long', liquidity: {} },
+  });
+  assert.equal(result.v3Execution, true);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join(' '), /entryTiming must be populated/);
+});
+
+test('ICT execution remains independent from V3 entryTiming states', () => {
+  const result = evaluateUniversalEntryPolicy({
+    pair: 'EUR_USD',
+    direction: 'long',
+    engine: 'ict',
+    strategy: 'ICT',
+    institutionalFlow: { detected: false, signals: [] },
+  });
+  assert.equal(result.v3Execution, false);
+  assert.equal(result.allowed, true, result.reasons.join('; '));
+  assert.doesNotMatch(result.reasons.join(' '), /entryTiming/);
 });
