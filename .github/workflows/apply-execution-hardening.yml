@@ -25,36 +25,72 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
-      - name: Apply hardening patch
+      - name: Apply production hardening
         run: python3 scripts/apply_execution_hardening.py
 
-      - name: Commit generated source to PR branch
+      - name: Apply V3 entry contract
+        id: v3_apply
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/apply_v3_entry_contract.py > /tmp/v3-entry-contract.log 2>&1
+          status=$?
+          set -e
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ]; then
+            git restore server package.json
+            mkdir -p diagnostics
+            {
+              echo "status=${status}"
+              echo "commit=${GITHUB_SHA}"
+              cat /tmp/v3-entry-contract.log
+            } > diagnostics/v3-entry-contract.log
+          else
+            cat /tmp/v3-entry-contract.log
+          fi
+
+      - name: Commit diagnostic or generated source
         env:
           TARGET_BRANCH: ${{ github.head_ref }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "${{ steps.v3_apply.outputs.status }}" -ne 0 ]; then
+            git add diagnostics/v3-entry-contract.log
+            git commit -m "Record V3 entry contract diagnostic [skip ci]" || true
+            git push origin HEAD:"${TARGET_BRANCH}"
+            exit 1
+          fi
           if git diff --quiet; then
             echo "No source changes required."
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add server web/lib supabase/migrations scripts/apply_execution_hardening.py
-            git commit -m "Harden execution timing, duplicate, range, and daily risk controls"
+            git add server web/lib supabase/migrations package.json scripts/apply_execution_hardening.py scripts/apply_v3_entry_contract.py
+            git commit -m "Enforce Stage 2 V3 entry contract"
             git push origin HEAD:"${TARGET_BRANCH}"
           fi
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run focused safety tests
-        continue-on-error: true
+      - name: Syntax checks
+        run: |
+          node --check server/v3EntryContract.js
+          node --check server/v3QualityConfirmation.js
+          node --check server/v3IndependentScanner.js
+          node --check server/v3AutoTrade.js
+          node --check server/oandaTrade.js
+
+      - name: Run focused safety and V3 tests
         run: |
           node --test server/riskManager.test.js
-          node --test server/v3QualityConfirmation.test.js
           node --test server/ictExecution.test.js
+          node --test server/primaryTimeframeAlignment.test.js
+          node --test server/v3QualityConfirmation.test.js
+          node --test server/v3IndependentScanner.test.js
+          node --test server/v3EntryContract.integration.test.js
 
       - name: Run full server test suite
-        continue-on-error: true
         run: npm test
