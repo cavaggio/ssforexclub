@@ -5,25 +5,39 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL_PATH = 'scripts/apply_execution_hardening.py'
-DIAGNOSTIC_PATH = ROOT / 'server' / 'v3EntryContract.diagnostic.txt'
+OUTPUT_PATH = ROOT / 'server' / 'v3CiDiagnostics.txt'
 
-result = subprocess.run(
-    [sys.executable, str(ROOT / 'scripts' / 'run_v3_entry_contract.py')],
-    cwd=ROOT,
-    text=True,
-    capture_output=True,
-)
 
-if result.returncode != 0:
-    subprocess.run(['git', 'checkout', 'HEAD', '--', 'server', 'package.json'], cwd=ROOT, check=True)
-    DIAGNOSTIC_PATH.write_text(
-        f'returncode={result.returncode}\nSTDOUT\n{result.stdout}\nSTDERR\n{result.stderr}\n',
-        encoding='utf-8',
+def capture(label, command):
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    return (
+        f'\n===== {label} =====\n'
+        f'command={command!r}\nreturncode={result.returncode}\n'
+        f'STDOUT\n{result.stdout}\nSTDERR\n{result.stderr}\n'
     )
-else:
-    print(result.stdout)
-    if DIAGNOSTIC_PATH.exists():
-        DIAGNOSTIC_PATH.unlink()
+
+sections = []
+sections.append(capture('apply V3 contract', [sys.executable, str(ROOT / 'scripts' / 'run_v3_entry_contract.py')]))
+sections.append(capture('npm ci', ['npm', 'ci']))
+sections.append(capture('independent V3', ['node', '--test', 'server/v3IndependentScanner.test.js']))
+sections.append(capture('provisioning policy', [
+    'node', '--test',
+    'server/primaryTimeframeAlignment.test.js',
+    'web/lib/v3ScanDisplayPolicy.test.js',
+    'web/lib/edgeExecutionProfile.test.js',
+]))
+sections.append(capture('native V3', [
+    'node', '--test',
+    'server/v3QualityConfirmation.test.js',
+    'server/v3RetestExecutionPolicy.test.js',
+    'server/v3NativeEntryTiming.test.js',
+    'server/v3WatchClassification.test.js',
+    'server/v3PrimaryAlignment.test.js',
+    'server/v3NativeScanner.test.js',
+    'server/ictAutoScheduler.test.js',
+    'server/autoAiRouter.test.js',
+]))
+OUTPUT_PATH.write_text(''.join(sections), encoding='utf-8')
 
 subprocess.run(
     ['git', 'checkout', 'origin/main', '--', ORIGINAL_PATH],
