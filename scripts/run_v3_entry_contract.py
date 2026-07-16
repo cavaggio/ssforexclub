@@ -36,7 +36,7 @@ def regex_once(text, pattern, replacement, label, flags=0):
 '''
 
 resilient_helpers = '''def replace_once(text, old, new, label):
-    if new in text:
+    if new and new in text:
         return text
     count = text.count(old)
     if count == 0:
@@ -48,7 +48,7 @@ resilient_helpers = '''def replace_once(text, old, new, label):
 
 
 def replace_all_required(text, old, new, minimum, label):
-    if new in text and old not in text:
+    if new and new in text and old not in text:
         return text
     count = text.count(old)
     if count == 0:
@@ -99,7 +99,11 @@ required = {
 }
 forbidden = {
     'server/v3QualityConfirmation.js': ["export function evaluateV3FreshExecutionStage"],
-    'server/oandaTrade.js': ["import { evaluateV3FreshExecutionStage }", "V3_QUALITY_STAGE_3", "Stage-3 fresh execution rejected"],
+    'server/oandaTrade.js': [
+        "import { evaluateV3FreshExecutionStage }",
+        "V3_QUALITY_STAGE_3",
+        "Stage-3 fresh execution rejected",
+    ],
 }
 failures = []
 for relative, markers in required.items():
