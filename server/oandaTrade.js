@@ -50,6 +50,9 @@ import { reserveExecution, markExecutionOpen, releaseExecution } from './executi
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 
+import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
@@ -820,6 +823,9 @@ export async function executeTrade(signal, options = {}) {
   const universalPolicy = evaluateUniversalEntryPolicy(signal);
   if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
 
+  const universalPolicy = evaluateUniversalEntryPolicy(signal);
+  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+
   // ── Guard 4: SL and TP present ────────────────────────────────────────────
   if (!stopLoss || !takeProfit) {
     return blocked('stopLoss or takeProfit not set on signal');
@@ -930,6 +936,21 @@ export async function executeTrade(signal, options = {}) {
       dynamicRisk.riskPercent = cap;
       dynamicRisk.riskUSD = cappedRiskUSD;
     }
+  }
+
+  let openTradesForBudget = [];
+  try { openTradesForBudget = (await getOpenTrades({ client })) || []; }
+  catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
+  const dailyBudget = reserveDailyLossBudget({
+    accountId: client?.accountId,
+    balanceUSD,
+    openRiskUSD: computeOpenRiskUSD(openTradesForBudget),
+    requestedRiskUSD: dynamicRisk.riskUSD,
+  });
+  if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
+  if (dailyBudget.capped) {
+    dynamicRisk.riskUSD = dailyBudget.approvedRiskUSD;
+    dynamicRisk.riskPercent = +((dailyBudget.approvedRiskUSD / balanceUSD) * 100).toFixed(4);
   }
 
   let openTradesForBudget = [];
@@ -1308,6 +1329,11 @@ export async function executeTrade(signal, options = {}) {
   if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
   const executionReservationHash = executionReservation.hash;
 
+  const setupKey = setupFingerprint(signal, accountId);
+  const executionReservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
+  if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
+  const executionReservationHash = executionReservation.hash;
+
   const orderPayload = {
     order: {
       type:               'MARKET',
@@ -1343,6 +1369,7 @@ export async function executeTrade(signal, options = {}) {
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
     await releaseExecution(executionReservationHash, 'failed');
     await releaseExecution(executionReservationHash, 'failed');
+    await releaseExecution(executionReservationHash, 'failed');
     return {
       success:        false,
       blocked:        false,
@@ -1369,6 +1396,7 @@ export async function executeTrade(signal, options = {}) {
     const cancelReason = cancelInfo.reason || cancelInfo.cancelReason || 'UNKNOWN';
     console.log(`[TRADE] ✗ Order CANCELLED by OANDA: ${cancelReason}`);
     executionLog.push(logEntry('ORDER_CANCEL', { transaction: cancelInfo, cancelReason }));
+    await releaseExecution(executionReservationHash, 'cancelled');
     await releaseExecution(executionReservationHash, 'cancelled');
     await releaseExecution(executionReservationHash, 'cancelled');
     return {
@@ -1408,6 +1436,7 @@ export async function executeTrade(signal, options = {}) {
   // broker fill because market slippage can change geometric R:R after submission.
   const fillInfo        = extractFillTx(orderFillTransaction);
   const tradeId         = fillInfo.tradeId;
+  await markExecutionOpen({ hash: executionReservationHash, tradeId });
   await markExecutionOpen({ hash: executionReservationHash, tradeId });
   await markExecutionOpen({ hash: executionReservationHash, tradeId });
   const fillPrice       = parseFloat(fillInfo.price || entry);
