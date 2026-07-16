@@ -1,0 +1,242 @@
+/v3IndependentScanner.js');
+independent = mustReplace(
+  independent,
+  `  candidate.tpHitConfidence = tpHitConfidence;
+  candidate.confidence = tpHitConfidence;
+  candidate.tpProbability = Number((tpHitConfidence / 100).toFixed(3));`,
+  `  candidate.tpHitConfidence = tpHitConfidence;
+  candidate.tpConfidencePolicy = 'diagnostic_only_not_entry_confirmation';
+  candidate.confidence = entryQualityConfidence;
+  candidate.tpProbability = Number((tpHitConfidence / 100).toFixed(3));`,
+  'independent TP diagnostic',
+);
+write('server/v3IndependentScanner.js', independent);
+
+// ---------------------------------------------------------------------------
+// OANDA execution integration
+// ---------------------------------------------------------------------------
+let trade = read('server/oandaTrade.js');
+trade = mustReplace(
+  trade,
+  "import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';",
+  "import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';",
+  'trade open risk import',
+);
+trade = mustReplace(
+  trade,
+  `  checkDailyRiskLock,
+  checkAutoExecutionConfidence,`,
+  `  checkDailyRiskLock,
+  previewProjectedRiskBudget,
+  reserveProjectedRiskBudget,
+  releaseProjectedRiskReservation,
+  commitProjectedRiskReservation,
+  checkAutoExecutionConfidence,`,
+  'trade risk imports',
+);
+trade = mustReplace(
+  trade,
+  "import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';",
+  `import { evaluateV3FreshExecutionStage } from './v3QualityConfirmation.js';
+import {
+  evaluateHardEntryPolicy,
+  buildSetupFingerprint,
+  checkPersistentSetupEligibility,
+  acquireExecutionReservation,
+  releaseExecutionReservation,
+  attachSetupClientExtensions,
+} from './executionSafetyPolicy.js';`,
+  'trade safety imports',
+);
+trade = mustReplace(
+  trade,
+  "const MAX_DAILY_LOSS_PERCENT= parseFloat(process.env.FOREX_MAX_DAILY_LOSS_PERCENT || '2');\n",
+  '',
+  'trade duplicate daily constant',
+);
+trade = mustReplace(
+  trade,
+  "const ENTRY_TIMING_STRICT        = String(process.env.FOREX_ENTRY_TIMING_STRICT || 'false').toLowerCase() === 'true';\n",
+  '',
+  'trade timing strict constant',
+);
+trade = mustReplace(
+  trade,
+  `let dailyTradeTimestamps = [];
+let dailyLossUSD         = 0;
+let lastTradeTime        = 0;
+let dailyStartBalance    = null;`,
+  `let dailyTradeTimestamps = [];
+let lastTradeTime        = 0;`,
+  'trade legacy risk state',
+);
+trade = mustReplace(
+  trade,
+  `    dailyLossUSD,
+    cooldownMsLeft:`,
+  `    cooldownMsLeft:`,
+  'trade reset snapshot',
+);
+trade = mustReplace(
+  trade,
+  `  dailyLossUSD         = 0;
+  dailyStartBalance    = null;
+  lastTradeTime`,
+  `  lastTradeTime`,
+  'trade reset state',
+);
+trade = mustMatchReplace(
+  trade,
+  /export function recordTradeLoss\(amountUSD\) \{[\s\S]*?\n\}/,
+  `export function recordTradeLoss(amountUSD) {
+  // Deprecated compatibility hook. Broker balance is the authoritative realized-P&L source.
+  console.log(\`[TRADE] Realized loss observed: $\${Math.abs(Number(amountUSD) || 0).toFixed(2)}\`);
+}`,
+  'trade legacy loss hook',
+);
+trade = mustReplace(
+  trade,
+  `  const tpHitConfidence = pureV3Execution
+    ? computeV3EntryTpHitConfidence(signal)
+    : null;
+  const confidence = pureV3Execution ? tpHitConfidence : Number(signalConfidence);`,
+  `  const tpHitConfidence = pureV3Execution
+    ? computeV3EntryTpHitConfidence(signal)
+    : null;
+  const confidence = Number(
+    pureV3Execution ? entryQualityConfidence : signalConfidence
+  );`,
+  'trade V3 confidence source',
+);
+trade = mustReplace(
+  trade,
+  `    signal.tpProbability = +(tpHitConfidence / 100).toFixed(3);
+    signal.slProbability = +(1 - signal.tpProbability).toFixed(3);
+    // Generic confidence remains a compatibility alias only.
+    signal.confidence = tpHitConfidence;`,
+  `    signal.tpProbability = +(tpHitConfidence / 100).toFixed(3);
+    signal.slProbability = +(1 - signal.tpProbability).toFixed(3);
+    signal.tpConfidencePolicy = 'diagnostic_only_not_entry_confirmation';
+    signal.confidence = entryQualityConfidence;`,
+  'trade TP diagnostic fields',
+);
+trade = mustReplace(
+  trade,
+  `    \`[TRADE]   Score: \${score}/20, \${pureV3Execution ? 'TP Hit Conf' : 'Conf'}: \${confidence}%, \` +`,
+  `    \`[TRADE]   Score: \${score}/20, Entry Quality: \${confidence}%, TP Hit Diagnostic: \${tpHitConfidence ?? 'n/a'}%, \` +`,
+  'trade log confidence',
+);
+trade = mustMatchReplace(
+  trade,
+  /  \/\/ ── Guard 3: Entry execution probability[\s\S]*?  if \(isExplicitSwingSignal\(signal\)\) \{/,
+  `  // ── Guard 3: Entry-quality score (TP confidence is diagnostic only) ───────
+  if (!Number.isFinite(confidence) || confidence < MIN_CONFIDENCE) {
+    return blocked(
+      \`Entry-quality confidence \${Number.isFinite(confidence) ? confidence : 'n/a'}% < minimum \${MIN_CONFIDENCE}%\`
+    );
+  }
+  if (isExplicitSwingSignal(signal)) {`,
+  'trade initial TP gate',
+);
+trade = mustMatchReplace(
+  trade,
+  /  \/\/ ── Guard 3\.6: Entry-quality gates[\s\S]*?\n  \}\n\n  \/\/ ── Guard 4:/,
+  `  // ── Guard 3.6: Universal hard entry policy ───────────────────────────────
+  const hardEntryPolicy = evaluateHardEntryPolicy(signal);
+  if (!hardEntryPolicy.allowed) {
+    return blocked(\`Hard entry policy rejected: \${hardEntryPolicy.reasons.join('; ')}\`);
+  }
+
+  // ── Guard 4:`,
+  'trade hard entry block',
+);
+trade = mustMatchReplace(
+  trade,
+  /\n  if \(dailyStartBalance === null\)[\s\S]*?\n  \}\n\n  \/\/ ── Guard 10:/,
+  `
+
+  let openTradesForRisk;
+  try {
+    openTradesForRisk = (await getOpenTrades({ client })) || [];
+  } catch (err) {
+    return blocked(\`Projected-risk check failed to fetch open trades: \${err.message}\`);
+  }
+  const openRiskUSD = computeOpenRiskUSD(openTradesForRisk);
+
+  // ── Guard 10:`,
+  'trade legacy daily gate',
+);
+trade = mustReplace(
+  trade,
+  '    confidence: signal.confidence,',
+  '    confidence,',
+  'trade dynamic confidence',
+);
+trade = mustReplace(
+  trade,
+  `  // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.`,
+  `  const projectedBudget = previewProjectedRiskBudget({
+    accountId: client?.accountId || getAccountId(),
+    balanceUSD,
+    openRiskUSD,
+    requestedRiskUSD: dynamicRisk.riskUSD,
+  });
+  if (!projectedBudget.allowed) {
+    return blocked(projectedBudget.reason || 'No projected daily risk budget remains.');
+  }
+  if (projectedBudget.capped) {
+    console.log(
+      '[PROJECTED_RISK_CAP] ' + pair + ' ' + direction + ' $' + dynamicRisk.riskUSD.toFixed(2) +
+      ' → $' + projectedBudget.approvedRiskUSD.toFixed(2) +
+      '; realized=$' + projectedBudget.realizedLossUSD.toFixed(2) +
+      ' open=$' + projectedBudget.openRiskUSD.toFixed(2) +
+      ' limit=$' + projectedBudget.dailyLossLimitUSD.toFixed(2)
+    );
+    dynamicRisk.riskUSD = projectedBudget.approvedRiskUSD;
+    dynamicRisk.riskPercent = +((dynamicRisk.riskUSD / balanceUSD) * 100).toFixed(4);
+  }
+
+  // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.`,
+  'trade projected risk cap',
+);
+trade = mustReplace(
+  trade,
+  '  // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.4%) ──────',
+  '  // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.25%) ─────',
+  'trade risk comment',
+);
+trade = mustMatchReplace(
+  trade,
+  /  \/\/ ── Auto AI portfolio guard:[\s\S]*?\n  \}\n\n  if \(projectedFreeMargin/,
+  `  // Existing portfolio cap remains additive; the 2.5% projected-loss budget is authoritative.
+  if (autoAi) {
+    const currentOpenRiskPercent = computeOpenRiskPercent(openTradesForRisk, balanceUSD) ?? 0;
+    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
+    if (!totalCheck.allowed) return blocked(totalCheck.reason);
+  }
+
+  if (projectedFreeMargin`,
+  'trade portfolio risk',
+);
+trade = mustReplace(
+  trade,
+  `  const orderPayload = {
+    order: {`,
+  `  const setup = buildSetupFingerprint(signal, { accountId });
+  signal.setupFingerprint = setup.fingerprint;
+
+  const persistentSetup = await checkPersistentSetupEligibility({
+    client,
+    accountId,
+    fingerprint: setup.fingerprint,
+  });
+  if (!persistentSetup.allowed) {
+    return blocked(\`Persistent setup lock rejected: \${persistentSetup.reason}\`);
+  }
+
+  const executionReservation = acquireExecutionReservation({
+    accountId,
+    fingerprint: setup.fingerprint,
+  });
+  if (!executionReservation.allowed) {
