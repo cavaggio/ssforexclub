@@ -1,0 +1,12 @@
+.2 },
+    v3: bullishV3({ score: 62, earlyTrigger: false }),
+    minRR: 1.5,
+  });
+  assert.ok(candidate);
+  assert.equal(candidate.confidence, candidate.entryQualityConfidence);
+  assert.equal(candidate.tpConfidencePolicy, 'diagnostic_only_not_entry_confirmation');
+});
+`;
+write('server/v3IndependentScanner.test.js', independentTest);
+
+console.log('Production risk hardening patch applied.');
