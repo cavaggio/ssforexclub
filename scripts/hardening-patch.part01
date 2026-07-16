@@ -1,0 +1,257 @@
+us || null,
+      pendingSweep: sweep.pending,
+      opposingFlow: flow.opposed,
+      flowDirection: flow.flowDirection,
+      range,
+      tpConfidencePolicy: 'diagnostic_only_not_entry_confirmation',
+    },
+  };
+}
+
+function stableTimestamp(value) {
+  const ms = Date.parse(value || '');
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function nyDay(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+export function buildSetupFingerprint(signal = {}, { accountId = null, now = new Date() } = {}) {
+  const v3 = extractV3(signal);
+  const direction = normalizeDirection(signal?.direction || v3?.direction || v3?.signal);
+  const structure = v3?.structure || signal?.structure || {};
+  const sweep = extractSweep(signal);
+  const range = rangeContext(signal);
+  const session = firstValue(
+    signal?.session?.name,
+    signal?.session,
+    v3?.sessionNarrative?.session,
+    v3?.session?.name,
+    signal?.concepts?.killzone,
+    'unknown',
+  );
+
+  const structureEvent = firstValue(
+    structure?.choch?.id,
+    structure?.choch?.time,
+    structure?.choch?.timestamp,
+    structure?.choch?.price,
+    structure?.bos?.id,
+    structure?.bos?.time,
+    structure?.bos?.timestamp,
+    structure?.bos?.price,
+    signal?.structureEventId,
+    signal?.signalId,
+  );
+  const sweepEvent = firstValue(
+    sweep?.id,
+    sweep?.time,
+    sweep?.timestamp,
+    sweep?.price,
+    sweep?.source,
+  );
+  const triggerTime = stableTimestamp(firstValue(
+    signal?.entryTiming?.retest?.time,
+    signal?.entryTiming?.retest?.timestamp,
+    signal?.entryTiming?.triggerCandle?.time,
+    signal?.entryTiming?.breakoutCandle?.time,
+    structure?.choch?.time,
+    structure?.bos?.time,
+    sweep?.time,
+  ));
+
+  const components = {
+    accountId: String(accountId || signal?.accountId || 'unknown'),
+    pair: String(signal?.pair || signal?.instrument || v3?.pair || '').toUpperCase(),
+    direction,
+    tradingDay: nyDay(triggerTime || signal?.generatedAt || signal?.scannedAt || now),
+    session: String(session),
+    rangeHigh: range.high,
+    rangeLow: range.low,
+    structureEvent: structureEvent || null,
+    sweepEvent: sweepEvent || null,
+    triggerTime,
+    structureTrend: structure?.structureTrend || null,
+  };
+
+  const canonical = JSON.stringify(components, Object.keys(components).sort());
+  const fingerprint = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+  return {
+    fingerprint,
+    clientId: \`ss_\${fingerprint}\`,
+    components,
+  };
+}
+
+function extensionId(item = {}) {
+  return (
+    item?.clientExtensions?.id ||
+    item?.tradeClientExtensions?.id ||
+    item?.orderClientExtensions?.id ||
+    item?.clientOrderID ||
+    null
+  );
+}
+
+async function clientGet(client, pathName) {
+  if (typeof client?.get === 'function') {
+    const response = await client.get(pathName);
+    return response?.data ?? response;
+  }
+  if (typeof client?.request === 'function') {
+    const response = await client.request({ method: 'GET', url: pathName, path: pathName });
+    return response?.data ?? response;
+  }
+  throw new Error('OANDA client does not support broker persistence queries');
+}
+
+export async function checkPersistentSetupEligibility({
+  client,
+  accountId,
+  fingerprint,
+} = {}) {
+  if (!client || !accountId || !fingerprint) {
+    return { allowed: false, reason: 'missing broker persistence inputs' };
+  }
+
+  const clientId = \`ss_\${fingerprint}\`;
+  try {
+    const [openPayload, closedPayload, pendingPayload] = await Promise.all([
+      clientGet(client, \`/v3/accounts/\${accountId}/trades?state=OPEN\`),
+      clientGet(client, \`/v3/accounts/\${accountId}/trades?state=CLOSED&count=100\`),
+      clientGet(client, \`/v3/accounts/\${accountId}/pendingOrders\`),
+    ]);
+
+    const openTrades = Array.isArray(openPayload?.trades) ? openPayload.trades : [];
+    const closedTrades = Array.isArray(closedPayload?.trades) ? closedPayload.trades : [];
+    const pendingOrders = Array.isArray(pendingPayload?.orders) ? pendingPayload.orders : [];
+
+    if (openTrades.some((trade) => extensionId(trade) === clientId)) {
+      return { allowed: false, reason: 'same setup fingerprint already has an open trade', clientId };
+    }
+    if (pendingOrders.some((order) => extensionId(order) === clientId)) {
+      return { allowed: false, reason: 'same setup fingerprint already has a pending order', clientId };
+    }
+
+    const priorLoss = closedTrades.find((trade) =>
+      extensionId(trade) === clientId &&
+      Number(trade?.realizedPL ?? trade?.pl ?? 0) < 0
+    );
+    if (priorLoss) {
+      return {
+        allowed: false,
+        reason: 'same setup fingerprint previously closed at a loss; a new structural event is required',
+        clientId,
+        priorTradeId: priorLoss.id || null,
+      };
+    }
+
+    return { allowed: true, clientId };
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: \`unable to verify persistent setup lock: \${error.message}\`,
+      clientId,
+    };
+  }
+}
+
+function cleanReservations(nowMs = Date.now()) {
+  for (const [key, item] of executionReservations.entries()) {
+    if (!item || item.expiresAt <= nowMs) executionReservations.delete(key);
+  }
+}
+
+export function acquireExecutionReservation({
+  accountId,
+  fingerprint,
+  ttlMs = 120000,
+} = {}) {
+  cleanReservations();
+  const key = \`\${accountId || 'unknown'}:\${fingerprint || 'missing'}\`;
+  if (!fingerprint) return { allowed: false, reason: 'missing setup fingerprint' };
+  if (executionReservations.has(key)) {
+    return { allowed: false, reason: 'same setup is already reserved by another execution request', key };
+  }
+  const token = randomUUID();
+  executionReservations.set(key, { token, expiresAt: Date.now() + ttlMs });
+  return { allowed: true, key, token };
+}
+
+export function releaseExecutionReservation(reservation) {
+  const key = reservation?.key;
+  const token = reservation?.token;
+  const current = key ? executionReservations.get(key) : null;
+  if (current && current.token === token) executionReservations.delete(key);
+}
+
+export function attachSetupClientExtensions(orderPayload, fingerprint) {
+  const clientId = \`ss_\${fingerprint}\`;
+  if (!orderPayload?.order) throw new Error('order payload is missing order');
+  orderPayload.order.clientExtensions = {
+    id: clientId,
+    tag: 'signal_stack',
+    comment: \`setup:\${fingerprint}\`,
+  };
+  orderPayload.order.tradeClientExtensions = {
+    id: clientId,
+    tag: 'signal_stack',
+    comment: \`setup:\${fingerprint}\`,
+  };
+  return orderPayload;
+}
+
+export const _test = {
+  rangeContext,
+  timingStatus,
+  opposingFlow,
+  sweepStatus,
+};
+`);
+
+// ---------------------------------------------------------------------------
+// Central risk manager: one source of truth + projected risk reservation
+// ---------------------------------------------------------------------------
+let risk = read('server/riskManager.js');
+risk = mustReplace(
+  risk,
+  " *   1. Dynamic risk per trade — HARD cap at RISK_MAX_PER_TRADE_PERCENT (1.4%).",
+  " *   1. Dynamic risk per trade — HARD cap at 1.25%.",
+  'risk docs per-trade',
+);
+risk = mustReplace(
+  risk,
+  " *      (2.8%) of the day's starting balance. When hit, new entries are locked",
+  " *      (2.5%) of the day's starting balance. New orders reserve realized + open + candidate risk",
+  'risk docs daily',
+);
+risk = mustReplace(
+  risk,
+  "export const MARGIN_RESTRICTION_MESSAGE = 'Account margin restriction would be exceeded.';",
+  `export const MARGIN_RESTRICTION_MESSAGE = 'Account margin restriction would be exceeded.';
+export const MAX_RISK_PER_TRADE_PERCENT = 1.25;
+export const DAILY_MAX_LOSS_PERCENT = 2.5;
+
+const projectedRiskReservations = new Map();`,
+  'risk constants',
+);
+risk = mustReplace(
+  risk,
+  `    maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.4'),
+    dailyMaxDrawdownPercent: parseFloat(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT || '2.8'),`,
+  `    maxRiskPerTradePercent: MAX_RISK_PER_TRADE_PERCENT,
+    dailyMaxDrawdownPercent: DAILY_MAX_LOSS_PERCENT,`,
+  'risk config constants',
+);
+
+const riskFunctions = `
+function cleanupProjectedRiskReservations(nowMs = Date.now()) {
+  for (const [token, reservation] of projectedRiskReservations.entries()) {
+    if (!reservation || reservation.expiresAt <= nowMs) projectedRiskR
