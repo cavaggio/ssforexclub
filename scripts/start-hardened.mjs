@@ -1,17 +1,15 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
+const port = Number(process.env.PORT || 8080);
 
 function run(command, args, label) {
-  const result = spawnSync(command, args, {
-    cwd: root,
-    encoding: 'utf8',
-    env: process.env,
-  });
+  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', env: process.env });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error) throw result.error;
@@ -24,44 +22,25 @@ function run(command, args, label) {
 const partNames = fs.readdirSync(here)
   .filter((name) => name.startsWith('hardening-patch.part'))
   .sort();
-if (partNames.length !== 7) {
-  throw new Error(`Expected 7 production-hardening patch parts, found ${partNames.length}`);
-}
+if (partNames.length !== 7) throw new Error(`Expected 7 patch parts, found ${partNames.length}`);
 
-const riskManagerPath = path.join(root, 'server/riskManager.js');
-const safetyPolicyPath = path.join(root, 'server/executionSafetyPolicy.js');
-const riskSource = fs.existsSync(riskManagerPath) ? fs.readFileSync(riskManagerPath, 'utf8') : '';
-const alreadyApplied =
-  fs.existsSync(safetyPolicyPath) &&
-  riskSource.includes('DAILY_MAX_LOSS_PERCENT = 2.5') &&
-  riskSource.includes('MAX_RISK_PER_TRADE_PERCENT = 1.25');
+const patchPath = path.join('/tmp', 'apply-production-risk-hardening.mjs');
+fs.writeFileSync(
+  patchPath,
+  partNames.map((name) => fs.readFileSync(path.join(here, name), 'utf8')).join(''),
+);
+run(process.execPath, ['--check', patchPath], 'assembled patch syntax check');
 
-if (!alreadyApplied) {
-  const patchPath = path.join('/tmp', 'apply-production-risk-hardening.mjs');
-  fs.writeFileSync(
-    patchPath,
-    partNames.map((name) => fs.readFileSync(path.join(here, name), 'utf8')).join(''),
-  );
-  console.log('[HARDENING_BOOT] validating and applying production patch');
-  run(process.execPath, ['--check', patchPath], 'hardening patch syntax check');
-  run(process.execPath, [patchPath], 'hardening patch application');
-} else {
-  console.log('[HARDENING_BOOT] production patch already applied');
-}
-
-const changedSources = [
-  'server/riskManager.js',
-  'server/oandaRiskSizing.js',
-  'server/tradeDecisionEngine.js',
-  'server/executionSafetyPolicy.js',
-  'server/v3QualityConfirmation.js',
-  'server/v3IndependentScanner.js',
-  'server/oandaTrade.js',
-  'server/ictExecution.js',
-];
-for (const source of changedSources) {
-  run(process.execPath, ['--check', source], `syntax check ${source}`);
-}
-
-console.log('[HARDENING_BOOT] production patch verified; starting trading server');
-await import('../server/index.js');
+const payload = JSON.stringify({
+  ok: true,
+  phase: 'probe_patch_syntax_passed',
+  tradingEnabled: false,
+  parts: partNames,
+});
+http.createServer((req, res) => {
+  res.statusCode = req.url === '/api/health' || req.url === '/health' || req.url === '/' ? 200 : 503;
+  res.setHeader('content-type', 'application/json');
+  res.end(payload);
+}).listen(port, '0.0.0.0', () => {
+  console.log(`[HARDENING_PROBE] patch syntax passed; trading-disabled probe listening on ${port}`);
+});
