@@ -1,0 +1,243 @@
+----------------------------
+// Tests
+// ---------------------------------------------------------------------------
+let riskTest = read('server/riskManager.test.js');
+riskTest = riskTest
+  .replaceAll('1.4%', '1.25%')
+  .replaceAll('2.8%', '2.5%')
+  .replaceAll('1.4);', '1.25);')
+  .replaceAll('2.8);', '2.5);')
+  .replaceAll('computeRiskBudgetUSD(10000), 140', 'computeRiskBudgetUSD(10000), 125')
+  .replaceAll('actualDollarRisk: 140', 'actualDollarRisk: 125')
+  .replaceAll('lossLimit, 280', 'lossLimit, 250')
+  .replaceAll('dailyLossLimitUSD, 280', 'dailyLossLimitUSD, 250')
+  .replaceAll('/exceeds hard cap 1\\\\.4%/', '/exceeds hard cap 1\\\\.25%/');
+riskTest = mustReplace(
+  riskTest,
+  `  checkDailyRiskLock,
+  resetDailyRisk,`,
+  `  checkDailyRiskLock,
+  previewProjectedRiskBudget,
+  reserveProjectedRiskBudget,
+  releaseProjectedRiskReservation,
+  resetDailyRisk,`,
+  'risk test imports',
+);
+riskTest += `
+
+test('projected daily risk caps a third trade to the remaining 2.5% budget', () => {
+  resetDailyRisk();
+  const accountId = 'ACC-JULY-16';
+  checkDailyRiskLock({ accountId, balanceUSD: 100000, now: NOW });
+  const result = previewProjectedRiskBudget({
+    accountId,
+    balanceUSD: 97823.7766,
+    openRiskUSD: 0,
+    requestedRiskUSD: 1250,
+    now: NOW,
+  });
+  assert.equal(result.dailyLossLimitUSD, 2500);
+  assert.equal(result.realizedLossUSD, 2176.22);
+  assert.equal(result.approvedRiskUSD, 323.78);
+  assert.equal(result.projectedLossUSD, 2500);
+  assert.equal(result.capped, true);
+});
+
+test('open stop risk is included before candidate risk', () => {
+  resetDailyRisk();
+  const accountId = 'ACC-OPEN-RISK';
+  checkDailyRiskLock({ accountId, balanceUSD: 100000, now: NOW });
+  const result = previewProjectedRiskBudget({
+    accountId,
+    balanceUSD: 99000,
+    openRiskUSD: 1000,
+    requestedRiskUSD: 1250,
+    now: NOW,
+  });
+  assert.equal(result.realizedLossUSD, 1000);
+  assert.equal(result.openRiskUSD, 1000);
+  assert.equal(result.approvedRiskUSD, 500);
+  assert.equal(result.projectedLossUSD, 2500);
+});
+
+test('atomic projected-risk reservation prevents overlapping requests exceeding the cap', () => {
+  resetDailyRisk();
+  const accountId = 'ACC-RESERVE';
+  checkDailyRiskLock({ accountId, balanceUSD: 100000, now: NOW });
+  const first = reserveProjectedRiskBudget({
+    accountId,
+    balanceUSD: 99000,
+    openRiskUSD: 0,
+    requestedRiskUSD: 1250,
+    now: NOW,
+  });
+  assert.equal(first.allowed, true);
+  const second = reserveProjectedRiskBudget({
+    accountId,
+    balanceUSD: 99000,
+    openRiskUSD: 0,
+    requestedRiskUSD: 1250,
+    now: NOW,
+  });
+  assert.equal(second.allowed, false);
+  releaseProjectedRiskReservation(first.token);
+});
+`;
+write('server/riskManager.test.js', riskTest);
+
+write('server/executionSafetyPolicy.test.js', `import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  evaluateHardEntryPolicy,
+  buildSetupFingerprint,
+  acquireExecutionReservation,
+  releaseExecutionReservation,
+  attachSetupClientExtensions,
+} from './executionSafetyPolicy.js';
+
+function baseSignal() {
+  return {
+    pair: 'EUR_USD',
+    direction: 'long',
+    session: 'NewYork',
+    generatedAt: '2026-07-16T12:00:00Z',
+    entryTiming: { status: 'valid_entry', retestDetected: true },
+    v3: {
+      direction: 'long',
+      structure: {
+        structureTrend: 'bullish',
+        bosDetected: true,
+        bos: { id: 'bos-1', direction: 'bullish', time: '2026-07-16T11:45:00Z' },
+      },
+      liquidity: {},
+    },
+  };
+}
+
+test('too_early, late_entry and wait_for_retest are hard blocks', () => {
+  for (const status of ['too_early', 'late_entry', 'wait_for_retest']) {
+    const signal = baseSignal();
+    signal.entryTiming.status = status;
+    assert.equal(evaluateHardEntryPolicy(signal).allowed, false);
+  }
+});
+
+test('opposing institutional flow is a hard block for every engine', () => {
+  const signal = baseSignal();
+  signal.institutionalFlow = { detected: true, direction: 'bearish' };
+  const result = evaluateHardEntryPolicy(signal);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join(' '), /opposes/);
+});
+
+test('pending sweep is a hard block', () => {
+  const signal = baseSignal();
+  signal.v3.liquidity = {
+    liquiditySweepDetected: true,
+    liquiditySweep: { pending: true, subtype: 'pending_sweep', direction: 'bullish' },
+  };
+  assert.equal(evaluateHardEntryPolicy(signal).allowed, false);
+});
+
+test('ranging market requires close outside range and successful retest', () => {
+  const signal = baseSignal();
+  signal.v3.structure.structureTrend = 'ranging';
+  signal.v3.structure.rangeHigh = 1.101;
+  signal.v3.structure.rangeLow = 1.099;
+  signal.entryTiming.retestDetected = false;
+  const rejected = evaluateHardEntryPolicy(signal);
+  assert.equal(rejected.allowed, false);
+
+  signal.entryTiming.breakoutConfirmed = true;
+  signal.entryTiming.breakoutCandle = { close: 1.1012 };
+  signal.entryTiming.retestDetected = true;
+  signal.entryTiming.status = 'valid_entry';
+  assert.equal(evaluateHardEntryPolicy(signal).allowed, true);
+});
+
+test('same structural event produces same persistent fingerprint; new event changes it', () => {
+  const signal = baseSignal();
+  const a = buildSetupFingerprint(signal, { accountId: 'ACC' });
+  const b = buildSetupFingerprint({ ...signal }, { accountId: 'ACC' });
+  assert.equal(a.fingerprint, b.fingerprint);
+
+  const changed = structuredClone(signal);
+  changed.v3.structure.bos.id = 'bos-2';
+  const c = buildSetupFingerprint(changed, { accountId: 'ACC' });
+  assert.notEqual(a.fingerprint, c.fingerprint);
+});
+
+test('atomic setup reservation blocks overlapping execution attempts', () => {
+  const first = acquireExecutionReservation({ accountId: 'ACC', fingerprint: 'abc' });
+  assert.equal(first.allowed, true);
+  const second = acquireExecutionReservation({ accountId: 'ACC', fingerprint: 'abc' });
+  assert.equal(second.allowed, false);
+  releaseExecutionReservation(first);
+});
+
+test('broker client extensions carry the persistent setup id', () => {
+  const payload = { order: { type: 'MARKET' } };
+  attachSetupClientExtensions(payload, 'abc123');
+  assert.equal(payload.order.clientExtensions.id, 'ss_abc123');
+  assert.equal(payload.order.tradeClientExtensions.id, 'ss_abc123');
+});
+`);
+
+let qualityTest = read('server/v3QualityConfirmation.test.js');
+qualityTest = mustReplace(
+  qualityTest,
+  `test('Stage 1 accepts a valid setup for watch state', () => {`,
+  `test('Stage 1 accepts a valid setup for watch state', () => {`,
+  'quality test anchor',
+);
+qualityTest += `
+
+test('Stage 1 treats TP-hit confidence as diagnostic only', () => {
+  const signal = baseSignal();
+  signal.tpHitConfidence = 10;
+  const result = evaluateV3SetupStage(signal);
+  assert.equal(result.allowed, true, result.reasons.join('; '));
+  assert.equal(result.metrics.tpConfidencePolicy, 'diagnostic_only_not_entry_confirmation');
+  assert.doesNotMatch(result.reasons.join(' '), /TP-hit confidence/);
+});
+
+test('Stage 2 universally blocks too_early timing', () => {
+  const signal = baseSignal();
+  signal.entryTiming = { status: 'too_early', retestDetected: false };
+  const result = evaluateV3TriggerStage(signal);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join(' '), /too_early/);
+});
+
+test('Stage 2 blocks an internal BOS while the market is still ranging', () => {
+  const signal = baseSignal();
+  signal.v3.structure.structureTrend = 'ranging';
+  signal.v3.structure.rangeHigh = 1.101;
+  signal.v3.structure.rangeLow = 1.099;
+  const result = evaluateV3TriggerStage(signal);
+  assert.equal(result.allowed, false);
+  assert.match(result.reasons.join(' '), /ranging market/);
+});
+
+test('Stage 3 does not use TP-hit confidence as an entry confirmation', () => {
+  const signal = baseSignal();
+  signal.tpHitConfidence = 1;
+  const result = evaluateV3FreshExecutionStage(signal, {
+    currentPrice: 1.10005,
+    currentSpreadPips: 1.1,
+    maxSpreadPips: 3.5,
+    now: new Date(),
+  });
+  assert.doesNotMatch(result.reasons.join(' '), /TP-hit confidence/);
+  assert.equal(result.metrics.tpConfidencePolicy, 'diagnostic_only_not_entry_confirmation');
+});
+`;
+write('server/v3QualityConfirmation.test.js', qualityTest);
+
+let independentTest = read('server/v3IndependentScanner.test.js');
+independentTest += `
+
+test('candidate keeps entry-quality confidence separate from TP-hit confidence', () => {
+  const candidate = buildIndependentV3Candidate({
+    pair: 'AUD_CAD',
+    pricing: { mid: 1.1, spreadPips: 1
