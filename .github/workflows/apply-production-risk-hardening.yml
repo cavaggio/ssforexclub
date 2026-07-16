@@ -3,6 +3,7 @@ name: Apply production risk hardening
 on:
   push:
     branches:
+      - main
       - agent/production-risk-hardening
     paths:
       - 'scripts/hardening-patch.part*'
@@ -19,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: agent/production-risk-hardening
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
@@ -68,4 +69,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add server
           git commit -m "Harden execution risk and entry controls [risk-hardening-applied]"
-          git push origin agent/production-risk-hardening
+          git push origin HEAD:${GITHUB_REF_NAME}
