@@ -23,176 +23,176 @@ TAP version 13
 # Subtest: paper Auto AI can run without the live-trading acknowledgement
 ok 1 - paper Auto AI can run without the live-trading acknowledgement
   ---
-  duration_ms: 1.425397
+  duration_ms: 0.889162
   type: 'test'
   ...
 # Subtest: paper Auto AI can run without PLATFORM_LIVE_TRADING_ENABLED
 ok 2 - paper Auto AI can run without PLATFORM_LIVE_TRADING_ENABLED
   ---
-  duration_ms: 0.299881
+  duration_ms: 0.208771
   type: 'test'
   ...
 # Subtest: paper Auto AI still requires ready broker credentials
 ok 3 - paper Auto AI still requires ready broker credentials
   ---
-  duration_ms: 0.258845
+  duration_ms: 0.166628
   type: 'test'
   ...
 # Subtest: live Auto AI requires both the platform flag and the live acknowledgement
 ok 4 - live Auto AI requires both the platform flag and the live acknowledgement
   ---
-  duration_ms: 1.372237
+  duration_ms: 1.428726
   type: 'test'
   ...
 # Subtest: paper manual execute button appears for a qualified paper signal
 ok 5 - paper manual execute button appears for a qualified paper signal
   ---
-  duration_ms: 0.445523
+  duration_ms: 0.276651
   type: 'test'
   ...
 # Subtest: live manual execution still requires platform flag and live-ack
 ok 6 - live manual execution still requires platform flag and live-ack
   ---
-  duration_ms: 0.231984
+  duration_ms: 0.166298
   type: 'test'
   ...
 # Subtest: executable environments are live, practice, and paper
 ok 7 - executable environments are live, practice, and paper
   ---
-  duration_ms: 0.325158
+  duration_ms: 0.252055
   type: 'test'
   ...
 # Subtest: default total open risk cap is 4.5%
 ok 8 - default total open risk cap is 4.5%
   ---
-  duration_ms: 0.966498
+  duration_ms: 1.013458
   type: 'test'
   ...
 # Subtest: total open risk of exactly 4.5% is allowed
 ok 9 - total open risk of exactly 4.5% is allowed
   ---
-  duration_ms: 0.223909
+  duration_ms: 0.234418
   type: 'test'
   ...
 # Subtest: total open risk above 4.5% is rejected
 ok 10 - total open risk above 4.5% is rejected
   ---
-  duration_ms: 0.345647
+  duration_ms: 0.307347
   type: 'test'
   ...
 # Subtest: checkMargin is re-exported from the central risk manager
 ok 11 - checkMargin is re-exported from the central risk manager
   ---
-  duration_ms: 0.214541
+  duration_ms: 0.20811
   type: 'test'
   ...
 # Subtest: open risk is derived from units × stop distance (exact for USD-quoted)
 ok 12 - open risk is derived from units × stop distance (exact for USD-quoted)
   ---
-  duration_ms: 0.274133
+  duration_ms: 0.274388
   type: 'test'
   ...
 # Subtest: open trades with no stop contribute zero quantifiable risk
 ok 13 - open trades with no stop contribute zero quantifiable risk
   ---
-  duration_ms: 0.153838
+  duration_ms: 0.159197
   type: 'test'
   ...
 # Subtest: engine select: disabled toggle → null (nothing runs)
 ok 14 - engine select: disabled toggle → null (nothing runs)
   ---
-  duration_ms: 1.402564
+  duration_ms: 1.983891
   type: 'test'
   ...
 # Subtest: engine select: enabled → exactly one engine
 ok 15 - engine select: enabled → exactly one engine
   ---
-  duration_ms: 0.219661
+  duration_ms: 0.142382
   type: 'test'
   ...
 # Subtest: engine select: missing/invalid engine defaults safely to ict; missing toggle → off
 ok 16 - engine select: missing/invalid engine defaults safely to ict; missing toggle → off
   ---
-  duration_ms: 0.267691
+  duration_ms: 0.131265
   type: 'test'
   ...
 # Subtest: routing: ICT selected calls ONLY the ICT path
 ok 17 - routing: ICT selected calls ONLY the ICT path
   ---
-  duration_ms: 1.331431
+  duration_ms: 0.847891
   type: 'test'
   ...
 # Subtest: routing: V3 selected calls ONLY the V3 path
 ok 18 - routing: V3 selected calls ONLY the V3 path
   ---
-  duration_ms: 0.325008
+  duration_ms: 0.207619
   type: 'test'
   ...
 # Subtest: routing: never runs both engines in one call
 ok 19 - routing: never runs both engines in one call
   ---
-  duration_ms: 0.381254
+  duration_ms: 0.275429
   type: 'test'
   ...
 # Subtest: high-impact news within window blocks the pair (either currency)
 ok 20 - high-impact news within window blocks the pair (either currency)
   ---
-  duration_ms: 1.561421
+  duration_ms: 1.089871
   type: 'test'
   ...
 # Subtest: medium-impact news adds caution only (no block)
 ok 21 - medium-impact news adds caution only (no block)
   ---
-  duration_ms: 0.441045
+  duration_ms: 0.278825
   type: 'test'
   ...
 # Subtest: outside the window there is no block or caution
 ok 22 - outside the window there is no block or caution
   ---
-  duration_ms: 1.311223
+  duration_ms: 1.402657
   type: 'test'
   ...
 # Subtest: pair currency filter — USD event does not affect a non-USD pair
 ok 23 - pair currency filter — USD event does not affect a non-USD pair
   ---
-  duration_ms: 0.355946
+  duration_ms: 0.257884
   type: 'test'
   ...
 # Subtest: disabled filter never blocks
 ok 24 - disabled filter never blocks
   ---
-  duration_ms: 0.246712
+  duration_ms: 0.184645
   type: 'test'
   ...
 # [TRADOVATE AUTH] host=demo.tradovateapi.com mode=sim tokenReceived=no
 # Subtest: NinjaTrader client object and order result never expose the secret
 ok 25 - NinjaTrader client object and order result never expose the secret
   ---
-  duration_ms: 4.899045
+  duration_ms: 2.582231
   type: 'test'
   ...
 # Subtest: Topstep client object and account result never expose the apiKey
 ok 26 - Topstep client object and account result never expose the apiKey
   ---
-  duration_ms: 1.1275
+  duration_ms: 0.723877
   type: 'test'
   ...
 # Subtest: futures symbols are recognized, forex pairs are not
 ok 27 - futures symbols are recognized, forex pairs are not
   ---
-  duration_ms: 0.939377
+  duration_ms: 0.795574
   type: 'test'
   ...
 # Subtest: contract metadata is available for sizing
 ok 28 - contract metadata is available for sizing
   ---
-  duration_ms: 0.264154
+  duration_ms: 0.210753
   type: 'test'
   ...
 # Subtest: toProviderSymbol maps known roots and rejects unknown / non-futures providers
 ok 29 - toProviderSymbol maps known roots and rejects unknown / non-futures providers
   ---
-  duration_ms: 0.666006
+  duration_ms: 0.495437
   type: 'test'
   ...
 # [TEST][FULL] near=EUR_USD hot=EUR_CHF
@@ -201,91 +201,91 @@ ok 29 - toProviderSymbol maps known roots and rejects unknown / non-futures prov
 # Subtest: auto-AI window: NY weekday 02:15–14:00 ET is open
 ok 30 - auto-AI window: NY weekday 02:15–14:00 ET is open
   ---
-  duration_ms: 2.429495
+  duration_ms: 1.892304
   type: 'test'
   ...
 # Subtest: auto-AI window: before 02:15 / at-or-after 14:00 ET is closed
 ok 31 - auto-AI window: before 02:15 / at-or-after 14:00 ET is closed
   ---
-  duration_ms: 0.377337
+  duration_ms: 0.210623
   type: 'test'
   ...
 # Subtest: auto-AI window: weekends are closed even mid-window
 ok 32 - auto-AI window: weekends are closed even mid-window
   ---
-  duration_ms: 0.251431
+  duration_ms: 0.162362
   type: 'test'
   ...
 # Subtest: auto-AI scheduler intervals default to staged cadence
 ok 33 - auto-AI scheduler intervals default to staged cadence
   ---
-  duration_ms: 0.274413
+  duration_ms: 0.144876
   type: 'test'
   ...
 # Subtest: near recheck cannot erase unrelated hot-watch pairs
 ok 34 - near recheck cannot erase unrelated hot-watch pairs
   ---
-  duration_ms: 2.436749
+  duration_ms: 1.361575
   type: 'test'
   ...
 # Subtest: hot-watch response removes only the hot pairs it actually rescanned
 ok 35 - hot-watch response removes only the hot pairs it actually rescanned
   ---
-  duration_ms: 0.407513
+  duration_ms: 0.269901
   type: 'test'
   ...
 # Subtest: FVG: detects a fresh bullish 3-candle gap (status open)
 ok 36 - FVG: detects a fresh bullish 3-candle gap (status open)
   ---
-  duration_ms: 1.688559
+  duration_ms: 1.611417
   type: 'test'
   ...
 # Subtest: FVG: a later candle that trades through the gap marks it filled
 ok 37 - FVG: a later candle that trades through the gap marks it filled
   ---
-  duration_ms: 0.328805
+  duration_ms: 0.309911
   type: 'test'
   ...
 # Subtest: Displacement: large directional body breaking structure scores bullish
 ok 38 - Displacement: large directional body breaking structure scores bullish
   ---
-  duration_ms: 0.496128
+  duration_ms: 0.407286
   type: 'test'
   ...
 # Subtest: Order block: last down candle before a bullish displacement
 ok 39 - Order block: last down candle before a bullish displacement
   ---
-  duration_ms: 0.436166
+  duration_ms: 0.414306
   type: 'test'
   ...
 # Subtest: MSS: sweep of sell-side then break of swing high = bullish MSS
 ok 40 - MSS: sweep of sell-side then break of swing high = bullish MSS
   ---
-  duration_ms: 0.519772
+  duration_ms: 0.485632
   type: 'test'
   ...
 # Subtest: Turtle Soup: sweep equal lows, reclaim, bullish displacement
 ok 41 - Turtle Soup: sweep equal lows, reclaim, bullish displacement
   ---
-  duration_ms: 0.340947
+  duration_ms: 0.317422
   type: 'test'
   ...
 # Subtest: Premium/Discount: zones relative to equilibrium
 ok 42 - Premium/Discount: zones relative to equilibrium
   ---
-  duration_ms: 0.373458
+  duration_ms: 0.304342
   type: 'test'
   ...
 # Subtest: OTE: 62–79% retracement zone for a long
 ok 43 - OTE: 62–79% retracement zone for a long
   ---
-  duration_ms: 0.263894
+  duration_ms: 0.261459
   type: 'test'
   ...
 # Subtest: Liquidity map: classifies buy/sell-side, adds previous-month + round numbers
 ok 44 - Liquidity map: classifies buy/sell-side, adds previous-month + round numbers
   ---
-  duration_ms: 0.8231
+  duration_ms: 0.695024
   type: 'test'
   ...
 # [ICT] EUR_USD mode=shadow autoTrade=false independentFromV3=true | dailyBias=bullish h4Bias=bullish aligned=true | 5M=confirmed signal=buy
@@ -298,61 +298,61 @@ ok 44 - Liquidity map: classifies buy/sell-side, adds previous-month + round num
 # Subtest: killzones: ET windows are detected DST-aware
 ok 45 - killzones: ET windows are detected DST-aware
   ---
-  duration_ms: 2.549189
+  duration_ms: 1.282228
   type: 'test'
   ...
 # Subtest: silver bullet + macro windows
 ok 46 - silver bullet + macro windows
   ---
-  duration_ms: 0.583672
+  duration_ms: 0.358634
   type: 'test'
   ...
 # Subtest: engine: returns the exact response object shape
 ok 47 - engine: returns the exact response object shape
   ---
-  duration_ms: 19.05117
+  duration_ms: 8.489132
   type: 'test'
   ...
 # Subtest: refactor: only hard gates reject — soft concepts never appear as hard rejections
 ok 48 - refactor: only hard gates reject — soft concepts never appear as hard rejections
   ---
-  duration_ms: 8.654911
+  duration_ms: 3.891659
   type: 'test'
   ...
 # Subtest: refactor: confidence scoring — hard-gate base clears 70, full confluence clears 80
 ok 49 - refactor: confidence scoring — hard-gate base clears 70, full confluence clears 80
   ---
-  duration_ms: 0.327452
+  duration_ms: 0.20179
   type: 'test'
   ...
 # Subtest: engine: silver-bullet window flag is reflected in concepts
 ok 50 - engine: silver-bullet window flag is reflected in concepts
   ---
-  duration_ms: 18.425261
+  duration_ms: 7.525254
   type: 'test'
   ...
 # Subtest: engine: degrades safely on insufficient data
 ok 51 - engine: degrades safely on insufficient data
   ---
-  duration_ms: 3.58678
+  duration_ms: 0.325163
   type: 'test'
   ...
 # Subtest: timeframe: Daily and 4H must agree directionally
 ok 52 - timeframe: Daily and 4H must agree directionally
   ---
-  duration_ms: 6.915036
+  duration_ms: 3.569876
   type: 'test'
   ...
 # Subtest: timeframe: 5M cannot override a Daily/4H mismatch
 ok 53 - timeframe: 5M cannot override a Daily/4H mismatch
   ---
-  duration_ms: 8.48869
+  duration_ms: 4.475197
   type: 'test'
   ...
 # Subtest: candle strength is never a hard rejection in ICT
 ok 54 - candle strength is never a hard rejection in ICT
   ---
-  duration_ms: 7.488789
+  duration_ms: 2.699195
   type: 'test'
   ...
 # [ICT_TRADE] requested pair=EUR_USD dir=long entry=1.1 sl=1.098 tp=1.104 id=EUR_USD:1780585170000 env=live
@@ -367,19 +367,19 @@ ok 54 - candle strength is never a hard rejection in ICT
 # Subtest: shadow mode blocks execution
 ok 55 - shadow mode blocks execution
   ---
-  duration_ms: 4.085202
+  duration_ms: 2.897099
   type: 'test'
   ...
 # Subtest: auto-trade disabled blocks execution
 ok 56 - auto-trade disabled blocks execution
   ---
-  duration_ms: 0.752688
+  duration_ms: 0.505552
   type: 'test'
   ...
 # Subtest: stale signal is rejected
 not ok 57 - stale signal is rejected
   ---
-  duration_ms: 2.257112
+  duration_ms: 1.524487
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecution.test.js:54:1'
   failureType: 'testCodeFailure'
@@ -401,19 +401,19 @@ not ok 57 - stale signal is rejected
 # Subtest: low confidence is rejected
 ok 58 - low confidence is rejected
   ---
-  duration_ms: 0.44932
+  duration_ms: 0.498882
   type: 'test'
   ...
 # Subtest: low RR is rejected
 ok 59 - low RR is rejected
   ---
-  duration_ms: 0.578012
+  duration_ms: 0.524009
   type: 'test'
   ...
 # Subtest: missing credentials is rejected
 not ok 60 - missing credentials is rejected
   ---
-  duration_ms: 0.67347
+  duration_ms: 0.613082
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecution.test.js:72:1'
   failureType: 'testCodeFailure'
@@ -435,7 +435,7 @@ not ok 60 - missing credentials is rejected
 # Subtest: duplicate open trade is rejected
 not ok 61 - duplicate open trade is rejected
   ---
-  duration_ms: 0.697495
+  duration_ms: 0.641695
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecution.test.js:78:1'
   failureType: 'testCodeFailure'
@@ -457,13 +457,13 @@ not ok 61 - duplicate open trade is rejected
 # Subtest: direction mismatch with the recomputed signal is rejected
 ok 62 - direction mismatch with the recomputed signal is rejected
   ---
-  duration_ms: 0.416319
+  duration_ms: 0.439573
   type: 'test'
   ...
 # Subtest: valid trade submits through the existing OANDA client
 not ok 63 - valid trade submits through the existing OANDA client
   ---
-  duration_ms: 1.690373
+  duration_ms: 1.387354
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecution.test.js:91:1'
   failureType: 'testCodeFailure'
@@ -501,7 +501,7 @@ not ok 63 - valid trade submits through the existing OANDA client
 # Subtest: paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION
 not ok 64 - paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION
   ---
-  duration_ms: 4.178466
+  duration_ms: 2.919042
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecutionPaper.test.js:49:1'
   failureType: 'testCodeFailure'
@@ -523,13 +523,13 @@ not ok 64 - paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION
 # Subtest: auto execution rejects confidence below the 85 threshold
 ok 65 - auto execution rejects confidence below the 85 threshold
   ---
-  duration_ms: 0.547304
+  duration_ms: 0.370331
   type: 'test'
   ...
 # Subtest: insufficient margin blocks the paper trade with the exact message
 not ok 66 - insufficient margin blocks the paper trade with the exact message
   ---
-  duration_ms: 0.83921
+  duration_ms: 0.639682
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecutionPaper.test.js:63:1'
   failureType: 'testCodeFailure'
@@ -553,7 +553,7 @@ not ok 66 - insufficient margin blocks the paper trade with the exact message
 # Subtest: total open Auto AI risk above 4.5% blocks a new trade
 not ok 67 - total open Auto AI risk above 4.5% blocks a new trade
   ---
-  duration_ms: 0.579003
+  duration_ms: 0.468827
   type: 'test'
   location: '/home/runner/work/ssforexclub/ssforexclub/server/ictExecutionPaper.test.js:70:1'
   failureType: 'testCodeFailure'
@@ -575,223 +575,223 @@ not ok 67 - total open Auto AI risk above 4.5% blocks a new trade
 # Subtest: ICT independence: ictEngine.js does not depend on V3
 ok 68 - ICT independence: ictEngine.js does not depend on V3
   ---
-  duration_ms: 3.019529
+  duration_ms: 1.725587
   type: 'test'
   ...
 # Subtest: ICT independence: ictExecution.js does not depend on V3
 ok 69 - ICT independence: ictExecution.js does not depend on V3
   ---
-  duration_ms: 0.54038
+  duration_ms: 0.216622
   type: 'test'
   ...
 # Subtest: ICT independence: ictConcepts.js does not depend on V3
 ok 70 - ICT independence: ictConcepts.js does not depend on V3
   ---
-  duration_ms: 0.598039
+  duration_ms: 0.26217
   type: 'test'
   ...
 # Subtest: ICT independence: ictSMT.js does not depend on V3
 ok 71 - ICT independence: ictSMT.js does not depend on V3
   ---
-  duration_ms: 0.242644
+  duration_ms: 0.110975
   type: 'test'
   ...
 # Subtest: ICT independence: ictTime.js does not depend on V3
 ok 72 - ICT independence: ictTime.js does not depend on V3
   ---
-  duration_ms: 0.341709
+  duration_ms: 0.16827
   type: 'test'
   ...
 # Subtest: ICT independence: ictLifecycleEngine.js does not depend on V3
 ok 73 - ICT independence: ictLifecycleEngine.js does not depend on V3
   ---
-  duration_ms: 0.325248
+  duration_ms: 0.160649
   type: 'test'
   ...
 # Subtest: ICT independence: ictAutoTrade.js does not depend on V3
 ok 74 - ICT independence: ictAutoTrade.js does not depend on V3
   ---
-  duration_ms: 0.406872
+  duration_ms: 0.184034
   type: 'test'
   ...
 # Subtest: ICT independence: ictAutoScheduler.js does not depend on V3
 ok 75 - ICT independence: ictAutoScheduler.js does not depend on V3
   ---
-  duration_ms: 0.302666
+  duration_ms: 0.126988
   type: 'test'
   ...
 # Subtest: estimateHoldMinutes: by setup, with killzone nudge and default fallback
 ok 76 - estimateHoldMinutes: by setup, with killzone nudge and default fallback
   ---
-  duration_ms: 1.551333
+  duration_ms: 0.850825
   type: 'test'
   ...
 # Subtest: lifecycle: within projected hold → always HOLD (no reassessment)
 ok 77 - lifecycle: within projected hold → always HOLD (no reassessment)
   ---
-  duration_ms: 0.43297
+  duration_ms: 1.356884
   type: 'test'
   ...
 # Subtest: lifecycle: past hold + ~75% to target → PARTIAL_CLOSE
 ok 78 - lifecycle: past hold + ~75% to target → PARTIAL_CLOSE
   ---
-  duration_ms: 0.185076
+  duration_ms: 0.192396
   type: 'test'
   ...
 # Subtest: lifecycle: past hold + ~50% to target → MOVE_BREAKEVEN
 ok 79 - lifecycle: past hold + ~50% to target → MOVE_BREAKEVEN
   ---
-  duration_ms: 0.207789
+  duration_ms: 0.175081
   type: 'test'
   ...
 # Subtest: lifecycle: past hold but inside 30-min cadence → HOLD
 ok 80 - lifecycle: past hold but inside 30-min cadence → HOLD
   ---
-  duration_ms: 0.426278
+  duration_ms: 0.312846
   type: 'test'
   ...
 # Subtest: lifecycle: well past hold with no progress → TIGHTEN_STOP
 ok 81 - lifecycle: well past hold with no progress → TIGHTEN_STOP
   ---
-  duration_ms: 0.24603
+  duration_ms: 0.155361
   type: 'test'
   ...
 # Subtest: liquidity engine: previous-day and previous-week pools
 ok 82 - liquidity engine: previous-day and previous-week pools
   ---
-  duration_ms: 2.595476
+  duration_ms: 2.40004
   type: 'test'
   ...
 # Subtest: liquidity engine: asian-session extremes
 ok 83 - liquidity engine: asian-session extremes
   ---
-  duration_ms: 0.44361
+  duration_ms: 0.405163
   type: 'test'
   ...
 # Subtest: liquidity engine: nearest above/below + distance
 ok 84 - liquidity engine: nearest above/below + distance
   ---
-  duration_ms: 0.291706
+  duration_ms: 0.297142
   type: 'test'
   ...
 # Subtest: liquidity engine: equal highs / lows clustering
 ok 85 - liquidity engine: equal highs / lows clustering
   ---
-  duration_ms: 1.068479
+  duration_ms: 1.059887
   type: 'test'
   ...
 # Subtest: liquidity engine: direction picks far-side target
 ok 86 - liquidity engine: direction picks far-side target
   ---
-  duration_ms: 0.508461
+  duration_ms: 0.482788
   type: 'test'
   ...
 # Subtest: liquidity engine: degrades gracefully with no data
 ok 87 - liquidity engine: degrades gracefully with no data
   ---
-  duration_ms: 0.671576
+  duration_ms: 0.651339
   type: 'test'
   ...
 # Subtest: liquidity engine: London session pools (V3.5)
 ok 88 - liquidity engine: London session pools (V3.5)
   ---
-  duration_ms: 0.43291
+  duration_ms: 0.390461
   type: 'test'
   ...
 # Subtest: liquidity engine: most-recent swing high / low pools (V3.5)
 ok 89 - liquidity engine: most-recent swing high / low pools (V3.5)
   ---
-  duration_ms: 0.664173
+  duration_ms: 0.71947
   type: 'test'
   ...
 # Subtest: liquidity engine: pool-aware sweep labels the swept level (V3.5)
 ok 90 - liquidity engine: pool-aware sweep labels the swept level (V3.5)
   ---
-  duration_ms: 0.579554
+  duration_ms: 0.653843
   type: 'test'
   ...
 # Subtest: liquidity intent: classifies resting stops above / below
 ok 91 - liquidity intent: classifies resting stops above / below
   ---
-  duration_ms: 2.087355
+  duration_ms: 1.474103
   type: 'test'
   ...
 # Subtest: liquidity intent: bias points to the heavier / closer liquidity (sell-side here)
 ok 92 - liquidity intent: bias points to the heavier / closer liquidity (sell-side here)
   ---
-  duration_ms: 0.445393
+  duration_ms: 0.314738
   type: 'test'
   ...
 # Subtest: liquidity intent: trading toward the draw scores higher than trading away
 ok 93 - liquidity intent: trading toward the draw scores higher than trading away
   ---
-  duration_ms: 0.348121
+  duration_ms: 0.278033
   type: 'test'
   ...
 # Subtest: liquidity intent: degrades gracefully with no pools
 ok 94 - liquidity intent: degrades gracefully with no pools
   ---
-  duration_ms: 1.790714
+  duration_ms: 1.389276
   type: 'test'
   ...
 # Subtest: targeting: long with major pools → accepted, TP tiers set
 ok 95 - targeting: long with major pools → accepted, TP tiers set
   ---
-  duration_ms: 1.237835
+  duration_ms: 1.221367
   type: 'test'
   ...
 # Subtest: targeting: REJECTS when major level caps move before acceptable RR
 ok 96 - targeting: REJECTS when major level caps move before acceptable RR
   ---
-  duration_ms: 0.289511
+  duration_ms: 0.293086
   type: 'test'
   ...
 # Subtest: targeting: short picks pools below entry
 ok 97 - targeting: short picks pools below entry
   ---
-  duration_ms: 1.127379
+  duration_ms: 1.025806
   type: 'test'
   ...
 # Subtest: targeting: ATR fallback when no pools in direction
 ok 98 - targeting: ATR fallback when no pools in direction
   ---
-  duration_ms: 0.326331
+  duration_ms: 0.259246
   type: 'test'
   ...
 # Subtest: targeting: missing inputs degrade safely
 ok 99 - targeting: missing inputs degrade safely
   ---
-  duration_ms: 0.190657
+  duration_ms: 0.189111
   type: 'test'
   ...
 # Subtest: market structure: rising HH/HL sequence → bullish
 ok 100 - market structure: rising HH/HL sequence → bullish
   ---
-  duration_ms: 2.66211
+  duration_ms: 2.03008
   type: 'test'
   ...
 # Subtest: market structure: falling LH/LL sequence → bearish
 ok 101 - market structure: falling LH/LL sequence → bearish
   ---
-  duration_ms: 0.549148
+  duration_ms: 0.387777
   type: 'test'
   ...
 # Subtest: market structure: broadening (HH+LL) → ranging, capped strength
 ok 102 - market structure: broadening (HH+LL) → ranging, capped strength
   ---
-  duration_ms: 0.380742
+  duration_ms: 0.296051
   type: 'test'
   ...
 # Subtest: market structure: insufficient data degrades safely
 ok 103 - market structure: insufficient data degrades safely
   ---
-  duration_ms: 0.252673
+  duration_ms: 0.189932
   type: 'test'
   ...
 # Subtest: market structure: exposes BOS/CHoCH booleans and lastStructureBreak shape
 ok 104 - market structure: exposes BOS/CHoCH booleans and lastStructureBreak shape
   ---
-  duration_ms: 0.515624
+  duration_ms: 0.406314
   type: 'test'
   ...
 # [TRADOVATE AUTH] host=demo.tradovateapi.com mode=sim tokenReceived=yes
@@ -799,127 +799,127 @@ ok 104 - market structure: exposes BOS/CHoCH booleans and lastStructureBreak sha
 # Subtest: validateNinjaTraderCredentials requires all six fields
 ok 105 - validateNinjaTraderCredentials requires all six fields
   ---
-  duration_ms: 2.727443
+  duration_ms: 1.921769
   type: 'test'
   ...
 # Subtest: buildNinjaTraderClient throws when the provider master flag is off
 ok 106 - buildNinjaTraderClient throws when the provider master flag is off
   ---
-  duration_ms: 0.680914
+  duration_ms: 0.466034
   type: 'test'
   ...
 # Subtest: sim orders execute when the master flag is on
 ok 107 - sim orders execute when the master flag is on
   ---
-  duration_ms: 0.64162
+  duration_ms: 0.369429
   type: 'test'
   ...
 # Subtest: live orders are blocked unless NINJATRADER_LIVE_EXECUTION_ENABLED
 ok 108 - live orders are blocked unless NINJATRADER_LIVE_EXECUTION_ENABLED
   ---
-  duration_ms: 0.360093
+  duration_ms: 0.245986
   type: 'test'
   ...
 # Subtest: live orders execute when the live flag is also on
 ok 109 - live orders execute when the live flag is also on
   ---
-  duration_ms: 0.367988
+  duration_ms: 0.249351
   type: 'test'
   ...
 # Subtest: NinjaTrader functions reject a non-NinjaTrader client
 ok 110 - NinjaTrader functions reject a non-NinjaTrader client
   ---
-  duration_ms: 0.398846
+  duration_ms: 0.274799
   type: 'test'
   ...
 # Subtest: diagnostics: missing fields => BROKER_AUTH_FAILED, never throws
 ok 111 - diagnostics: missing fields => BROKER_AUTH_FAILED, never throws
   ---
-  duration_ms: 0.36339
+  duration_ms: 0.259596
   type: 'test'
   ...
 # Subtest: diagnostics: connector disabled => CONNECTOR_DISABLED
 ok 112 - diagnostics: connector disabled => CONNECTOR_DISABLED
   ---
-  duration_ms: 0.191338
+  duration_ms: 0.132698
   type: 'test'
   ...
 # Subtest: diagnostics: gateway rejects auth (HTTP error) => BROKER_AUTH_FAILED, no throw
 ok 113 - diagnostics: gateway rejects auth (HTTP error) => BROKER_AUTH_FAILED, no throw
   ---
-  duration_ms: 0.554177
+  duration_ms: 0.433204
   type: 'test'
   ...
 # Subtest: diagnostics: valid paper account => OK, validated, execution NOT allowed (paper)
 ok 114 - diagnostics: valid paper account => OK, validated, execution NOT allowed (paper)
   ---
-  duration_ms: 1.559037
+  duration_ms: 1.146546
   type: 'test'
   ...
 # Subtest: diagnostics: live account with live flag => executionAllowed true
 ok 115 - diagnostics: live account with live flag => executionAllowed true
   ---
-  duration_ms: 0.530342
+  duration_ms: 0.526693
   type: 'test'
   ...
 # Subtest: computeRealizedR: win at full TP = +3R; loss at SL = -1R
 ok 116 - computeRealizedR: win at full TP = +3R; loss at SL = -1R
   ---
-  duration_ms: 3.509145
+  duration_ms: 2.384307
   type: 'test'
   ...
 # Subtest: getExpectedRR: prefers expectedRR over entryRiskRewardRatio
 ok 117 - getExpectedRR: prefers expectedRR over entryRiskRewardRatio
   ---
-  duration_ms: 0.374891
+  duration_ms: 0.250693
   type: 'test'
   ...
 # Subtest: aggregateMonthlyRR: groups resolved trades by UTC month with avg + capture
 ok 118 - aggregateMonthlyRR: groups resolved trades by UTC month with avg + capture
   ---
-  duration_ms: 13.141955
+  duration_ms: 8.742004
   type: 'test'
   ...
 # Subtest: aggregateMonthlyRR: skips trades without expectedRR or realizedR
 ok 119 - aggregateMonthlyRR: skips trades without expectedRR or realizedR
   ---
-  duration_ms: 0.50258
+  duration_ms: 0.332294
   type: 'test'
   ...
 # Subtest: thresholdForCaptureRatio: maps bands monotonically
 ok 120 - thresholdForCaptureRatio: maps bands monotonically
   ---
-  duration_ms: 0.298738
+  duration_ms: 0.214199
   type: 'test'
   ...
 # Subtest: thresholdForCaptureRatio: null/NaN → default
 ok 121 - thresholdForCaptureRatio: null/NaN → default
   ---
-  duration_ms: 0.231142
+  duration_ms: 0.156423
   type: 'test'
   ...
 # Subtest: computeRollingCapture: uses most-recent N trades
 ok 122 - computeRollingCapture: uses most-recent N trades
   ---
-  duration_ms: 1.406561
+  duration_ms: 0.979386
   type: 'test'
   ...
 # Subtest: getCalibrationSnapshot: <10 samples → default threshold + reason
 ok 123 - getCalibrationSnapshot: <10 samples → default threshold + reason
   ---
-  duration_ms: 0.713335
+  duration_ms: 0.460405
   type: 'test'
   ...
 # Subtest: getCalibrationSnapshot: 60-70% capture ratio → tighten to 2.15 (user-specified band)
 ok 124 - getCalibrationSnapshot: 60-70% capture ratio → tighten to 2.15 (user-specified band)
   ---
-  duration_ms: 1.049253
+  duration_ms: 0.673182
   type: 'test'
   ...
 # Subtest: getCalibrationSnapshot: high capture ratio (≥0.95) → default threshold
 ok 125 - getCalibrationSnapshot: high capture ratio (≥0.95) → default threshold
   ---
-  duration_ms: 0.857965
+  duration_ms: 0.610638
   type: 'test'
   ...
 # [TRADE_CLOSE] tradeId=T-100 instrument=EUR_USD units=ALL env=practice
@@ -935,313 +935,313 @@ ok 125 - getCalibrationSnapshot: high capture ratio (≥0.95) → default thresh
 # Subtest: closeBrokerTrade: requires client
 ok 126 - closeBrokerTrade: requires client
   ---
-  duration_ms: 2.026962
+  duration_ms: 0.992196
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: requires tradeId
 ok 127 - closeBrokerTrade: requires tradeId
   ---
-  duration_ms: 0.478355
+  duration_ms: 0.247949
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: full close → PUT /trades/{id}/close with units=ALL
 ok 128 - closeBrokerTrade: full close → PUT /trades/{id}/close with units=ALL
   ---
-  duration_ms: 2.538289
+  duration_ms: 1.446041
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: partial close → PUT with numeric units string
 ok 129 - closeBrokerTrade: partial close → PUT with numeric units string
   ---
-  duration_ms: 0.454029
+  duration_ms: 0.2961
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: rounds and floors negative/fractional units to integer ≥1
 ok 130 - closeBrokerTrade: rounds and floors negative/fractional units to integer ≥1
   ---
-  duration_ms: 0.725157
+  duration_ms: 0.327066
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: orderCancelTransaction → ok=false with reason
 ok 131 - closeBrokerTrade: orderCancelTransaction → ok=false with reason
   ---
-  duration_ms: 0.594733
+  duration_ms: 0.394086
   type: 'test'
   ...
 # Subtest: closeBrokerTrade: client throws → ok=false with error message
 ok 132 - closeBrokerTrade: client throws → ok=false with error message
   ---
-  duration_ms: 0.837747
+  duration_ms: 0.520144
   type: 'test'
   ...
 # Subtest: default daily trade cap is 10 (not 3)
 ok 133 - default daily trade cap is 10 (not 3)
   ---
-  duration_ms: 0.929689
+  duration_ms: 0.852949
   type: 'test'
   ...
 # Subtest: AUTO_AI_DAILY_TRADE_CAP drives the cap
 ok 134 - AUTO_AI_DAILY_TRADE_CAP drives the cap
   ---
-  duration_ms: 0.199384
+  duration_ms: 0.125657
   type: 'test'
   ...
 # Subtest: legacy FOREX_MAX_DAILY_TRADES still works as a fallback
 ok 135 - legacy FOREX_MAX_DAILY_TRADES still works as a fallback
   ---
-  duration_ms: 0.152024
+  duration_ms: 0.097645
   type: 'test'
   ...
 # Subtest: AUTO_AI_DAILY_TRADE_CAP takes precedence over the legacy var
 ok 136 - AUTO_AI_DAILY_TRADE_CAP takes precedence over the legacy var
   ---
-  duration_ms: 0.1551
+  duration_ms: 0.106229
   type: 'test'
   ...
 # Subtest: safety guard blocks at 10/10, not 3/3
 ok 137 - safety guard blocks at 10/10, not 3/3
   ---
-  duration_ms: 0.174146
+  duration_ms: 0.119397
   type: 'test'
   ...
 # Subtest: 1. fast winning trade → expand TP, low urgency
 ok 138 - 1. fast winning trade → expand TP, low urgency
   ---
-  duration_ms: 4.033416
+  duration_ms: 2.861677
   type: 'test'
   ...
 # Subtest: 2. slow stagnant trade → tighten SL after holding profit
 ok 139 - 2. slow stagnant trade → tighten SL after holding profit
   ---
-  duration_ms: 0.558434
+  duration_ms: 0.495467
   type: 'test'
   ...
 # Subtest: 3. expired weak trade → close recommendation, high urgency
 ok 140 - 3. expired weak trade → close recommendation, high urgency
   ---
-  duration_ms: 0.460601
+  duration_ms: 0.397331
   type: 'test'
   ...
 # Subtest: 3b. expired weak trade with auto-close flag on → shouldAutoClose=true
 ok 141 - 3b. expired weak trade with auto-close flag on → shouldAutoClose=true
   ---
-  duration_ms: 0.410959
+  duration_ms: 0.361648
   type: 'test'
   ...
 # Subtest: 4. momentum reversal → partial close (when profit banked) or close
 ok 142 - 4. momentum reversal → partial close (when profit banked) or close
   ---
-  duration_ms: 0.561661
+  duration_ms: 0.476638
   type: 'test'
   ...
 # Subtest: 5. strong trend continuation → hold or expand TP
 ok 143 - 5. strong trend continuation → hold or expand TP
   ---
-  duration_ms: 0.398556
+  duration_ms: 0.395568
   type: 'test'
   ...
 # Subtest: V3 RR tier classifier — premium / preferred / standard / reject
 ok 144 - V3 RR tier classifier — premium / preferred / standard / reject
   ---
-  duration_ms: 0.383156
+  duration_ms: 0.341237
   type: 'test'
   ...
 # Subtest: V3 expected-RR rejects geometry-only "good" trade with weak quality
 ok 145 - V3 expected-RR rejects geometry-only "good" trade with weak quality
   ---
-  duration_ms: 0.563313
+  duration_ms: 0.532812
   type: 'test'
   ...
 # Subtest: V3 expected-RR upgrades high-quality 3R setup to preferred/premium
 ok 146 - V3 expected-RR upgrades high-quality 3R setup to preferred/premium
   ---
-  duration_ms: 0.71608
+  duration_ms: 1.266795
   type: 'test'
   ...
 # Subtest: V3 break-even: eligible when profit >= 0.8R and momentum not decaying
 ok 147 - V3 break-even: eligible when profit >= 0.8R and momentum not decaying
   ---
-  duration_ms: 2.436418
+  duration_ms: 0.439614
   type: 'test'
   ...
 # Subtest: V3 break-even: not eligible while momentum decaying
 ok 148 - V3 break-even: not eligible while momentum decaying
   ---
-  duration_ms: 0.290644
+  duration_ms: 0.195771
   type: 'test'
   ...
 # Subtest: V3 multi-targets: TP1/TP2/TP3 at 1R/2R/3R and currentStage tracks profit
 ok 149 - V3 multi-targets: TP1/TP2/TP3 at 1R/2R/3R and currentStage tracks profit
   ---
-  duration_ms: 0.200566
+  duration_ms: 0.135332
   type: 'test'
   ...
 # Subtest: V3 dynamic trail: expands when ATR rising, tightens when ATR falling, off below 0.8R
 ok 150 - V3 dynamic trail: expands when ATR rising, tightens when ATR falling, off below 0.8R
   ---
-  duration_ms: 0.239407
+  duration_ms: 0.178456
   type: 'test'
   ...
 # Subtest: V3 trend exhaustion: ATR climax + decaying momentum + high profit → exhausted
 ok 151 - V3 trend exhaustion: ATR climax + decaying momentum + high profit → exhausted
   ---
-  duration_ms: 0.163055
+  duration_ms: 0.10785
   type: 'test'
   ...
 # Subtest: V3 trend exhaustion: clean trade scores normal
 ok 152 - V3 trend exhaustion: clean trade scores normal
   ---
-  duration_ms: 0.16547
+  duration_ms: 0.103584
   type: 'test'
   ...
 # Subtest: V3 capital efficiency: fast trade in good state = Excellent or Good
 ok 153 - V3 capital efficiency: fast trade in good state = Excellent or Good
   ---
-  duration_ms: 0.158006
+  duration_ms: 0.104826
   type: 'test'
   ...
 # Subtest: V3 capital efficiency: stagnant past hold window in bad state = Poor/Exit Candidate
 ok 154 - V3 capital efficiency: stagnant past hold window in bad state = Poor/Exit Candidate
   ---
-  duration_ms: 0.151534
+  duration_ms: 0.096624
   type: 'test'
   ...
 # Subtest: V3 unified recommendation: improving momentum + invalidation → exit takes priority, conflict noted
 ok 155 - V3 unified recommendation: improving momentum + invalidation → exit takes priority, conflict noted
   ---
-  duration_ms: 0.215183
+  duration_ms: 0.138587
   type: 'test'
   ...
 # Subtest: V3 unified recommendation: hold base + break-even eligible → tighten_sl with break-even reason
 ok 156 - V3 unified recommendation: hold base + break-even eligible → tighten_sl with break-even reason
   ---
-  duration_ms: 0.188873
+  duration_ms: 0.12095
   type: 'test'
   ...
 # Subtest: invalidation flag → close with high urgency regardless of velocity
 ok 157 - invalidation flag → close with high urgency regardless of velocity
   ---
-  duration_ms: 0.420997
+  duration_ms: 0.317072
   type: 'test'
   ...
 # Subtest: premium/discount: long in discount scores high with no penalty
 ok 158 - premium/discount: long in discount scores high with no penalty
   ---
-  duration_ms: 1.665336
+  duration_ms: 1.18984
   type: 'test'
   ...
 # Subtest: premium/discount: long in premium is penalised
 ok 159 - premium/discount: long in premium is penalised
   ---
-  duration_ms: 0.333494
+  duration_ms: 0.26183
   type: 'test'
   ...
 # Subtest: premium/discount: short in premium scores high
 ok 160 - premium/discount: short in premium scores high
   ---
-  duration_ms: 1.750083
+  duration_ms: 1.457118
   type: 'test'
   ...
 # Subtest: premium/discount: short in discount is penalised
 ok 161 - premium/discount: short in discount is penalised
   ---
-  duration_ms: 0.246081
+  duration_ms: 0.194529
   type: 'test'
   ...
 # Subtest: premium/discount: equilibrium band is neutral-ish
 ok 162 - premium/discount: equilibrium band is neutral-ish
   ---
-  duration_ms: 0.387826
+  duration_ms: 0.269981
   type: 'test'
   ...
 # Subtest: premium/discount: missing fib swing → neutral, never penalises
 ok 163 - premium/discount: missing fib swing → neutral, never penalises
   ---
-  duration_ms: 0.259355
+  duration_ms: 0.211806
   type: 'test'
   ...
 # Subtest: premium/discount: price beyond the swing clamps to 0..1
 ok 164 - premium/discount: price beyond the swing clamps to 0..1
   ---
-  duration_ms: 0.365093
+  duration_ms: 0.285935
   type: 'test'
   ...
 # Subtest: 3 of 3 aligned scores 100 and passes; context conflicts stay diagnostic
 ok 165 - 3 of 3 aligned scores 100 and passes; context conflicts stay diagnostic
   ---
-  duration_ms: 2.581379
+  duration_ms: 2.771472
   type: 'test'
   ...
 # Subtest: Daily and H4 aligned score 67 and pass when M15 opposes
 ok 166 - Daily and H4 aligned score 67 and pass when M15 opposes
   ---
-  duration_ms: 0.471552
+  duration_ms: 0.339044
   type: 'test'
   ...
 # Subtest: Daily/H4 disagreement hard-rejects even when H4 and M15 align
 ok 167 - Daily/H4 disagreement hard-rejects even when H4 and M15 align
   ---
-  duration_ms: 1.68354
+  duration_ms: 1.69414
   type: 'test'
   ...
 # Subtest: derived majority direction still hard-rejects when Daily and H4 disagree
 ok 168 - derived majority direction still hard-rejects when Daily and H4 disagree
   ---
-  duration_ms: 0.37951
+  duration_ms: 0.206778
   type: 'test'
   ...
 # Subtest: 1 of 3 aligned scores 33 and rejects
 ok 169 - 1 of 3 aligned scores 33 and rejects
   ---
-  duration_ms: 0.329546
+  duration_ms: 0.199997
   type: 'test'
   ...
 # Subtest: 0 of 3 aligned scores 0 and rejects
 ok 170 - 0 of 3 aligned scores 0 and rejects
   ---
-  duration_ms: 0.23508
+  duration_ms: 0.147459
   type: 'test'
   ...
 # Subtest: missing primary classification fails closed
 ok 171 - missing primary classification fails closed
   ---
-  duration_ms: 0.419715
+  duration_ms: 0.253316
   type: 'test'
   ...
 # Subtest: assertExecutionProvider returns the provider when route matches credentials
 ok 172 - assertExecutionProvider returns the provider when route matches credentials
   ---
-  duration_ms: 1.287038
+  duration_ms: 0.6252
   type: 'test'
   ...
 # Subtest: cross-provider execution is blocked for OANDA and FTMO
 ok 173 - cross-provider execution is blocked for OANDA and FTMO
   ---
-  duration_ms: 0.537315
+  duration_ms: 0.403801
   type: 'test'
   ...
 # Subtest: futures providers remain isolated
 ok 174 - futures providers remain isolated
   ---
-  duration_ms: 0.274925
+  duration_ms: 0.122743
   type: 'test'
   ...
 # Subtest: unknown / missing providers fail closed
 ok 175 - unknown / missing providers fail closed
   ---
-  duration_ms: 1.192071
+  duration_ms: 0.82674
   type: 'test'
   ...
 # Subtest: provider classification keeps forex and futures separate
 ok 176 - provider classification keeps forex and futures separate
   ---
-  duration_ms: 0.255999
+  duration_ms: 0.200609
   type: 'test'
   ...
 # Subtest: resolveExecutionClient routes FTMO only to the FTMO factory
 ok 177 - resolveExecutionClient routes FTMO only to the FTMO factory
   ---
-  duration_ms: 0.410257
+  duration_ms: 0.237593
   type: 'test'
   ...
 # [RISK CHECK]
@@ -1329,636 +1329,616 @@ ok 177 - resolveExecutionClient routes FTMO only to the FTMO factory
 # Subtest: defaults are 1.25% per trade, 2.5% daily drawdown, 85 confidence
 ok 178 - defaults are 1.25% per trade, 2.5% daily drawdown, 85 confidence
   ---
-  duration_ms: 2.030639
+  duration_ms: 2.984034
   type: 'test'
   ...
-# Subtest: risk budget is 1.4% of balance
-ok 179 - risk budget is 1.4% of balance
+# Subtest: risk budget is 1.25% of balance
+ok 179 - risk budget is 1.25% of balance
   ---
-  duration_ms: 0.278771
+  duration_ms: 0.268039
   type: 'test'
   ...
-# Subtest: per-trade risk percent is clamped to 1.4%
-ok 180 - per-trade risk percent is clamped to 1.4%
+# Subtest: per-trade risk percent is clamped to 1.25%
+ok 180 - per-trade risk percent is clamped to 1.25%
   ---
-  duration_ms: 0.185046
+  duration_ms: 0.180048
   type: 'test'
   ...
-# Subtest: actual risk at exactly 1.4% is allowed
-ok 181 - actual risk at exactly 1.4% is allowed
+# Subtest: actual risk at exactly 1.25% is allowed
+ok 181 - actual risk at exactly 1.25% is allowed
   ---
-  duration_ms: 0.829101
+  duration_ms: 0.8066
   type: 'test'
   ...
-# Subtest: actual risk above 1.4% is rejected
-ok 182 - actual risk above 1.4% is rejected
+# Subtest: actual risk above 1.25% is rejected
+ok 182 - actual risk above 1.25% is rejected
   ---
-  duration_ms: 0.314809
+  duration_ms: 0.310422
   type: 'test'
   ...
-# Subtest: daily realized loss within 2.8% keeps trading unlocked
-not ok 183 - daily realized loss within 2.8% keeps trading unlocked
+# Subtest: daily realized loss within 2.5% keeps trading unlocked
+ok 183 - daily realized loss within 2.5% keeps trading unlocked
   ---
-  duration_ms: 16.336441
+  duration_ms: 17.698376
   type: 'test'
-  location: '/home/runner/work/ssforexclub/ssforexclub/server/riskManager.test.js:56:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    Expected values to be strictly equal:
-    
-    250 !== 280
-    
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 280
-  actual: 250
-  operator: 'strictEqual'
-  stack: |-
-    TestContext.<anonymous> (file:///home/runner/work/ssforexclub/ssforexclub/server/riskManager.test.js:64:10)
-    Test.runInAsyncScope (node:async_hooks:214:14)
-    Test.run (node:internal/test_runner/test:1047:25)
-    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
-    Test.postRun (node:internal/test_runner/test:1173:19)
-    Test.run (node:internal/test_runner/test:1101:12)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
-# Subtest: daily realized loss beyond 2.8% locks new entries
-ok 184 - daily realized loss beyond 2.8% locks new entries
+# Subtest: daily realized loss beyond 2.5% locks new entries
+ok 184 - daily realized loss beyond 2.5% locks new entries
   ---
-  duration_ms: 1.09569
+  duration_ms: 0.619211
   type: 'test'
   ...
 # Subtest: daily lock is per-account (one account locking does not lock another)
 ok 185 - daily lock is per-account (one account locking does not lock another)
   ---
-  duration_ms: 1.620322
+  duration_ms: 2.206873
   type: 'test'
   ...
 # Subtest: daily baseline resets at the New York day rollover
 ok 186 - daily baseline resets at the New York day rollover
   ---
-  duration_ms: 1.543848
+  duration_ms: 1.045425
   type: 'test'
   ...
 # Subtest: confidence at 85 passes the auto-execution floor
 ok 187 - confidence at 85 passes the auto-execution floor
   ---
-  duration_ms: 0.728853
+  duration_ms: 0.553884
   type: 'test'
   ...
 # Subtest: confidence below 85 fails the auto-execution floor
 ok 188 - confidence below 85 fails the auto-execution floor
   ---
-  duration_ms: 0.361386
+  duration_ms: 0.281989
   type: 'test'
   ...
 # Subtest: insufficient margin is blocked with the exact message
 ok 189 - insufficient margin is blocked with the exact message
   ---
-  duration_ms: 0.295613
+  duration_ms: 0.178856
   type: 'test'
   ...
 # Subtest: getRiskStatus surfaces the documented panel fields
 ok 190 - getRiskStatus surfaces the documented panel fields
   ---
-  duration_ms: 0.523709
+  duration_ms: 0.410181
   type: 'test'
   ...
 # Subtest: session: classifies UTC hours correctly
 ok 191 - session: classifies UTC hours correctly
   ---
-  duration_ms: 1.518702
+  duration_ms: 0.939307
   type: 'test'
   ...
 # Subtest: session: NY-open overlap is highest quality
 ok 192 - session: NY-open overlap is highest quality
   ---
-  duration_ms: 0.47584
+  duration_ms: 0.309731
   type: 'test'
   ...
 # Subtest: session: dead Asian hours score low
 ok 193 - session: dead Asian hours score low
   ---
-  duration_ms: 1.845883
+  duration_ms: 1.040287
   type: 'test'
   ...
 # Subtest: session: measured ATR ratio drives volatility label
 ok 194 - session: measured ATR ratio drives volatility label
   ---
-  duration_ms: 0.276818
+  duration_ms: 0.18775
   type: 'test'
   ...
 # Subtest: session: bias derived from recent intraday flow
 ok 195 - session: bias derived from recent intraday flow
   ---
-  duration_ms: 0.403214
+  duration_ms: 0.220598
   type: 'test'
   ...
 # Subtest: session narrative: London sweep of Asian Low (+ CHoCH reversal)
 ok 196 - session narrative: London sweep of Asian Low (+ CHoCH reversal)
   ---
-  duration_ms: 0.539739
+  duration_ms: 0.390641
   type: 'test'
   ...
 # Subtest: session narrative: New York continuation
 ok 197 - session narrative: New York continuation
   ---
-  duration_ms: 0.266899
+  duration_ms: 0.154069
   type: 'test'
   ...
 # Subtest: session narrative: falls back to session + bias when nothing fires
 ok 198 - session narrative: falls back to session + bias when nothing fires
   ---
-  duration_ms: 0.239669
+  duration_ms: 0.140329
   type: 'test'
   ...
 # Subtest: validateTopstepCredentials requires userName and apiKey
 ok 199 - validateTopstepCredentials requires userName and apiKey
   ---
-  duration_ms: 2.717173
+  duration_ms: 1.271141
   type: 'test'
   ...
 # Subtest: execution is blocked while cloud execution is not allowed (compliance)
 ok 200 - execution is blocked while cloud execution is not allowed (compliance)
   ---
-  duration_ms: 3.306685
+  duration_ms: 0.889473
   type: 'test'
   ...
 # Subtest: placeTopstepOrder never transmits while cloud execution is disallowed
 ok 201 - placeTopstepOrder never transmits while cloud execution is disallowed
   ---
-  duration_ms: 0.970095
+  duration_ms: 0.703476
   type: 'test'
   ...
 # Subtest: funded execution requires the live flag even when cloud execution is allowed
 ok 202 - funded execution requires the live flag even when cloud execution is allowed
   ---
-  duration_ms: 0.332562
+  duration_ms: 0.223583
   type: 'test'
   ...
 # Subtest: orders transmit only when every gate passes
 ok 203 - orders transmit only when every gate passes
   ---
-  duration_ms: 0.706652
+  duration_ms: 0.518751
   type: 'test'
   ...
 # Subtest: Topstep functions reject a non-Topstep client
 ok 204 - Topstep functions reject a non-Topstep client
   ---
-  duration_ms: 0.960187
+  duration_ms: 0.640292
   type: 'test'
   ...
 # Subtest: generated independent V3 candidate passes Stage 1 and Stage 2, reprices from ask, sizes, and creates an order
 ok 205 - generated independent V3 candidate passes Stage 1 and Stage 2, reprices from ask, sizes, and creates an order
   ---
-  duration_ms: 8.132463
+  duration_ms: 5.180576
   type: 'test'
   ...
 # Subtest: short execution geometry uses bid
 ok 206 - short execution geometry uses bid
   ---
-  duration_ms: 0.337922
+  duration_ms: 0.220878
   type: 'test'
   ...
 # Subtest: confirmed opposing sweep cancels a long candidate
 ok 207 - confirmed opposing sweep cancels a long candidate
   ---
-  duration_ms: 1.094688
+  duration_ms: 0.715405
   type: 'test'
   ...
 # Subtest: newer bullish CHoCH plus confirmed retest can override an older bearish sweep
 ok 208 - newer bullish CHoCH plus confirmed retest can override an older bearish sweep
   ---
-  duration_ms: 2.347722
+  duration_ms: 2.23861
   type: 'test'
   ...
 # Subtest: direction lock rejects a freshly recalculated opposite side
 ok 209 - direction lock rejects a freshly recalculated opposite side
   ---
-  duration_ms: 0.396982
+  duration_ms: 0.244464
   type: 'test'
   ...
 # Subtest: V3.5: weights sum to 100 with liquidity-first priority
 ok 210 - V3.5: weights sum to 100 with liquidity-first priority
   ---
-  duration_ms: 2.013968
+  duration_ms: 2.336045
   type: 'test'
   ...
 # Subtest: V3.5: EARLY setup (sweep + CHoCH + compression→expansion + discount) qualifies high
 ok 211 - V3.5: EARLY setup (sweep + CHoCH + compression→expansion + discount) qualifies high
   ---
-  duration_ms: 1.630701
+  duration_ms: 1.557286
   type: 'test'
   ...
 # Subtest: V3.5: LATE entry REJECTED even with bullish EMA + strong momentum
 ok 212 - V3.5: LATE entry REJECTED even with bullish EMA + strong momentum
   ---
-  duration_ms: 0.381234
+  duration_ms: 0.312215
   type: 'test'
   ...
 # Subtest: V3.5: premium entry penalises the liquidity-intent pillar
 ok 213 - V3.5: premium entry penalises the liquidity-intent pillar
   ---
-  duration_ms: 0.401181
+  duration_ms: 0.40961
   type: 'test'
   ...
 # Subtest: V3.5: EMA is informational — opposing EMA still qualifies an early setup
 ok 214 - V3.5: EMA is informational — opposing EMA still qualifies an early setup
   ---
-  duration_ms: 0.362759
+  duration_ms: 0.340907
   type: 'test'
   ...
 # Subtest: V3.5: insufficient remaining opportunity rejects
 ok 215 - V3.5: insufficient remaining opportunity rejects
   ---
-  duration_ms: 0.298198
+  duration_ms: 0.297883
   type: 'test'
   ...
 # Subtest: V3.5: counter-structure with no CHoCH rejects
 ok 216 - V3.5: counter-structure with no CHoCH rejects
   ---
-  duration_ms: 0.319738
+  duration_ms: 0.360456
   type: 'test'
   ...
 # Subtest: V3.5: derives its own direction from a fresh CHoCH when none forced
 ok 217 - V3.5: derives its own direction from a fresh CHoCH when none forced
   ---
-  duration_ms: 0.304329
+  duration_ms: 0.253618
   type: 'test'
   ...
 # Subtest: V3.5: no directional basis yields a clean unqualified result
 ok 218 - V3.5: no directional basis yields a clean unqualified result
   ---
-  duration_ms: 0.402083
+  duration_ms: 0.411222
   type: 'test'
   ...
 # Subtest: entry-quality confidence is computed from V3 fields only
 ok 219 - entry-quality confidence is computed from V3 fields only
   ---
-  duration_ms: 1.566801
+  duration_ms: 0.932096
   type: 'test'
   ...
 # Subtest: candidate direction comes from V3 even when legacyDirection says short
 ok 220 - candidate direction comes from V3 even when legacyDirection says short
   ---
-  duration_ms: 3.366157
+  duration_ms: 2.403255
   type: 'test'
   ...
 # Subtest: candidate rejects a target on the wrong side of the V3 direction
 ok 221 - candidate rejects a target on the wrong side of the V3 direction
   ---
-  duration_ms: 0.26195
+  duration_ms: 0.191816
   type: 'test'
   ...
 # Subtest: V3 auto runner has no legacy scanner or shared retrace-watch dependency
 ok 222 - V3 auto runner has no legacy scanner or shared retrace-watch dependency
   ---
-  duration_ms: 0.395019
+  duration_ms: 0.264474
   type: 'test'
   ...
 # Subtest: Stage 1 accepts a valid setup for watch state
 ok 223 - Stage 1 accepts a valid setup for watch state
   ---
-  duration_ms: 3.293882
+  duration_ms: 1.698076
   type: 'test'
   ...
 # Subtest: Stage 1 accepts a V3 score of exactly 62
 ok 224 - Stage 1 accepts a V3 score of exactly 62
   ---
-  duration_ms: 0.506778
+  duration_ms: 0.253177
   type: 'test'
   ...
 # Subtest: Stage 1 rejects a V3 score below 62
 ok 225 - Stage 1 rejects a V3 score below 62
   ---
-  duration_ms: 0.450664
+  duration_ms: 0.239886
   type: 'test'
   ...
 # Subtest: Stage 1 treats internal V3 structure opposition as diagnostic only
 ok 226 - Stage 1 treats internal V3 structure opposition as diagnostic only
   ---
-  duration_ms: 0.47565
+  duration_ms: 0.286295
   type: 'test'
   ...
 # Subtest: Stage 1 rejects R:R below 1.5
 ok 227 - Stage 1 rejects R:R below 1.5
   ---
-  duration_ms: 0.460231
+  duration_ms: 0.247498
   type: 'test'
   ...
 # Subtest: Stage 2 accepts aligned BOS with one supporting confirmation
 ok 228 - Stage 2 accepts aligned BOS with one supporting confirmation
   ---
-  duration_ms: 1.486391
+  duration_ms: 0.740502
   type: 'test'
   ...
 # Subtest: Stage 2 blocks a pending sweep
 ok 229 - Stage 2 blocks a pending sweep
   ---
-  duration_ms: 0.531264
+  duration_ms: 0.276762
   type: 'test'
   ...
 # Subtest: Compressed market alone remains watch-only
 ok 230 - Compressed market alone remains watch-only
   ---
-  duration_ms: 0.381384
+  duration_ms: 0.190814
   type: 'test'
   ...
 # Subtest: Stage 2 blocks a confirmed opposing sweep
 ok 231 - Stage 2 blocks a confirmed opposing sweep
   ---
-  duration_ms: 1.061726
+  duration_ms: 0.523569
   type: 'test'
   ...
 # [V3_SHADOW] 3 pairs compared — both=1 legacyOnly=1 v3Only=1 neither=0
 # Subtest: shadow log: builds comparison rows + agreement classes
 ok 232 - shadow log: builds comparison rows + agreement classes
   ---
-  duration_ms: 2.515816
+  duration_ms: 2.176307
   type: 'test'
   ...
 # Subtest: shadow log: report aggregates counts + timing KPI
 ok 233 - shadow log: report aggregates counts + timing KPI
   ---
-  duration_ms: 1.792744
+  duration_ms: 1.758185
   type: 'test'
   ...
 # Subtest: volatility: compressed flat ranges → compressed, high score
 ok 234 - volatility: compressed flat ranges → compressed, high score
   ---
-  duration_ms: 2.000813
+  duration_ms: 1.194236
   type: 'test'
   ...
 # Subtest: volatility: squeeze then breakout → expanding, top score
 ok 235 - volatility: squeeze then breakout → expanding, top score
   ---
-  duration_ms: 0.396592
+  duration_ms: 0.252325
   type: 'test'
   ...
 # Subtest: volatility: long extended run → expanded, low score (avoid chasing)
 ok 236 - volatility: long extended run → expanded, low score (avoid chasing)
   ---
-  duration_ms: 0.37402
+  duration_ms: 0.24192
   type: 'test'
   ...
 # Subtest: volatility: ATR-ratio fallback for thin candles
 ok 237 - volatility: ATR-ratio fallback for thin candles
   ---
-  duration_ms: 0.247583
+  duration_ms: 0.186167
   type: 'test'
   ...
 # Subtest: volatility: no data → normal/neutral
 ok 238 - volatility: no data → normal/neutral
   ---
-  duration_ms: 0.257903
+  duration_ms: 0.155371
   type: 'test'
   ...
-# (node:2812) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/brokerDisplay.test.js is not specified and it doesn't parse as CommonJS.
+# (node:2600) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/brokerDisplay.test.js is not specified and it doesn't parse as CommonJS.
 # Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
 # To eliminate this warning, add "type": "module" to /home/runner/work/ssforexclub/ssforexclub/web/package.json.
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: normalizeBroker recognizes known brokers and maps the rest to unknown
 ok 239 - normalizeBroker recognizes known brokers and maps the rest to unknown
   ---
-  duration_ms: 1.303378
+  duration_ms: 0.831247
   type: 'test'
   ...
 # Subtest: brokerLabel labels FTMO as MetaTrader 5 bridge
 ok 240 - brokerLabel labels FTMO as MetaTrader 5 bridge
   ---
-  duration_ms: 1.509955
+  duration_ms: 1.36462
   type: 'test'
   ...
 # Subtest: normalizeEnvironment supports FTMO lifecycle environments
 ok 241 - normalizeEnvironment supports FTMO lifecycle environments
   ---
-  duration_ms: 0.296865
+  duration_ms: 0.177053
   type: 'test'
   ...
 # Subtest: normalizeValidationStatus handles canonical + legacy vocab
 ok 242 - normalizeValidationStatus handles canonical + legacy vocab
   ---
-  duration_ms: 0.251951
+  duration_ms: 0.175682
   type: 'test'
   ...
 # Subtest: formatBrokerConnection renders OANDA and NinjaTrader rows
 ok 243 - formatBrokerConnection renders OANDA and NinjaTrader rows
   ---
-  duration_ms: 0.485889
+  duration_ms: 0.364151
   type: 'test'
   ...
 # Subtest: formatBrokerConnection renders FTMO MT5 challenge row
 ok 244 - formatBrokerConnection renders FTMO MT5 challenge row
   ---
-  duration_ms: 0.234158
+  duration_ms: 0.152697
   type: 'test'
   ...
 # Subtest: formatBrokerConnection survives missing or unknown fields
 ok 245 - formatBrokerConnection survives missing or unknown fields
   ---
-  duration_ms: 0.47571
+  duration_ms: 0.325444
   type: 'test'
   ...
-# (node:2822) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/futuresStatus.test.js is not specified and it doesn't parse as CommonJS.
+# (node:2601) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/futuresStatus.test.js is not specified and it doesn't parse as CommonJS.
 # Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
 # To eliminate this warning, add "type": "module" to /home/runner/work/ssforexclub/ssforexclub/web/package.json.
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: OANDA 200 probe (no diagnostic code) => validated
 ok 246 - OANDA 200 probe (no diagnostic code) => validated
   ---
-  duration_ms: 1.661267
+  duration_ms: 0.867571
   type: 'test'
   ...
 # Subtest: futures diagnostics OK / NO_ACCOUNTS => validated
 ok 247 - futures diagnostics OK / NO_ACCOUNTS => validated
   ---
-  duration_ms: 0.332512
+  duration_ms: 0.168511
   type: 'test'
   ...
 # Subtest: broker auth failure => failed
 ok 248 - broker auth failure => failed
   ---
-  duration_ms: 0.248846
+  duration_ms: 0.093058
   type: 'test'
   ...
 # Subtest: unreachable / internal-auth / connector-disabled => skip (never mark a good account failed)
 ok 249 - unreachable / internal-auth / connector-disabled => skip (never mark a good account failed)
   ---
-  duration_ms: 0.18117
+  duration_ms: 0.088322
   type: 'test'
   ...
 # Subtest: live connection exists but paper requested => no match (mismatch)
 ok 250 - live connection exists but paper requested => no match (mismatch)
   ---
-  duration_ms: 0.828049
+  duration_ms: 0.633543
   type: 'test'
   ...
 # Subtest: paper connection exists but live requested => no match (mismatch)
 ok 251 - paper connection exists but live requested => no match (mismatch)
   ---
-  duration_ms: 0.211976
+  duration_ms: 0.106578
   type: 'test'
   ...
 # Subtest: matching environment selects the connection
 ok 252 - matching environment selects the connection
   ---
-  duration_ms: 0.307335
+  duration_ms: 0.137355
   type: 'test'
   ...
 # Subtest: missing matching environment returns null so broker auth is never attempted
 ok 253 - missing matching environment returns null so broker auth is never attempted
   ---
-  duration_ms: 0.212307
+  duration_ms: 0.085236
   type: 'test'
   ...
 # Subtest: mismatch message is specific, never generic auth failure
 ok 254 - mismatch message is specific, never generic auth failure
   ---
-  duration_ms: 0.631842
+  duration_ms: 0.394427
   type: 'test'
   ...
 # Subtest: ENVIRONMENT_MISMATCH code renders the specific message, execute hidden
 ok 255 - ENVIRONMENT_MISMATCH code renders the specific message, execute hidden
   ---
-  duration_ms: 0.605903
+  duration_ms: 0.422538
   type: 'test'
   ...
 # Subtest: saved live connection shows Live/Funded mode even before validation
 ok 256 - saved live connection shows Live/Funded mode even before validation
   ---
-  duration_ms: 0.28309
+  duration_ms: 0.170284
   type: 'test'
   ...
 # Subtest: mapScannerTransportError maps Railway-unreachable to SCANNER_UNREACHABLE
 ok 257 - mapScannerTransportError maps Railway-unreachable to SCANNER_UNREACHABLE
   ---
-  duration_ms: 1.253886
+  duration_ms: 0.320217
   type: 'test'
   ...
 # Subtest: mapScannerTransportError maps auth problems to INTERNAL_AUTH_FAILED
 ok 258 - mapScannerTransportError maps auth problems to INTERNAL_AUTH_FAILED
   ---
-  duration_ms: 0.111158
+  duration_ms: 0.933869
   type: 'test'
   ...
 # Subtest: mapScannerTransportError falls back to SCANNER_ERROR
 ok 259 - mapScannerTransportError falls back to SCANNER_ERROR
   ---
-  duration_ms: 0.138379
+  duration_ms: 0.068762
   type: 'test'
   ...
 # Subtest: no credentials => NO_CREDENTIALS, paper mode, execute hidden
 ok 260 - no credentials => NO_CREDENTIALS, paper mode, execute hidden
   ---
-  duration_ms: 0.130454
+  duration_ms: 0.071266
   type: 'test'
   ...
 # Subtest: connector disabled => execute hidden, disabled badge
 ok 261 - connector disabled => execute hidden, disabled badge
   ---
-  duration_ms: 0.116457
+  duration_ms: 0.059949
   type: 'test'
   ...
 # Subtest: scanner unreachable => friendly message, execute hidden
 ok 262 - scanner unreachable => friendly message, execute hidden
   ---
-  duration_ms: 0.120205
+  duration_ms: 0.058908
   type: 'test'
   ...
 # Subtest: broker auth failed => Credential validation failed, execute hidden
 ok 263 - broker auth failed => Credential validation failed, execute hidden
   ---
-  duration_ms: 0.115796
+  duration_ms: 0.058757
   type: 'test'
   ...
 # Subtest: validated paper account never shows Live/Funded and is not executable even with liveFlag
 ok 264 - validated paper account never shows Live/Funded and is not executable even with liveFlag
   ---
-  duration_ms: 0.143919
+  duration_ms: 0.0738
   type: 'test'
   ...
 # Subtest: no accounts => execute disabled even though validated
 ok 265 - no accounts => execute disabled even though validated
   ---
-  duration_ms: 0.149389
+  duration_ms: 0.066899
   type: 'test'
   ...
 # Subtest: live account with all gates passing => Execution enabled
 ok 266 - live account with all gates passing => Execution enabled
   ---
-  duration_ms: 0.128461
+  duration_ms: 0.060139
   type: 'test'
   ...
 # Subtest: live account but live flag OFF => Execution disabled
 ok 267 - live account but live flag OFF => Execution disabled
   ---
-  duration_ms: 0.123962
+  duration_ms: 0.083695
   type: 'test'
   ...
 # Subtest: live account, flags on, but user has not acknowledged => Execution disabled
 ok 268 - live account, flags on, but user has not acknowledged => Execution disabled
   ---
-  duration_ms: 0.17113
+  duration_ms: 0.132477
   type: 'test'
   ...
-# (node:2824) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/sanitizePayload.test.js is not specified and it doesn't parse as CommonJS.
+# (node:2612) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/runner/work/ssforexclub/ssforexclub/web/lib/sanitizePayload.test.js is not specified and it doesn't parse as CommonJS.
 # Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
 # To eliminate this warning, add "type": "module" to /home/runner/work/ssforexclub/ssforexclub/web/package.json.
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: primitives + null + undefined pass through unchanged
 ok 269 - primitives + null + undefined pass through unchanged
   ---
-  duration_ms: 1.082518
+  duration_ms: 1.139014
   type: 'test'
   ...
 # Subtest: redacts known credential-like keys at the top level
 ok 270 - redacts known credential-like keys at the top level
   ---
-  duration_ms: 1.140443
+  duration_ms: 1.464788
   type: 'test'
   ...
 # Subtest: redaction is case-insensitive
 ok 271 - redaction is case-insensitive
   ---
-  duration_ms: 0.360985
+  duration_ms: 0.25539
   type: 'test'
   ...
 # Subtest: redacts inside arrays
 ok 272 - redacts inside arrays
   ---
-  duration_ms: 0.194975
+  duration_ms: 0.197273
   type: 'test'
   ...
 # Subtest: does not mutate the input object
 ok 273 - does not mutate the input object
   ---
-  duration_ms: 0.162885
+  duration_ms: 0.194309
   type: 'test'
   ...
 # Subtest: handles deeply nested structures
 ok 274 - handles deeply nested structures
   ---
-  duration_ms: 0.188863
+  duration_ms: 0.262911
   type: 'test'
   ...
 # Subtest: handles cycles without infinite recursion
 ok 275 - handles cycles without infinite recursion
   ---
-  duration_ms: 0.262992
+  duration_ms: 0.271464
   type: 'test'
   ...
 # Subtest: preserves non-credential keys that happen to contain credential-like substrings
 ok 276 - preserves non-credential keys that happen to contain credential-like substrings
   ---
-  duration_ms: 0.151002
+  duration_ms: 0.18845
   type: 'test'
   ...
 1..276
 # tests 276
 # suites 0
-# pass 268
-# fail 8
+# pass 269
+# fail 7
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 1344.226308
+# duration_ms 914.868468
