@@ -1,12 +1,10 @@
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const port = Number(process.env.PORT || 8080);
 const productionParts = [
   'hardening-patch.part00',
   'hardening-patch.part01',
@@ -58,16 +56,5 @@ for (const source of changedSources) {
   run(process.execPath, ['--check', source], `syntax check ${source}`);
 }
 
-const payload = JSON.stringify({
-  ok: true,
-  phase: 'production_patch_applied_and_sources_valid',
-  tradingEnabled: false,
-  changedSources,
-});
-http.createServer((req, res) => {
-  res.statusCode = req.url === '/api/health' || req.url === '/health' || req.url === '/' ? 200 : 503;
-  res.setHeader('content-type', 'application/json');
-  res.end(payload);
-}).listen(port, '0.0.0.0', () => {
-  console.log(`[HARDENING_PROBE] production patch applied and source checks passed; trading-disabled probe listening on ${port}`);
-});
+console.log('[HARDENING_BOOT] production patch applied and verified; starting trading server');
+await import('../server/index.js');
