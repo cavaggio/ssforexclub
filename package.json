@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "node scripts/start-hardened.mjs",
+    "dev:server": "node server/index.js",
     "dev:full": "concurrently \"npm run dev:server\" \"npm run dev\"",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node scripts/start-hardened.mjs",
+    "start": "node server/index.js",
     "test:lifecycle":   "node --test server/oandaTradeLifecycleEngine.test.js",
     "test:calibration": "node --test server/oandaCalibration.test.js",
     "test:close":       "node --test server/oandaClose.test.js",
