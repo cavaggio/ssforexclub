@@ -130,7 +130,8 @@ ict = mustReplace(
 );
 ict = mustReplace(
   ict,
-  `  const pipSize = getPipSize(pair);`,
+  `  const pipSize = getPipSize(pair);
+  const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);`,
   `  let openTradesForRisk;
   try {
     const openFn = getOpen || (() => getOpenTrades({ client }));
@@ -140,7 +141,8 @@ ict = mustReplace(
   }
   const openRiskUSD = computeOpenRiskUSD(openTradesForRisk);
 
-  const pipSize = getPipSize(pair);`,
+  const pipSize = getPipSize(pair);
+  const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);`,
   'ict open risk fetch',
 );
 ict = mustReplace(
