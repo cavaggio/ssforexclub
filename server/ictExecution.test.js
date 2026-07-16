@@ -35,6 +35,7 @@ function mockClient() {
 const baseDeps = (over = {}) => ({
   client: mockClient(), now: NOW, cfg: LIVE_CFG,
   getAnalysis: goodAnalysis(), getAccount: goodAccount, reconcile: async () => false,
+  getOpen: async () => [],
   ...over,
 });
 
