@@ -1,0 +1,271 @@
+
+    return blocked(executionReservation.reason);
+  }
+
+  const riskReservation = reserveProjectedRiskBudget({
+    accountId,
+    balanceUSD,
+    openRiskUSD,
+    requestedRiskUSD: sizing.actualRiskUSD,
+    requireFullAmount: true,
+  });
+  if (!riskReservation.allowed) {
+    releaseExecutionReservation(executionReservation);
+    return blocked(riskReservation.reason);
+  }
+
+  const orderPayload = {
+    order: {`,
+  'trade reservations',
+);
+trade = mustReplace(
+  trade,
+  `  };
+
+  console.log(\`[ORDER_PAYLOAD]`,
+  `  };
+  attachSetupClientExtensions(orderPayload, setup.fingerprint);
+
+  console.log(\`[ORDER_PAYLOAD]`,
+  'trade client extensions',
+);
+trade = mustReplace(
+  trade,
+  `  } catch (err) {
+    console.error(\`[TRADE] ✗ Order submission error: \${err.message}\`);`,
+  `  } catch (err) {
+    releaseExecutionReservation(executionReservation);
+    releaseProjectedRiskReservation(riskReservation.token);
+    console.error(\`[TRADE] ✗ Order submission error: \${err.message}\`);`,
+  'trade submit failure release',
+);
+trade = mustReplace(
+  trade,
+  `  const { orderCreateTransaction, orderFillTransaction, orderCancelTransaction } = oandaResponse;`,
+  `  releaseExecutionReservation(executionReservation);
+  const { orderCreateTransaction, orderFillTransaction, orderCancelTransaction } = oandaResponse;`,
+  'trade setup release',
+);
+trade = mustReplace(
+  trade,
+  `  if (orderCancelTransaction) {
+    const cancelInfo`,
+  `  if (orderCancelTransaction) {
+    releaseProjectedRiskReservation(riskReservation.token);
+    const cancelInfo`,
+  'trade cancel risk release',
+);
+trade = mustReplace(
+  trade,
+  `  if (!orderFillTransaction) {
+    const rejectReason`,
+  `  if (!orderFillTransaction) {
+    releaseProjectedRiskReservation(riskReservation.token);
+    const rejectReason`,
+  'trade no fill risk release',
+);
+trade = mustReplace(
+  trade,
+  `  const fillInfo        = extractFillTx(orderFillTransaction);`,
+  `  commitProjectedRiskReservation(riskReservation.token);
+  const fillInfo        = extractFillTx(orderFillTransaction);`,
+  'trade fill risk commit',
+);
+write('server/oandaTrade.js', trade);
+
+// ---------------------------------------------------------------------------
+// ICT uses the same safety/risk policy and no fabricated confirmations
+// ---------------------------------------------------------------------------
+let ict = read('server/ictExecution.js');
+ict = mustReplace(
+  ict,
+  "import { checkTotalOpenRisk, computeOpenRiskPercent } from './autoAiRiskLimits.js';",
+  "import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';",
+  'ict open risk import',
+);
+ict = mustReplace(
+  ict,
+  `  checkDailyRiskLock,
+  checkAutoExecutionConfidence,`,
+  `  checkDailyRiskLock,
+  previewProjectedRiskBudget,
+  reserveProjectedRiskBudget,
+  releaseProjectedRiskReservation,
+  commitProjectedRiskReservation,
+  checkAutoExecutionConfidence,`,
+  'ict risk imports',
+);
+ict = mustReplace(
+  ict,
+  "import { evaluateTradeCandidate } from './tradeDecisionEngine.js';\n",
+  `import {
+  evaluateHardEntryPolicy,
+  buildSetupFingerprint,
+  checkPersistentSetupEligibility,
+  acquireExecutionReservation,
+  releaseExecutionReservation,
+  attachSetupClientExtensions,
+} from './executionSafetyPolicy.js';\n`,
+  'ict safety import',
+);
+ict = mustReplace(
+  ict,
+  `  // ── 4b. ForexFactory news risk — block within a high-impact window ─────────`,
+  `  const executionSignal = {
+    ...analysis,
+    pair,
+    direction,
+    entry,
+    stopLoss,
+    takeProfit: targetProfit,
+    targetProfit,
+  };
+  const hardEntryPolicy = evaluateHardEntryPolicy(executionSignal);
+  if (!hardEntryPolicy.allowed) {
+    return blocked(\`Hard entry policy rejected: \${hardEntryPolicy.reasons.join('; ')}\`);
+  }
+
+  // ── 4b. ForexFactory news risk — block within a high-impact window ─────────`,
+  'ict hard policy',
+);
+ict = mustReplace(
+  ict,
+  `  const pipSize = getPipSize(pair);`,
+  `  let openTradesForRisk;
+  try {
+    const openFn = getOpen || (() => getOpenTrades({ client }));
+    openTradesForRisk = (await openFn()) || [];
+  } catch (err) {
+    return blocked(\`Projected-risk check failed to fetch open trades: \${err.message}\`);
+  }
+  const openRiskUSD = computeOpenRiskUSD(openTradesForRisk);
+
+  const pipSize = getPipSize(pair);`,
+  'ict open risk fetch',
+);
+ict = mustReplace(
+  ict,
+  `  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
+  const targetRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);`,
+  `  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
+  const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
+  const projectedBudget = previewProjectedRiskBudget({
+    accountId: client.accountId,
+    balanceUSD,
+    openRiskUSD,
+    requestedRiskUSD,
+    now,
+  });
+  if (!projectedBudget.allowed) return blocked(projectedBudget.reason);
+  const targetRiskUSD = projectedBudget.approvedRiskUSD;
+  if (projectedBudget.capped) {
+    rec(\`projected daily risk capped $\${requestedRiskUSD.toFixed(2)} → $\${targetRiskUSD.toFixed(2)}\`);
+  }`,
+  'ict projected cap',
+);
+ict = mustReplace(
+  ict,
+  '  // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.4%) ───────',
+  '  // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.25%) ──────',
+  'ict risk comment',
+);
+ict = mustMatchReplace(
+  ict,
+  /  \/\/ ── 8c\. Auto AI total-open-risk cap[\s\S]*?\n  \}\n\n  \/\/ ── 8d\./,
+  `  // Existing portfolio cap remains additive; projected 2.5% risk is authoritative.
+  if (autoAi) {
+    const currentOpenRiskPercent = computeOpenRiskPercent(openTradesForRisk, balanceUSD) ?? 0;
+    const newTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const totalCheck = checkTotalOpenRisk(currentOpenRiskPercent, newTradeRiskPercent);
+    if (!totalCheck.allowed) return blocked(totalCheck.reason);
+  }
+
+  // ── 8d.`,
+  'ict portfolio block',
+);
+ict = mustReplace(
+  ict,
+  `  const orderPayload = {
+    order: {`,
+  `  const setup = buildSetupFingerprint(executionSignal, { accountId, now });
+  const persistentSetup = await checkPersistentSetupEligibility({
+    client,
+    accountId,
+    fingerprint: setup.fingerprint,
+  });
+  if (!persistentSetup.allowed) return blocked(\`Persistent setup lock rejected: \${persistentSetup.reason}\`);
+
+  const executionReservation = acquireExecutionReservation({
+    accountId,
+    fingerprint: setup.fingerprint,
+  });
+  if (!executionReservation.allowed) return blocked(executionReservation.reason);
+
+  const riskReservation = reserveProjectedRiskBudget({
+    accountId,
+    balanceUSD,
+    openRiskUSD,
+    requestedRiskUSD: sizing.actualRiskUSD,
+    now,
+    requireFullAmount: true,
+  });
+  if (!riskReservation.allowed) {
+    releaseExecutionReservation(executionReservation);
+    return blocked(riskReservation.reason);
+  }
+
+  const orderPayload = {
+    order: {`,
+  'ict reservations',
+);
+ict = mustReplace(
+  ict,
+  `  };
+  rec(\`submitted`,
+  `  };
+  attachSetupClientExtensions(orderPayload, setup.fingerprint);
+  rec(\`submitted`,
+  'ict client extensions',
+);
+ict = mustMatchReplace(
+  ict,
+  /  let resp;\n  try \{[\s\S]*?    resp = await client\.post\(`\/v3\/accounts\/\$\{accountId\}\/orders`, orderPayload\);\n  \} catch \(err\) \{/,
+  `  let resp;
+  try {
+    resp = await client.post(\`/v3/accounts/\${accountId}/orders\`, orderPayload);
+  } catch (err) {
+    releaseExecutionReservation(executionReservation);
+    releaseProjectedRiskReservation(riskReservation.token);`,
+  'ict fabricated gate removal',
+);
+ict = mustReplace(
+  ict,
+  `  if (resp?.orderCancelTransaction) {
+    const reason`,
+  `  releaseExecutionReservation(executionReservation);
+  if (resp?.orderCancelTransaction) {
+    releaseProjectedRiskReservation(riskReservation.token);
+    const reason`,
+  'ict cancel release',
+);
+ict = mustReplace(
+  ict,
+  `  if (!fill) {
+    rec('rejected: no fill transaction`,
+  `  if (!fill) {
+    releaseProjectedRiskReservation(riskReservation.token);
+    rec('rejected: no fill transaction`,
+  'ict no fill release',
+);
+ict = mustReplace(
+  ict,
+  `  // Filled — SL/TP attached atomically on fill. Register the shared lock.
+  registerTradeLock`,
+  `  // Filled — SL/TP attached atomically on fill. Register the shared lock.
+  commitProjectedRiskReservation(riskReservation.token);
+  registerTradeLock`,
+  'ict fill commit',
+);
+write('server/ictExecution.js', ict);
+
+// -----------------------------------------------
