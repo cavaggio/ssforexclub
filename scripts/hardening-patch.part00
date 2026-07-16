@@ -1,0 +1,285 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = process.cwd();
+const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+const write = (p, s) => {
+  const full = path.join(root, p);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, s);
+};
+const mustReplace = (text, oldValue, newValue, label) => {
+  const count = text.split(oldValue).length - 1;
+  if (count !== 1) {
+    throw new Error(`${label}: expected exactly one match, found ${count}`);
+  }
+  return text.replace(oldValue, newValue);
+};
+const mustMatchReplace = (text, regex, replacement, label) => {
+  const matches = text.match(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)) || [];
+  if (matches.length !== 1) {
+    throw new Error(`${label}: expected exactly one regex match, found ${matches.length}`);
+  }
+  return text.replace(regex, replacement);
+};
+
+// ---------------------------------------------------------------------------
+// New shared execution safety policy
+// ---------------------------------------------------------------------------
+write('server/executionSafetyPolicy.js', `import { createHash, randomUUID } from 'node:crypto';
+
+const blockedTimingStates = new Set([
+  'too_early',
+  'late_entry',
+  'late entry',
+  'wait_for_retest',
+  'wait for retest',
+  'pending_sweep',
+  'pending sweep',
+]);
+
+const executionReservations = new Map();
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const n = numberOrNull(value);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== '') ?? null;
+}
+
+function normalizeDirection(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'buy') return 'long';
+  if (v === 'sell') return 'short';
+  return v === 'long' || v === 'short' ? v : null;
+}
+
+function directionSign(direction) {
+  return direction === 'long' ? 'bullish' : direction === 'short' ? 'bearish' : null;
+}
+
+function extractV3(signal = {}) {
+  return signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || {};
+}
+
+function timingStatus(signal = {}) {
+  const v3 = extractV3(signal);
+  return String(
+    firstValue(
+      signal?.entryTiming?.status,
+      v3?.entryTiming?.status,
+      signal?.timing?.status,
+      signal?.concepts?.entryTiming?.status,
+    ) || ''
+  ).trim().toLowerCase();
+}
+
+function extractSweep(signal = {}) {
+  const v3 = extractV3(signal);
+  return (
+    v3?.liquidity?.liquiditySweep ||
+    signal?.liquidity?.liquiditySweep ||
+    signal?.institutionalFlow?.signals?.find?.((item) =>
+      String(item?.type || '').toLowerCase().includes('liquidity_sweep')
+    ) ||
+    signal?.concepts?.liquiditySweep ||
+    null
+  );
+}
+
+function sweepStatus(signal = {}) {
+  const v3 = extractV3(signal);
+  const sweep = extractSweep(signal);
+  const detected =
+    v3?.liquidity?.liquiditySweepDetected === true ||
+    signal?.liquidity?.liquiditySweepDetected === true ||
+    Boolean(sweep);
+  const pending =
+    detected &&
+    (
+      sweep?.pending === true ||
+      String(sweep?.subtype || '').toLowerCase() === 'pending_sweep' ||
+      String(sweep?.status || '').toLowerCase() === 'pending'
+    );
+  return { detected, pending, sweep };
+}
+
+function opposingFlow(signal = {}, direction) {
+  const v3 = extractV3(signal);
+  const sign = directionSign(direction);
+  const flow = signal?.institutionalFlow || v3?.institutionalFlow || signal?.flow || {};
+  const flowDirection = String(flow?.direction || '').toLowerCase();
+  const opposingSignal = Array.isArray(flow?.signals)
+    ? flow.signals.find((item) => {
+        const itemDirection = String(item?.direction || '').toLowerCase();
+        return itemDirection && itemDirection !== 'neutral' && itemDirection !== sign;
+      })
+    : null;
+
+  const detected = flow?.detected !== false && (flow?.detected === true || flowDirection || opposingSignal);
+  const directOpposition =
+    detected &&
+    flowDirection &&
+    flowDirection !== 'neutral' &&
+    flowDirection !== sign;
+
+  return {
+    opposed: Boolean(directOpposition || opposingSignal),
+    flowDirection: flowDirection || opposingSignal?.direction || null,
+    reason: opposingSignal?.reason || flow?.reason || null,
+  };
+}
+
+function rangeContext(signal = {}) {
+  const v3 = extractV3(signal);
+  const structure = v3?.structure || signal?.structure || {};
+  const regimeText = [
+    structure?.structureTrend,
+    structure?.marketState,
+    signal?.marketState,
+    signal?.marketRegime,
+    signal?.regime,
+    v3?.marketRegime?.state,
+    v3?.marketRegime?.regime,
+    v3?.regime?.state,
+    v3?.regime?.regime,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+
+  const ranging = /(rang|sideways|consolidat|choppy|whipsaw)/i.test(regimeText);
+
+  const high = firstNumber(
+    signal?.range?.high,
+    signal?.rangeHigh,
+    signal?.marketRange?.high,
+    structure?.rangeHigh,
+    structure?.range?.high,
+    v3?.range?.high,
+    v3?.liquidity?.rangeHigh,
+  );
+  const low = firstNumber(
+    signal?.range?.low,
+    signal?.rangeLow,
+    signal?.marketRange?.low,
+    structure?.rangeLow,
+    structure?.range?.low,
+    v3?.range?.low,
+    v3?.liquidity?.rangeLow,
+  );
+
+  const breakoutCandle =
+    signal?.entryTiming?.breakoutCandle ||
+    signal?.entryTiming?.triggerCandle ||
+    structure?.breakoutCandle ||
+    structure?.bos?.candle ||
+    null;
+  const breakoutClose = firstNumber(
+    breakoutCandle?.close,
+    signal?.entryTiming?.breakoutClose,
+    structure?.breakoutClose,
+    structure?.bos?.close,
+  );
+
+  const direction = normalizeDirection(signal?.direction || v3?.direction || v3?.signal);
+  const closeOutside =
+    breakoutClose !== null &&
+    high !== null &&
+    low !== null &&
+    (
+      (direction === 'long' && breakoutClose > high) ||
+      (direction === 'short' && breakoutClose < low)
+    );
+
+  const breakConfirmed = Boolean(
+    signal?.rangeBreakConfirmed === true ||
+    signal?.entryTiming?.rangeBreakConfirmed === true ||
+    signal?.entryTiming?.breakoutConfirmed === true ||
+    structure?.rangeBreakConfirmed === true ||
+    structure?.bos?.outsideRange === true ||
+    closeOutside
+  );
+
+  const status = timingStatus(signal);
+  const retestConfirmed = Boolean(
+    signal?.rangeRetestConfirmed === true ||
+    signal?.entryTiming?.rangeRetestConfirmed === true ||
+    (
+      signal?.entryTiming?.retestDetected === true &&
+      status === 'valid_entry'
+    ) ||
+    structure?.rangeRetestConfirmed === true
+  );
+
+  return {
+    ranging,
+    regimeText,
+    high,
+    low,
+    breakoutClose,
+    closeOutside,
+    breakConfirmed,
+    retestConfirmed,
+  };
+}
+
+export function evaluateHardEntryPolicy(signal = {}) {
+  const v3 = extractV3(signal);
+  const direction = normalizeDirection(signal?.direction || v3?.direction || v3?.signal);
+  const reasons = [];
+  const status = timingStatus(signal);
+  const sweep = sweepStatus(signal);
+  const flow = opposingFlow(signal, direction);
+  const range = rangeContext(signal);
+
+  if (!direction) reasons.push('missing executable direction');
+  if (blockedTimingStates.has(status)) {
+    reasons.push(\`entry timing status "\${status}" is a hard execution block\`);
+  }
+  if (sweep.pending) {
+    reasons.push('liquidity sweep is pending; close-back confirmation is missing');
+  }
+  if (flow.opposed) {
+    reasons.push(
+      \`institutional flow opposes \${direction || 'requested'} direction\` +
+      (flow.reason ? \`: \${flow.reason}\` : '')
+    );
+  }
+  if (signal?.newsRisk?.blocked === true || v3?.newsRisk?.blocked === true) {
+    reasons.push('news block active');
+  }
+  if (range.ranging) {
+    if (!range.breakConfirmed) {
+      reasons.push('ranging market requires a confirmed candle close outside the range');
+    }
+    if (!range.retestConfirmed) {
+      reasons.push('ranging market requires a successful post-break retest');
+    }
+    if (
+      range.breakoutClose !== null &&
+      range.high !== null &&
+      range.low !== null &&
+      !range.closeOutside
+    ) {
+      reasons.push('recorded breakout candle did not close outside the range boundaries');
+    }
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    metrics: {
+      direction,
+      timingStatus: stat
