@@ -1,0 +1,57 @@
+name: V3 entry contract
+
+on:
+  push:
+    branches:
+      - agent/production-risk-hardening
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Apply V3 entry contract
+        run: python3 scripts/apply_v3_entry_contract.py
+      - name: Commit generated source
+        env:
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git diff --quiet; then
+            echo "No generated source changes required."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add server package.json scripts/apply_v3_entry_contract.py
+            git commit -m "Enforce Stage 2 V3 entry contract"
+            git push origin HEAD:"${TARGET_BRANCH}"
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: Syntax checks
+        run: |
+          node --check server/v3EntryContract.js
+          node --check server/v3QualityConfirmation.js
+          node --check server/v3IndependentScanner.js
+          node --check server/v3AutoTrade.js
+          node --check server/oandaTrade.js
+      - name: Run focused V3 tests
+        run: |
+          node --test server/primaryTimeframeAlignment.test.js
+          node --test server/v3QualityConfirmation.test.js
+          node --test server/v3IndependentScanner.test.js
+          node --test server/v3EntryContract.integration.test.js
+      - name: Run full suite
+        run: npm test
