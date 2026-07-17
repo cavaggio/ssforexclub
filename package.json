@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "apply:v3-entry": "python3 scripts/run_v3_entry_contract.py && python3 scripts/apply_v3_dashboard_scan.py && python3 scripts/apply_v3_timeframe_classification.py",
+    "apply:v3-entry": "python3 scripts/run_v3_entry_contract.py && python3 scripts/apply_v3_dashboard_scan.py && python3 scripts/apply_v3_timeframe_classification.py && python3 scripts/enforce_v3_alignment_roles.py",
     "predev:server": "npm run apply:v3-entry",
     "dev": "vite",
     "dev:server": "node server/index.js",
@@ -28,7 +28,7 @@
     "@anthropic-ai/sdk": "^0.91.1",
     "@supabase/supabase-js": "^2.105.1",
     "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
+    "cors": "^5.2.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
