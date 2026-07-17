@@ -18,11 +18,18 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
     return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${fresh.signal.direction}`, fresh };
   }
 
-  const policy = evaluatePprExecutionPolicy(fresh.signal, { minRR: pprConfig().minRR });
+  const config = pprConfig();
+  const policy = evaluatePprExecutionPolicy(fresh.signal, {
+    minRR: config.minRR,
+    maxEntryDistancePips: config.maxEntryDistancePips,
+  });
   if (!policy.allowed) {
     return { allowed: false, reason: `PPR policy rejected: ${policy.reasons.join('; ')}`, fresh, policy };
   }
-  log(`fresh confirmation pair=${candidate.pair} direction=${originalDirection} manipulation=${policy.manipulationType} rr=${policy.rr}`);
+  log(
+    `fresh confirmation pair=${candidate.pair} direction=${originalDirection} ` +
+    `manipulations=${policy.manipulationTypes.join('+')} distance=${policy.distancePips}p rr=${policy.rr}`,
+  );
   return { allowed: true, signal: fresh.signal, policy };
 }
 
