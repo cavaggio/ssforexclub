@@ -56,22 +56,8 @@ jobs:
         run: node --test server/ictIndependence.test.js
       - name: Verify V3 execution contract remains valid
         run: node --test server/v3EntryContract.integration.test.js
-      - name: Capture full server test suite
-        id: full_suite
-        continue-on-error: true
-        run: npm test > /tmp/ppr-full-suite.txt 2>&1
-      - name: Upload full server test result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ppr-full-server-suite
-          path: /tmp/ppr-full-suite.txt
-          if-no-files-found: error
-      - name: Enforce full server test suite
-        if: steps.full_suite.outcome == 'failure'
-        run: |
-          tail -n 250 /tmp/ppr-full-suite.txt
-          exit 1
+      - name: Run full server test suite
+        run: npm test
 
   ppr-dashboard:
     runs-on: ubuntu-latest
