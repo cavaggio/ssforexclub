@@ -13,11 +13,61 @@ import {
   validateDirectionLock,
 } from './v3EntryContract.js';
 
+function movementEvent({
+  type = 'confirmed_liquidity_sweep',
+  direction = 'bullish',
+  time = '2026-07-16T12:20:00.000Z',
+  triggerPrice = 1.1000,
+} = {}) {
+  return {
+    type,
+    direction,
+    timeframe: 'M15',
+    time,
+    triggerPrice,
+    confirmed: true,
+    pending: false,
+  };
+}
+
+function movementState({
+  events = [movementEvent()],
+  direction = 'long',
+  trigger = events[events.length - 1] || null,
+  triggerAgeBars = 1,
+  triggerDistanceAtr = 0.2,
+  pendingEvents = [],
+} = {}) {
+  return {
+    policyVersion: 'v3-market-movement-entry-v1-2026-07-17',
+    pair: 'EUR_USD',
+    direction,
+    currentPrice: 1.10005,
+    atrPips: 20,
+    consolidating: false,
+    events,
+    pendingEvents,
+    trigger,
+    triggerConfirmed: Boolean(trigger),
+    triggerType: trigger?.type || null,
+    triggerTime: trigger?.time || null,
+    triggerPrice: trigger?.triggerPrice ?? null,
+    triggerAgeBars: trigger ? triggerAgeBars : null,
+    triggerDistancePips: trigger ? triggerDistanceAtr * 20 : null,
+    triggerDistanceAtr: trigger ? triggerDistanceAtr : null,
+    maxTriggerBars: 3,
+    maxDistanceAtr: 0.65,
+    maxAdverseAtr: 0.25,
+    fibUsedForConfirmation: false,
+  };
+}
+
 function generatedBullishV3(overrides = {}) {
   const v3 = {
     score: 78,
     qualified: true,
     direction: 'long',
+    atrPips: 20,
     timeframes: { daily: 'bullish', h4: 'bullish', m15: 'bullish' },
     primaryTimeframeAlignment: {
       passed: true,
@@ -25,9 +75,12 @@ function generatedBullishV3(overrides = {}) {
       dailyH4Aligned: true,
       expected: 'bullish',
     },
-    entryDistanceFromOriginPct: 0.35,
     slPipsEst: 15,
-    fib: { entryZoneStatus: 'inside_zone' },
+    fib: {
+      entryZoneStatus: 'inside_zone',
+      confirmationRole: 'diagnostic_only',
+    },
+    fibConfirmationPolicy: 'diagnostic_only_not_used',
     targets: {
       accepted: true,
       tp1: { price: 1.1035, pips: 34.5, source: 'PDH' },
@@ -35,7 +88,7 @@ function generatedBullishV3(overrides = {}) {
     structure: {
       structureTrend: 'bullish',
       bosDetected: true,
-      bos: { direction: 'bullish', time: '2026-07-16T12:10:00.000Z' },
+      bos: { direction: 'bullish', time: '2026-07-16T12:10:00.000Z', brokenLevel: 1.0998 },
       chochDetected: false,
       choch: null,
     },
@@ -46,13 +99,15 @@ function generatedBullishV3(overrides = {}) {
         subtype: 'confirmed_sweep',
         direction: 'bullish',
         pending: false,
-        time: '2026-07-16T12:05:00.000Z',
+        time: '2026-07-16T12:20:00.000Z',
       },
     },
     liquidityIntent: { intentScore: 0.8, liquidityBias: 'bullish' },
-    premiumDiscount: { premiumDiscountState: 'discount', premiumDiscountScore: 0.82 },
+    premiumDiscount: null,
     sessionNarrative: { sessionBias: 'bullish' },
     volatility: { volatilityState: 'normal', compressionDetected: false, expansionDetected: false },
+    institutionalFlow: { signals: [] },
+    marketMovement: movementState(),
     ...overrides,
   };
   return v3;
@@ -70,6 +125,7 @@ function generatedCandidate(v3 = generatedBullishV3()) {
   assert.ok(candidate, 'independent candidate should be generated');
   candidate.atrPips = 20;
   candidate.entryTiming = deriveV3EntryTiming(candidate);
+  candidate.v3.entryTiming = candidate.entryTiming;
   return candidate;
 }
 
@@ -81,6 +137,8 @@ test('generated independent V3 candidate passes Stage 1 and Stage 2, reprices fr
   const stage2 = evaluateV3TriggerStage(candidate);
   assert.equal(stage2.allowed, true, stage2.reasons.join('; '));
   assert.equal(stage2.metrics.entryTiming.status, 'valid_entry');
+  assert.equal(stage2.metrics.entryTiming.timingSource, 'pair_market_movement');
+  assert.equal(stage2.metrics.entryTiming.fibUsedForConfirmation, false);
   assert.equal(stage2.metrics.alignment.dailyH4Aligned, true);
 
   candidate.qualityConfirmation = { stage1, stage2 };
@@ -154,17 +212,13 @@ test('short execution geometry uses bid', () => {
 });
 
 test('confirmed opposing sweep cancels a long candidate', () => {
+  const bearishSweep = movementEvent({
+    direction: 'bearish',
+    time: '2026-07-16T12:12:00.000Z',
+    triggerPrice: 1.1002,
+  });
   const v3 = generatedBullishV3({
-    liquidity: {
-      liquiditySweepDetected: true,
-      liquiditySweep: {
-        type: 'liquidity_sweep',
-        subtype: 'confirmed_sweep',
-        direction: 'bearish',
-        pending: false,
-        time: '2026-07-16T12:12:00.000Z',
-      },
-    },
+    marketMovement: movementState({ events: [bearishSweep], trigger: bearishSweep }),
   });
   const candidate = generatedCandidate(v3);
   const sweepGate = evaluateOpposingSweepBlock(candidate, 'long');
@@ -175,6 +229,17 @@ test('confirmed opposing sweep cancels a long candidate', () => {
 });
 
 test('newer bullish CHoCH plus confirmed retest can override an older bearish sweep', () => {
+  const bearishSweep = movementEvent({
+    direction: 'bearish',
+    time: '2026-07-16T12:05:00.000Z',
+    triggerPrice: 1.0998,
+  });
+  const bullishRetest = movementEvent({
+    type: 'confirmed_retest',
+    direction: 'bullish',
+    time: '2026-07-16T12:20:00.000Z',
+    triggerPrice: 1.1000,
+  });
   const v3 = generatedBullishV3({
     structure: {
       structureTrend: 'bearish',
@@ -182,18 +247,12 @@ test('newer bullish CHoCH plus confirmed retest can override an older bearish sw
       bosDetected: false,
       bos: null,
       chochDetected: true,
-      choch: { direction: 'bullish', time: '2026-07-16T12:15:00.000Z' },
+      choch: { direction: 'bullish', time: '2026-07-16T12:15:00.000Z', brokenLevel: 1.0999 },
     },
-    liquidity: {
-      liquiditySweepDetected: true,
-      liquiditySweep: {
-        type: 'liquidity_sweep',
-        subtype: 'confirmed_sweep',
-        direction: 'bearish',
-        pending: false,
-        time: '2026-07-16T12:05:00.000Z',
-      },
-    },
+    marketMovement: movementState({
+      events: [bearishSweep, bullishRetest],
+      trigger: bullishRetest,
+    }),
   });
   const candidate = generatedCandidate(v3);
   candidate.entryTiming = {
@@ -201,7 +260,10 @@ test('newer bullish CHoCH plus confirmed retest can override an older bearish sw
     status: 'valid_entry',
     retestDetected: true,
     retest: { direction: 'bullish', time: '2026-07-16T12:20:00.000Z' },
+    triggerConfirmed: true,
+    triggerType: 'confirmed_retest',
   };
+  candidate.v3.entryTiming = candidate.entryTiming;
   const sweepGate = evaluateOpposingSweepBlock(candidate, 'long');
   assert.equal(sweepGate.allowed, true, sweepGate.reason);
   const stage2 = evaluateV3TriggerStage(candidate);
