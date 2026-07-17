@@ -135,12 +135,31 @@ export async function setAutoAiTrading(
     updated_at: new Date().toISOString(),
   };
   if (engine === 'ict' || engine === 'v3' || engine === 'ppr') row.auto_ai_engine = engine;
+
   const { data, error } = await supabase
     .from('user_trading_settings')
     .upsert(row, { onConflict: 'user_id' })
     .select(SETTINGS_SELECT)
     .single();
-  if (error || !data) throw new Error(`setAutoAiTrading: ${error?.message ?? 'no row returned'}`);
+
+  if (error || !data) {
+    const message = error?.message ?? 'no row returned';
+    const code = typeof error?.code === 'string' ? error.code : '';
+    const isPprConstraintFailure = engine === 'ppr' && (
+      code === '23514' ||
+      /auto_ai_engine|check constraint|violates check/i.test(message)
+    );
+
+    if (isPprConstraintFailure) {
+      throw new Error(
+        'PPR cannot be selected because the production Supabase migration has not been applied. ' +
+        'Run supabase/migrations/20260717_allow_ppr_auto_ai_engine.sql in the Supabase SQL Editor, then refresh this page.',
+      );
+    }
+
+    throw new Error(`setAutoAiTrading: ${message}`);
+  }
+
   return rowToSettings(data, clerkUserId);
 }
 
