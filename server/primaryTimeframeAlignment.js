@@ -2,17 +2,29 @@
  * Primary timeframe alignment policy.
  *
  * HARD GATE:
- *   Daily + H4 + M15 are the only directional decision timeframes.
- *   Daily and H4 must both align with the intended direction. That hard pair scores 67/100; aligned M15 raises the score to 100/100.
+ *   Daily + H4 are the minimum directional requirement. Both must align with
+ *   the intended direction and together score 67/100.
+ *
+ * FULL ALIGNMENT:
+ *   Daily + H4 + M15 aligned with the intended direction score 100/100.
+ *   M15 can improve 67 to 100, but it cannot replace either Daily or H4.
+ *
+ * EXCLUDED FROM ALIGNMENT:
+ *   H1 is reserved for Fibonacci impulse/retracement analysis. It must not
+ *   contribute to direction, alignment score, conflicts, or market-structure
+ *   qualification.
  *
  * SOFT CONTEXT ONLY:
- *   H1 + M30 + M5 may warn/conflict, but they must not reject an otherwise valid trade.
+ *   M30 + M5 may warn/conflict, but they must not reject an otherwise valid
+ *   Daily/H4 setup.
  */
 
+export const HARD_ALIGNMENT_TIMEFRAMES = ['daily', 'h4'];
 export const PRIMARY_ALIGNMENT_TIMEFRAMES = ['daily', 'h4', 'm15'];
-export const CONTEXT_ALIGNMENT_TIMEFRAMES = ['h1', 'm30', 'm5'];
+export const FIB_ONLY_TIMEFRAMES = ['h1'];
+export const CONTEXT_ALIGNMENT_TIMEFRAMES = ['m30', 'm5'];
 export const PRIMARY_ALIGNMENT_MIN_SCORE = 67;
-export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-daily-h4-hard-2026-07-16';
+export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-daily-h4-67-m15-100-h1-fib-only-2026-07-17';
 
 function norm(value) {
   const s = String(value || '').trim().toLowerCase();
@@ -37,7 +49,6 @@ function readTfBias(source, tf) {
   const aliases = {
     daily: ['daily', 'd', 'd1', 'day'],
     h4: ['h4', 'fourHour', 'four_hour', 'fourHourBias', 'h4Bias'],
-    h1: ['h1', 'oneHour', 'one_hour', 'oneHourBias', 'h1Bias'],
     m30: ['m30', 'thirtyMin', 'thirty_min', 'm30Bias'],
     m15: ['m15', 'fifteenMin', 'fifteen_min', 'm15Bias'],
     m5: ['m5', 'fiveMin', 'five_min', 'm5Bias'],
@@ -89,6 +100,7 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
   const explicitExpected = wantBias(direction || input.direction || input.signal || input.side);
   const expected = explicitExpected || majorityBias(biases);
   const missingTimeframes = PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => !biases[tf]);
+  const missingHardTimeframes = HARD_ALIGNMENT_TIMEFRAMES.filter((tf) => !biases[tf]);
 
   if (!expected) {
     return {
@@ -103,14 +115,16 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
       opposingTimeframes: [],
       neutralTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES.filter((tf) => biases[tf] === 'neutral'),
       missingTimeframes,
-      failures: [...PRIMARY_ALIGNMENT_TIMEFRAMES],
+      missingHardTimeframes,
+      failures: [...HARD_ALIGNMENT_TIMEFRAMES],
       contextConflicts: [],
-      reason: 'No executable two-of-three Daily/H4/M15 direction is available.',
+      reason: 'No executable Daily/H4 direction is available.',
     };
   }
 
-  // Missing candle classifications fail closed rather than manufacturing a score.
-  if (missingTimeframes.length > 0) {
+  // Daily and H4 fail closed. M15 is an enhancement from 67 to 100 and may be
+  // missing, neutral, or opposing without replacing the Daily/H4 hard pair.
+  if (missingHardTimeframes.length > 0) {
     return {
       passed: false,
       score: 0,
@@ -123,9 +137,10 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
       opposingTimeframes: [],
       neutralTimeframes: [],
       missingTimeframes,
-      failures: missingTimeframes,
+      missingHardTimeframes,
+      failures: missingHardTimeframes,
       contextConflicts: [],
-      reason: `Primary timeframe alignment unavailable: missing ${missingTimeframes.join(', ')} classification.`,
+      reason: `Primary timeframe alignment unavailable: missing ${missingHardTimeframes.join(', ')} classification.`,
     };
   }
 
@@ -138,30 +153,27 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
     return bias && bias !== 'neutral' && bias !== expected;
   });
 
-  // Exact policy values: 0, 33, 67, 100. Do not derive a directionless 50%.
-  const scores = [0, 33, 67, 100];
-  const score = scores[alignedTimeframes.length] ?? 0;
+  // Exact policy values: Daily+H4 = 67. Daily+H4+M15 = 100.
+  // Other combinations remain diagnostic only and can never pass the hard gate.
   const dailyH4Aligned = biases.daily === expected && biases.h4 === expected;
+  const m15Aligned = biases.m15 === expected;
+  const score = dailyH4Aligned ? (m15Aligned ? 100 : 67) : [0, 33, 67, 100][alignedTimeframes.length] ?? 0;
   const passed = dailyH4Aligned && score >= PRIMARY_ALIGNMENT_MIN_SCORE;
-  const failures = [...opposingTimeframes, ...neutralTimeframes];
+  const failures = [...opposingTimeframes, ...neutralTimeframes, ...missingTimeframes]
+    .filter((tf, index, all) => all.indexOf(tf) === index);
 
   let reason;
   if (!passed) {
-    reason = dailyH4Aligned
-      ? `Primary timeframe alignment failed: Daily/H4/M15 score ${score}/100 < ${PRIMARY_ALIGNMENT_MIN_SCORE}/100 for ${expected}.`
-      : `Primary timeframe alignment failed: Daily and H4 must both align with ${expected}; Daily=${biases.daily}, H4=${biases.h4}.`;
-  } else if (opposingTimeframes.length || neutralTimeframes.length) {
-    const diagnostics = [
-      opposingTimeframes.length ? `opposing=${opposingTimeframes.join(',')}` : null,
-      neutralTimeframes.length ? `neutral=${neutralTimeframes.join(',')}` : null,
-    ].filter(Boolean).join(' ');
+    reason = `Primary timeframe alignment failed: Daily and H4 must both align with ${expected}; Daily=${biases.daily}, H4=${biases.h4}.`;
+  } else if (!m15Aligned) {
+    const m15State = biases.m15 || 'missing';
     reason =
-      `Primary timeframe alignment passed at ${score}/100 (${alignedTimeframes.length}/3). ` +
-      `${diagnostics} is diagnostic only.`;
+      `Primary timeframe alignment passed at 67/100: Daily and H4 align with ${expected}; ` +
+      `M15=${m15State} is diagnostic and is required only for 100/100.`;
   } else if (contextConflicts.length) {
     reason =
-      `Primary timeframe alignment passed at 100/100. Context conflict only: ` +
-      `${contextConflicts.join(', ')}.`;
+      `Primary timeframe alignment passed at 100/100: Daily, H4 and M15 aligned. ` +
+      `Context conflict only: ${contextConflicts.join(', ')}.`;
   } else {
     reason = 'Primary timeframe alignment passed at 100/100: Daily, H4 and M15 aligned.';
   }
@@ -174,13 +186,17 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
     policyVersion: PRIMARY_ALIGNMENT_POLICY_VERSION,
     minimumScore: PRIMARY_ALIGNMENT_MIN_SCORE,
     dailyH4Aligned,
+    m15Aligned,
+    hardTimeframes: HARD_ALIGNMENT_TIMEFRAMES,
     primaryTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES,
+    fibOnlyTimeframes: FIB_ONLY_TIMEFRAMES,
     contextTimeframes: CONTEXT_ALIGNMENT_TIMEFRAMES,
     biases,
     alignedTimeframes,
     opposingTimeframes,
     neutralTimeframes,
     missingTimeframes,
+    missingHardTimeframes,
     failures,
     contextConflicts,
     reason,
