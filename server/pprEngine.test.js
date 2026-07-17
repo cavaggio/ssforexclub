@@ -135,7 +135,7 @@ test('PPR retains a valid raid without an age cutoff and measures retest distanc
     candle({ open: 1.104, high: 1.106, low: 1.095, close: 1.103, time: '2026-07-14T06:10:00Z' }),
     candle({ open: 1.103, high: 1.11, low: 1.101, close: 1.108, time: '2026-07-14T06:15:00Z' }),
     candle({ open: 1.108, high: 1.115, low: 1.104, close: 1.112, time: '2026-07-14T07:00:00Z' }),
-    candle({ open: 1.102, high: 1.106, low: 1.099, close: 1.103, time: '2026-07-14T09:00:00Z' }),
+    candle({ open: 1.102, high: 1.106, low: 1.1005, close: 1.103, time: '2026-07-14T09:00:00Z' }),
   ];
   const raid = detectPprLiquidityRaid({
     candles,
