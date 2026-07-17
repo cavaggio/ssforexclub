@@ -84,11 +84,24 @@ postconditions = r'''
 
 required = {
     'server/primaryTimeframeAlignment.js': [
-        "v3-primary-daily-h4-hard-2026-07-16",
+        "v3-primary-daily-h4-67-m15-100-h1-fib-only-2026-07-17",
+        "export const HARD_ALIGNMENT_TIMEFRAMES = ['daily', 'h4']",
+        "export const FIB_ONLY_TIMEFRAMES = ['h1']",
         "const dailyH4Aligned = biases.daily === expected && biases.h4 === expected",
+        "const score = dailyH4Aligned ? (m15Aligned ? 100 : 67)",
         "passed = dailyH4Aligned && score >= PRIMARY_ALIGNMENT_MIN_SCORE",
     ],
-    'server/v3Engine.js': ["derivePrimaryTimeframes", "directionFromDailyH4", "primaryTimeframeAlignment"],
+    'server/v3Engine.js': [
+        "derivePrimaryTimeframes",
+        "directionFromDailyH4",
+        "primaryTimeframeAlignment",
+        "analyzeMarketStructure({ pair, h4Candles, m15Candles })",
+        "safeFib({ direction, h1Candles, currentPrice: price, pair })",
+    ],
+    'server/marketStructureEngine.js': [
+        "analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] }",
+        "h1Used: false",
+    ],
     'server/oandaInstitutionalFlow.js': ["time: last.time || null"],
     'server/v3QualityConfirmation.js': ["evaluateStage2EntryContract", "lockedDirection"],
     'server/v3IndependentScanner.js': ["deriveV3EntryTiming", "refreshIndependentV3CandidateForExecution", "candidate.directionLock"],
@@ -106,7 +119,12 @@ required = {
         "Pure V3 execution requires a successful Stage 2 confirmation",
         "Repriced V3 geometry from",
     ],
-    'server/primaryTimeframeAlignment.test.js': ["Daily/H4 disagreement hard-rejects"],
+    'server/primaryTimeframeAlignment.test.js': [
+        "Daily and H4 aligned score exactly 67",
+        "Daily H4 and M15 aligned scores 100",
+        "H1 never changes the alignment score",
+    ],
+    'server/marketStructureEngine.test.js': ["H1 candles cannot influence market structure"],
     'server/v3EntryContract.integration.test.js': ["generated independent V3 candidate passes Stage 1 and Stage 2"],
 }
 forbidden = {
