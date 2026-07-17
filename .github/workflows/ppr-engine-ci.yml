@@ -30,8 +30,18 @@ jobs:
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
-      - name: Test three-engine mutual exclusivity
-        run: node --test server/autoAiRouter.test.js
+      - name: Router disabled selection
+        run: node --test --test-name-pattern="disabled toggle" server/autoAiRouter.test.js
+      - name: Router preserves all three engines
+        run: node --test --test-name-pattern="enabled preserves" server/autoAiRouter.test.js
+      - name: Router invalid selection fallback
+        run: node --test --test-name-pattern="missing/invalid" server/autoAiRouter.test.js
+      - name: Router selects exactly one engine
+        run: node --test --test-name-pattern="each selection" server/autoAiRouter.test.js
+      - name: Router never invokes two engines
+        run: node --test --test-name-pattern="never runs more than one" server/autoAiRouter.test.js
+      - name: Router enforces time and weekday boundary
+        run: node --test --test-name-pattern="blocks all engines" server/autoAiRouter.test.js
       - name: Verify ICT execution remains unchanged
         run: node --test server/ictExecution.test.js
       - name: Verify ICT remains independent from V3
