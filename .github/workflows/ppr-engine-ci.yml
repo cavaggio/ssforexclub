@@ -26,22 +26,8 @@ jobs:
         run: |
           npm run apply:v3-entry
           npm run apply:v3-entry
-      - name: Capture PPR scanner and manipulation tests
-        id: ppr_tests
-        continue-on-error: true
-        run: node --test server/pprEngine.test.js > /tmp/ppr-tests.txt 2>&1
-      - name: Upload PPR scanner test result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ppr-scanner-tests
-          path: /tmp/ppr-tests.txt
-          if-no-files-found: error
-      - name: Enforce PPR scanner and manipulation tests
-        if: steps.ppr_tests.outcome == 'failure'
-        run: |
-          cat /tmp/ppr-tests.txt
-          exit 1
+      - name: Test PPR scanner and manipulation logic
+        run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
       - name: Syntax-check generated shared OANDA executor
@@ -91,19 +77,5 @@ jobs:
         run: |
           npm run apply:ppr
           npm run apply:ppr
-      - name: Capture PPR dashboard typecheck
-        id: dashboard_typecheck
-        continue-on-error: true
-        run: npm run typecheck > /tmp/ppr-dashboard-typecheck.txt 2>&1
-      - name: Upload PPR dashboard typecheck result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ppr-dashboard-typecheck
-          path: /tmp/ppr-dashboard-typecheck.txt
-          if-no-files-found: error
-      - name: Enforce PPR dashboard typecheck
-        if: steps.dashboard_typecheck.outcome == 'failure'
-        run: |
-          cat /tmp/ppr-dashboard-typecheck.txt
-          exit 1
+      - name: Typecheck PPR dashboard toggle, attribution and routes
+        run: npm run typecheck
