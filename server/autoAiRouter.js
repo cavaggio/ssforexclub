@@ -2,16 +2,17 @@
  * server/autoAiRouter.js
  *
  * Engine selection + routing for Auto AI Trading. A user runs EITHER the ICT
- * autonomous path OR the native V3 autonomous path — never both in the same tick.
+ * autonomous path OR the independent raw-market V3 path — never both in the
+ * same tick.
  */
 
 import { runAutoAiForUser } from './ictAutoTrade.js';
-import { runAutoV3ForUser } from './v3NativeAutoTrade.js';
+import { runAutoV3ForUser } from './v3AutoTrade.js';
 
 /**
  * Decide which engine (if any) to run for a user.
  *   - auto_ai_trading_enabled === false → null (nothing runs).
- *   - engine 'v3' → native V3 scanner/executor.
+ *   - engine 'v3' → independent V3 Stage 1 → Stage 2 scanner/executor.
  *   - anything else (incl. missing/invalid) → ICT (safe default).
  */
 export function resolveAutoEngine({ autoAiTradingEnabled, autoAiEngine } = {}) {
