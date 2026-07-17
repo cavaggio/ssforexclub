@@ -39,6 +39,24 @@ required = {
         'candidateEntryCalculatedAt',
         'stopLoss',
         'takeProfit',
+        'refreshIndependentV3CandidateForExecution',
+    ],
+    'server/v3ManualExecution.js': [
+        'V3_MANUAL_EXECUTION_POLICY_VERSION',
+        'validateRecentQualifiedV3Signal',
+        'refreshIndependentV3CandidateForExecution',
+        'Fresh V3 Stage 1/Stage 2 validation failed',
+        "source: 'v3_recent_signals_manual'",
+    ],
+    'scripts/apply_v3_recent_signals_execution.py': [
+        'executeRecentQualifiedV3Signal',
+        '[INTERNAL V3 RECENT SIGNAL]',
+    ],
+    'web/app/api/scanner/trade/route.ts': [
+        'Only independent native V3 Recent Signals can be executed manually',
+        'V3 Stage 1 is not complete',
+        'V3 Stage 2 is not complete',
+        "executionSource: 'recent_signals_v3'",
     ],
     'web/components/scanner-watch-status.tsx': [
         'Candidate entry',
@@ -47,10 +65,21 @@ required = {
         'Movement trigger',
         'Fibonacci is not used as a confirmation',
     ],
+    'web/components/scanner-status-card.tsx': [
+        'Recent signals',
+        "fetch('/api/scanner/trade'",
+        'Execute Paper Trade',
+        'Trade executed',
+    ],
     'server/v3FibEntryTiming.test.js': [
         'Fib retracement does not delay a fresh market-movement entry',
         'a completed sweep is late when price has already moved too far',
         'favorable_premium_discount',
+    ],
+    'server/v3ManualExecution.test.js': [
+        'manual execution refreshes the exact pair before placing an order',
+        'manual execution blocks a stale Recent Signal',
+        'manual execution rejects legacy or incomplete signals',
     ],
 }
 
@@ -92,4 +121,4 @@ for relative, markers in forbidden.items():
 if failures:
     raise RuntimeError('V3 market-entry policy incomplete:\n- ' + '\n- '.join(failures))
 
-print('V3 market-entry policy verified: Fib diagnostic only; Stage 2 uses fresh pair-specific movement and displays entry/SL/TP.')
+print('V3 market-entry policy verified: pair-specific movement, safe Recent Signals execution, and Fib diagnostic only.')
