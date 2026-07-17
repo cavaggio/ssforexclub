@@ -2,75 +2,155 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildPprLiquidityPools,
   classifyPprDailyBias,
+  classifyPprH1Alignment,
+  combinePprManipulations,
   detectPprFvgMitigation,
   detectPprLiquidityRaid,
   detectPprOrderBlockRetest,
   detectPprVolumeSpike,
-  findPprSwingPools,
+  getPprWatchlist,
   pprSession,
   selectPprLiquidityTarget,
 } from './pprEngine.js';
 
-function candle({ open, high, low, close, volume = 100, time = '2026-07-14T08:00:00.000Z' }) {
+function candle({
+  open,
+  high,
+  low,
+  close,
+  volume = 100,
+  time = '2026-07-14T08:00:00.000Z',
+}) {
   return { open, high, low, close, volume, time };
 }
 
-test('PPR Daily EMA bias requires aligned price, EMA order, and slope', () => {
-  const bullish = Array.from({ length: 120 }, (_, index) => {
-    const close = 1.05 + index * 0.001;
-    return candle({ open: close - 0.0005, high: close + 0.001, low: close - 0.001, close });
+function trendingCandles({ start, step, count = 40, intervalMs = 3600000 }) {
+  return Array.from({ length: count }, (_, index) => {
+    const close = start + step * index;
+    return candle({
+      open: close - Math.sign(step || 1) * 0.0005,
+      high: close + 0.001,
+      low: close - 0.001,
+      close,
+      time: new Date(Date.parse('2026-07-01T00:00:00.000Z') + index * intervalMs).toISOString(),
+    });
   });
-  const bearish = Array.from({ length: 120 }, (_, index) => {
-    const close = 1.25 - index * 0.001;
-    return candle({ open: close + 0.0005, high: close + 0.001, low: close - 0.001, close });
-  });
+}
 
-  assert.equal(classifyPprDailyBias(bullish).bias, 'bullish');
-  assert.equal(classifyPprDailyBias(bearish).bias, 'bearish');
+test('PPR fixed watchlist contains only GBP_JPY, EUR_GBP and GBP_USD', () => {
+  const prior = process.env.PPR_FOREX_WATCHLIST;
+  process.env.PPR_FOREX_WATCHLIST = 'EUR_USD,GBP_JPY,EUR_GBP,GBP_USD';
+  assert.deepEqual(getPprWatchlist(), ['GBP_JPY', 'EUR_GBP', 'GBP_USD']);
+  if (prior === undefined) delete process.env.PPR_FOREX_WATCHLIST;
+  else process.env.PPR_FOREX_WATCHLIST = prior;
 });
 
-test('PPR identifies swing liquidity and selects the nearest directional target', () => {
-  const candles = [
-    candle({ open: 1.10, high: 1.11, low: 1.09, close: 1.10 }),
-    candle({ open: 1.10, high: 1.13, low: 1.095, close: 1.12 }),
-    candle({ open: 1.12, high: 1.115, low: 1.08, close: 1.09 }),
-    candle({ open: 1.09, high: 1.12, low: 1.085, close: 1.11 }),
-    candle({ open: 1.11, high: 1.10, low: 1.07, close: 1.08 }),
+test('PPR Daily bias uses EMA9 only with aligned slope', () => {
+  const bullish = trendingCandles({ start: 1.05, step: 0.001, count: 40, intervalMs: 86400000 });
+  const bearish = trendingCandles({ start: 1.25, step: -0.001, count: 40, intervalMs: 86400000 });
+  const bullishResult = classifyPprDailyBias(bullish);
+  const bearishResult = classifyPprDailyBias(bearish);
+  assert.equal(bullishResult.bias, 'bullish');
+  assert.equal(bearishResult.bias, 'bearish');
+  assert.match(bullishResult.reason, /EMA9/);
+  assert.equal('slowEma' in bullishResult, false);
+});
+
+test('PPR execution alignment requires H1 price on the EMA9 bias side', () => {
+  const bullish = trendingCandles({ start: 1.05, step: 0.001, count: 30 });
+  assert.equal(classifyPprH1Alignment(bullish, 'long').aligned, true);
+  assert.equal(classifyPprH1Alignment(bullish, 'short').aligned, false);
+});
+
+test('PPR clusters interchangeable liquidity sources and records overlap', () => {
+  const h1 = [
+    candle({ open: 1.10, high: 1.11, low: 1.09, close: 1.10, time: '2026-07-13T13:00:00Z' }),
+    candle({ open: 1.10, high: 1.13, low: 1.095, close: 1.12, time: '2026-07-13T14:00:00Z' }),
+    candle({ open: 1.12, high: 1.115, low: 1.08, close: 1.09, time: '2026-07-13T15:00:00Z' }),
+    candle({ open: 1.09, high: 1.1299, low: 1.085, close: 1.11, time: '2026-07-13T16:00:00Z' }),
+    candle({ open: 1.11, high: 1.10, low: 1.07, close: 1.08, time: '2026-07-13T17:00:00Z' }),
   ];
-  const pools = findPprSwingPools(candles, 1);
-  assert.ok(pools.highs.some((pool) => pool.price === 1.13));
-  assert.ok(pools.lows.some((pool) => pool.price === 1.08));
-  assert.equal(selectPprLiquidityTarget({ pools, direction: 'long', entry: 1.10 })?.price, 1.12);
+  const m15 = h1.map((item, index) => ({ ...item, time: new Date(Date.parse(item.time) + index * 900000).toISOString() }));
+  const daily = trendingCandles({ start: 1.0, step: 0.001, count: 15, intervalMs: 86400000 });
+  const pools = buildPprLiquidityPools({
+    pair: 'GBP_USD',
+    daily,
+    h1,
+    m15,
+    now: new Date('2026-07-14T13:00:00Z'),
+    config: {
+      swingLookback: 1,
+      poolClusterTolerancePips: 2,
+    },
+  });
+  const overlappingHigh = pools.highs.find((pool) => pool.touchCount >= 2);
+  assert.ok(overlappingHigh);
+  assert.equal(overlappingHigh.overlapping, true);
+  assert.ok(overlappingHigh.sources.includes('equal_highs'));
 });
 
-test('PPR volume spike uses current OANDA tick volume against prior baseline', () => {
+test('PPR target selection has no fixed source hierarchy and chooses nearest cluster preserving minimum R:R', () => {
+  const pools = {
+    highs: [
+      { price: 1.105, sources: ['previous_day_high'], confluenceScore: 4 },
+      { price: 1.12, sources: ['h1_swing_high', 'equal_highs'], confluenceScore: 3 },
+      { price: 1.13, sources: ['previous_week_high'], confluenceScore: 1 },
+    ],
+    lows: [],
+  };
+  const target = selectPprLiquidityTarget({
+    pools,
+    direction: 'long',
+    entry: 1.10,
+    stopLoss: 1.095,
+    minRR: 1.5,
+  });
+  assert.equal(target.price, 1.12);
+  assert.equal(target.sources.includes('h1_swing_high'), true);
+  assert.match(target.selectionReason, /source-neutral/);
+});
+
+test('PPR volume spike uses 1.5x current OANDA M5 tick volume against prior 20-bar baseline', () => {
   const candles = Array.from({ length: 21 }, (_, index) => candle({
     open: 1,
     high: 1.01,
     low: 0.99,
     close: 1,
-    volume: index === 20 ? 180 : 100,
+    volume: index === 20 ? 150 : 100,
   }));
-  const result = detectPprVolumeSpike(candles, { volumeLookback: 20, volumeSpikeMultiplier: 1.5 });
+  const result = detectPprVolumeSpike(candles, {
+    volumeLookback: 20,
+    volumeSpikeMultiplier: 1.5,
+  });
   assert.equal(result.detected, true);
-  assert.equal(Number(result.ratio.toFixed(2)), 1.8);
+  assert.equal(Number(result.ratio.toFixed(2)), 1.5);
 });
 
-test('PPR confirms a bullish sell-side liquidity raid only after reclaim', () => {
-  const pools = { highs: [], lows: [{ price: 1.1, time: 'prior' }] };
+test('PPR retains a valid raid without an age cutoff and measures retest distance', () => {
+  const pools = { highs: [], lows: [{ price: 1.1, time: '2026-07-14T06:00:00Z' }] };
   const candles = [
-    candle({ open: 1.105, high: 1.108, low: 1.102, close: 1.104 }),
-    candle({ open: 1.104, high: 1.106, low: 1.095, close: 1.099 }),
-    candle({ open: 1.099, high: 1.108, low: 1.094, close: 1.106 }),
+    candle({ open: 1.105, high: 1.108, low: 1.102, close: 1.104, time: '2026-07-14T06:05:00Z' }),
+    candle({ open: 1.104, high: 1.106, low: 1.095, close: 1.103, time: '2026-07-14T06:10:00Z' }),
+    candle({ open: 1.103, high: 1.11, low: 1.101, close: 1.108, time: '2026-07-14T06:15:00Z' }),
+    candle({ open: 1.108, high: 1.115, low: 1.104, close: 1.112, time: '2026-07-14T07:00:00Z' }),
+    candle({ open: 1.102, high: 1.106, low: 1.099, close: 1.103, time: '2026-07-14T09:00:00Z' }),
   ];
-  const raid = detectPprLiquidityRaid({ candles, pools, direction: 'long' });
+  const raid = detectPprLiquidityRaid({
+    candles,
+    pools,
+    direction: 'long',
+    pair: 'GBP_USD',
+    currentEntry: 1.101,
+  });
   assert.equal(raid?.subtype, 'sell_side_stop_hunt');
-  assert.equal(raid?.direction, 'bullish');
+  assert.equal(raid?.retest, true);
+  assert.equal(Number(raid.distancePips.toFixed(1)), 10);
 });
 
-test('PPR recognizes bullish FVG mitigation with directional rejection', () => {
-  const candles = [
+test('PPR recognizes bullish FVG mitigation and order-block retest without static precedence', () => {
+  const fvgCandles = [
     candle({ open: 1.09, high: 1.10, low: 1.08, close: 1.095 }),
     candle({ open: 1.10, high: 1.13, low: 1.099, close: 1.125 }),
     candle({ open: 1.12, high: 1.14, low: 1.11, close: 1.135 }),
@@ -80,13 +160,10 @@ test('PPR recognizes bullish FVG mitigation with directional rejection', () => {
     candle({ open: 1.14, high: 1.145, low: 1.105, close: 1.13 }),
     candle({ open: 1.115, high: 1.135, low: 1.105, close: 1.13 }),
   ];
-  const fvg = detectPprFvgMitigation({ candles, direction: 'long' });
+  const fvg = detectPprFvgMitigation({ candles: fvgCandles, direction: 'long' });
   assert.equal(fvg?.type, 'fvg_mitigation');
-  assert.equal(fvg?.direction, 'bullish');
-});
 
-test('PPR recognizes an order-block retest after ATR-sized displacement', () => {
-  const candles = [
+  const blockCandles = [
     candle({ open: 1.10, high: 1.102, low: 1.098, close: 1.101 }),
     candle({ open: 1.101, high: 1.103, low: 1.097, close: 1.098 }),
     candle({ open: 1.098, high: 1.113, low: 1.097, close: 1.112 }),
@@ -98,13 +175,25 @@ test('PPR recognizes an order-block retest after ATR-sized displacement', () => 
     candle({ open: 1.10, high: 1.107, low: 1.097, close: 1.105 }),
     candle({ open: 1.105, high: 1.108, low: 1.1, close: 1.107 }),
   ];
-  const block = detectPprOrderBlockRetest({ candles, direction: 'long', atrValue: 0.008 });
+  const block = detectPprOrderBlockRetest({
+    candles: blockCandles,
+    direction: 'long',
+    atrValue: 0.008,
+  });
   assert.equal(block?.type, 'order_block_retest');
+
+  const composite = combinePprManipulations([
+    { ...fvg, invalidation: 1.099, distancePips: 2 },
+    { ...block, invalidation: 1.097, distancePips: 1 },
+  ], 'long');
+  assert.equal(composite.type, 'composite_misdirection');
+  assert.deepEqual(composite.types.sort(), ['fvg_mitigation', 'order_block_retest']);
+  assert.equal(composite.invalidation, 1.097);
 });
 
-test('PPR session is 02:00 inclusive to 10:00 exclusive ET on weekdays', () => {
-  assert.equal(pprSession(new Date('2026-07-14T06:00:00Z')).allowed, true); // 02:00 ET Tue
-  assert.equal(pprSession(new Date('2026-07-14T13:59:00Z')).allowed, true); // 09:59 ET Tue
-  assert.equal(pprSession(new Date('2026-07-14T14:00:00Z')).allowed, false); // 10:00 ET Tue
-  assert.equal(pprSession(new Date('2026-07-18T08:00:00Z')).allowed, false); // Saturday
+test('PPR session and automated management stop at 10:00 ET weekdays', () => {
+  assert.equal(pprSession(new Date('2026-07-14T06:00:00Z')).allowed, true);
+  assert.equal(pprSession(new Date('2026-07-14T13:59:00Z')).allowed, true);
+  assert.equal(pprSession(new Date('2026-07-14T14:00:00Z')).allowed, false);
+  assert.equal(pprSession(new Date('2026-07-18T08:00:00Z')).allowed, false);
 });
