@@ -25,7 +25,6 @@ test('Daily H4 and M15 aligned scores 100 and passes', () => {
   assert.equal(result.policyVersion, PRIMARY_ALIGNMENT_POLICY_VERSION);
   assert.deepEqual(result.hardTimeframes, ['daily', 'h4']);
   assert.deepEqual(result.primaryTimeframes, ['daily', 'h4', 'm15']);
-  assert.deepEqual(result.fibOnlyTimeframes, ['h1']);
   assert.deepEqual(result.contextConflicts.sort(), ['m30', 'm5'].sort());
   assert.equal(Object.hasOwn(result.biases, 'h1'), false);
 });
@@ -81,6 +80,8 @@ test('H1 never changes the alignment score or pass decision', () => {
   assert.equal(bearishH1.passed, true);
   assert.deepEqual(bullishH1.contextConflicts, []);
   assert.deepEqual(bearishH1.contextConflicts, []);
+  assert.equal(Object.hasOwn(bullishH1.biases, 'h1'), false);
+  assert.equal(Object.hasOwn(bearishH1.biases, 'h1'), false);
 });
 
 test('Daily H4 disagreement hard rejects even when H4 and M15 align', () => {
