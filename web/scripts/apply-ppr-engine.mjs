@@ -119,9 +119,9 @@ update('lib/tradeLogs.ts', (input) => {
     source,
     "  event_type: TradeEventType;\n  instrument: string | null;",
     "  event_type: TradeEventType;\n" +
-      "  engine: string | null;\n" +
-      "  strategy: string | null;\n" +
-      "  broker_trade_id: string | null;\n" +
+      "  engine?: string | null;\n" +
+      "  strategy?: string | null;\n" +
+      "  broker_trade_id?: string | null;\n" +
       "  instrument: string | null;",
     'trade log row attribution',
   );
