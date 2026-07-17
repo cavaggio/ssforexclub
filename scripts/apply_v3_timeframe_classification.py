@@ -151,7 +151,11 @@ new = """      const candidate = buildIndependentV3Candidate({ pair, pricing, v3
         continue;
       }
 """
-if new not in scanner:
+
+# The corrected scanner may format the rejection record across multiple lines and
+# may add executable-side price fields. The semantic candidateReason marker is the
+# authoritative idempotence check; do not require one exact formatting layout.
+if "const candidateReason = !v3?.direction" not in scanner:
     if old not in scanner:
         raise RuntimeError('Independent V3 candidate rejection block not found')
     scanner = scanner.replace(old, new, 1)
