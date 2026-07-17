@@ -1,8 +1,8 @@
 import { getRetraceWatchPairs } from './retraceWatchMode.js';
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 135, endMin: 840 }; // 02:15–14:00 ET
-export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 840, endMin: 1050 }; // 14:00–17:30 ET
+export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // 02:00–10:00 ET, Monday–Friday
+export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET, Monday–Friday
 
 function interval(name, fallback) {
   const value = Number.parseInt(process.env[name] || '', 10);
@@ -63,8 +63,8 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] entries=02:15–14:00_ET full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
-    `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms management=14:00–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
+    `[AUTO_AI] entries=02:00–10:00_ET weekdays_only full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
+    `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms management=10:00–17:30_ET weekdays_only/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
   );
 
   addTimer(setInterval(() => void tick(nextUrl, secret, { scanMode: 'full', pairs: [], logTag: '[AUTO_AI][FULL]' }), full));
@@ -127,7 +127,8 @@ export function stopAutoAiScheduler() {
   const stopped = timers.length > 0;
   for (const timer of timers) clearInterval(timer);
   timers = [];
-  nearQualifiedPairs.clear(); hotPairs.clear();
+  nearQualifiedPairs.clear();
+  hotPairs.clear();
   return stopped ? { stopped: true } : { stopped: false, reason: 'not_running' };
 }
 
@@ -139,8 +140,7 @@ export function getNewYorkMinutes(date = new Date()) {
 }
 export function getNewYorkHour(date = new Date()) { return Math.floor(getNewYorkMinutes(date) / 60); }
 export function isPrimaryTradeWindow(date = new Date()) {
-  const minutes = getNewYorkMinutes(date);
-  return minutes >= AUTO_AI_WINDOW.startMin && minutes < AUTO_AI_WINDOW.endMin;
+  return inAutoAiWindow(date);
 }
 export function isTrueHardReject(reason = '') {
   const r = String(reason).toLowerCase();
