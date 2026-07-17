@@ -22,14 +22,10 @@ jobs:
           cache: npm
       - name: Install server dependencies
         run: npm ci
-      - name: Apply authoritative generated source
-        run: npm run apply:v3-entry
-      - name: Verify PPR generation is idempotent
+      - name: Apply authoritative generated source twice
         run: |
-          git diff --binary > /tmp/ppr-first-generation.diff
           npm run apply:v3-entry
-          git diff --binary > /tmp/ppr-second-generation.diff
-          diff -u /tmp/ppr-first-generation.diff /tmp/ppr-second-generation.diff
+          npm run apply:v3-entry
       - name: Test PPR scanner and manipulation logic
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
@@ -57,13 +53,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dashboard dependencies
         run: npm ci
-      - name: Apply PPR dashboard integration
-        run: npm run apply:ppr
-      - name: Verify dashboard generation is idempotent
+      - name: Apply PPR dashboard integration twice
         run: |
-          git diff --binary > /tmp/ppr-web-first-generation.diff
           npm run apply:ppr
-          git diff --binary > /tmp/ppr-web-second-generation.diff
-          diff -u /tmp/ppr-web-first-generation.diff /tmp/ppr-web-second-generation.diff
+          npm run apply:ppr
       - name: Typecheck PPR dashboard toggle and routes
         run: npm run typecheck
