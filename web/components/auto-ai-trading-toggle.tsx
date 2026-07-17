@@ -14,7 +14,16 @@ type Engine = 'ict' | 'v3' | 'ppr';
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; enabled: boolean; engine: Engine; platformEnabled: boolean; liveAck: boolean; environment: string; saving: boolean };
+  | {
+      kind: 'ready';
+      enabled: boolean;
+      engine: Engine;
+      platformEnabled: boolean;
+      liveAck: boolean;
+      environment: string;
+      saving: boolean;
+      saveError: string | null;
+    };
 
 function normalizeEngine(value: unknown): Engine {
   if (value === 'v3' || value === 'ppr') return value;
@@ -34,7 +43,10 @@ export function AutoAiTradingToggle() {
     try {
       const res = await fetch('/api/user/auto-ai-trading', { cache: 'no-store' });
       const json = await res.json();
-      if (!res.ok || !json?.ok) { setState({ kind: 'error', message: json?.error || `HTTP ${res.status}` }); return; }
+      if (!res.ok || !json?.ok) {
+        setState({ kind: 'error', message: json?.error || `HTTP ${res.status}` });
+        return;
+      }
       setState({
         kind: 'ready',
         enabled: !!json.autoAiTradingEnabled,
@@ -43,6 +55,7 @@ export function AutoAiTradingToggle() {
         liveAck: !!json.liveTradingAcknowledged,
         environment: typeof json.activeEnvironment === 'string' ? json.activeEnvironment : 'practice',
         saving: false,
+        saveError: null,
       });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -56,23 +69,52 @@ export function AutoAiTradingToggle() {
     if (state.kind !== 'ready' || state.saving) return;
     const paper = state.environment === 'practice' || state.environment === 'paper';
     if (!paper && !state.platformEnabled) return;
-    setState({ ...state, saving: true });
+
+    setState({ ...state, saving: true, saveError: null });
     try {
       const res = await fetch('/api/user/auto-ai-trading', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
       });
-      const json = await res.json();
-      if (!res.ok || !json?.ok) { setState({ ...state, saving: false }); return; }
-      setState({ ...state, enabled: !!json.autoAiTradingEnabled, engine: normalizeEngine(json.autoAiEngine), saving: false });
-    } catch {
-      setState({ ...state, saving: false });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok) {
+        setState({
+          ...state,
+          saving: false,
+          saveError: json?.error || `Could not save Auto AI engine (HTTP ${res.status}).`,
+        });
+        return;
+      }
+      setState({
+        ...state,
+        enabled: !!json.autoAiTradingEnabled,
+        engine: normalizeEngine(json.autoAiEngine),
+        saving: false,
+        saveError: null,
+      });
+    } catch (err) {
+      setState({
+        ...state,
+        saving: false,
+        saveError: err instanceof Error ? err.message : 'Could not save Auto AI engine.',
+      });
     }
   };
-  const toggle = () => { if (state.kind === 'ready') void save({ enabled: !state.enabled, engine: state.engine }); };
-  const chooseEngine = (engine: Engine) => { if (state.kind === 'ready') void save({ enabled: state.enabled, engine }); };
 
-  if (state.kind === 'loading') return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto AI Trading…</span></Box>;
-  if (state.kind === 'error') return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto AI Trading: {state.message}</span></Box>;
+  const toggle = () => {
+    if (state.kind === 'ready') void save({ enabled: !state.enabled, engine: state.engine });
+  };
+  const chooseEngine = (engine: Engine) => {
+    if (state.kind === 'ready') void save({ enabled: state.enabled, engine });
+  };
+
+  if (state.kind === 'loading') {
+    return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto AI Trading…</span></Box>;
+  }
+  if (state.kind === 'error') {
+    return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto AI Trading: {state.message}</span></Box>;
+  }
 
   const isPaper = state.environment === 'practice' || state.environment === 'paper';
   const platformOk = isPaper || state.platformEnabled;
@@ -100,7 +142,11 @@ export function AutoAiTradingToggle() {
           disabled={disabled || state.saving}
           aria-pressed={on}
           style={{
-            minWidth: 84, padding: '8px 14px', borderRadius: 8, fontWeight: 800, fontSize: 13,
+            minWidth: 84,
+            padding: '8px 14px',
+            borderRadius: 8,
+            fontWeight: 800,
+            fontSize: 13,
             cursor: disabled ? 'not-allowed' : state.saving ? 'wait' : 'pointer',
             border: '1px solid var(--border)',
             background: on ? 'var(--good)' : 'var(--border)',
@@ -124,8 +170,11 @@ export function AutoAiTradingToggle() {
               aria-pressed={active}
               title={ENGINE_DESCRIPTIONS[engine]}
               style={{
-                padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 800,
-                cursor: disabled ? 'not-allowed' : 'pointer',
+                padding: '6px 14px',
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: disabled ? 'not-allowed' : state.saving ? 'wait' : 'pointer',
                 border: `1px solid ${active ? 'var(--good)' : 'var(--border)'}`,
                 background: active ? 'var(--good)' : 'transparent',
                 color: active ? '#06210f' : 'var(--text)',
@@ -137,9 +186,27 @@ export function AutoAiTradingToggle() {
           );
         })}
       </div>
+
       <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', fontStyle: 'italic' }}>
         {ENGINE_DESCRIPTIONS[state.engine]} Only one auto-trading engine can be active at a time.
       </div>
+
+      {state.saveError && (
+        <div
+          role="alert"
+          style={{
+            marginTop: 10,
+            padding: '9px 11px',
+            border: '1px solid var(--bad)',
+            borderRadius: 8,
+            color: 'var(--bad)',
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          {state.saveError}
+        </div>
+      )}
 
       {disabled && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warn)' }}>
