@@ -3,6 +3,31 @@
 import { useCallback, useEffect, useState } from 'react';
 
 type WatchTier = 'hot' | 'near';
+type ConfirmationState = 'pass' | 'waiting' | 'blocked' | 'not_evaluated' | 'info';
+
+type Stage1Metrics = {
+  score?: number;
+  minScore?: number;
+  rr?: number;
+  minRR?: number;
+  spread?: number;
+  maxSpread?: number;
+  targetsAccepted?: boolean;
+  newsBlocked?: boolean;
+  tpHitConfidence?: number;
+  minTpHitConfidence?: number | null;
+};
+
+type Stage2Metrics = {
+  minSupports?: number;
+  pendingSweep?: boolean;
+  confirmedSweep?: boolean;
+  confirmedRetest?: boolean;
+  alignedChoch?: boolean;
+  alignedBos?: boolean;
+  compressionExpansion?: boolean;
+  volatilityState?: string;
+};
 
 type WatchSignal = {
   pair?: string;
@@ -12,6 +37,7 @@ type WatchSignal = {
   rejectionReasons?: string[];
   confidence?: number;
   tpHitConfidence?: number;
+  minimumTpHitConfidence?: number;
   score?: number;
   v3Score?: number;
   expectedRR?: number;
@@ -20,7 +46,41 @@ type WatchSignal = {
   spreadPips?: number;
   entryTiming?: { status?: string; reason?: string } | null;
   alignment?: { timeframeAlignmentScore?: number } | null;
-  v3?: { score?: number } | null;
+  primaryTimeframeAlignment?: {
+    passed?: boolean;
+    score?: number;
+    minimumScore?: number;
+    reason?: string;
+    alignedTimeframes?: string[];
+    opposingTimeframes?: string[];
+  } | null;
+  qualityConfirmation?: {
+    stage1?: {
+      allowed?: boolean;
+      state?: string;
+      reasons?: string[];
+      metrics?: Stage1Metrics;
+    } | null;
+    stage2?: {
+      allowed?: boolean;
+      state?: string;
+      reasons?: string[];
+      primaryTriggers?: string[];
+      supports?: string[];
+      metrics?: Stage2Metrics;
+    } | null;
+  } | null;
+  newsRisk?: { blocked?: boolean; reason?: string; riskLevel?: string } | null;
+  v3?: {
+    score?: number;
+    fib?: {
+      enabled?: boolean;
+      timeframeUsed?: string | null;
+      swingHigh?: number | null;
+      swingLow?: number | null;
+      retracementLevels?: { level382?: number | null } | null;
+    } | null;
+  } | null;
   fibonacci?: {
     enabled?: boolean;
     timeframeUsed?: string | null;
@@ -30,6 +90,8 @@ type WatchSignal = {
   } | null;
   dashboardWatchTier?: { tier?: string; reason?: string } | null;
   watchTier?: { tier?: string; reason?: string } | null;
+  displayQualification?: string;
+  finalQualifiedStatus?: string;
 };
 
 type WatchScanResponse = {
@@ -46,6 +108,13 @@ type WatchScanResponse = {
   error?: string;
 };
 
+type ConfirmationItem = {
+  label: string;
+  state: ConfirmationState;
+  value: string;
+  detail?: string;
+};
+
 function displayPair(signal: WatchSignal): string {
   const pair = String(signal.pair || signal.instrument || 'UNKNOWN');
   if (pair === 'XAU_USD') return 'Gold';
@@ -59,6 +128,21 @@ function finite(...values: unknown[]): number | null {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function words(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function readableList(values: string[] | undefined): string {
+  if (!Array.isArray(values) || values.length === 0) return 'None confirmed';
+  return values.map(words).join(', ');
+}
+
+function firstReason(values: string[] | undefined, fallback: string): string {
+  return Array.isArray(values) && values.length > 0 ? String(values[0]) : fallback;
 }
 
 function formatWatchPrice(signal: WatchSignal, value: unknown): string {
@@ -83,6 +167,180 @@ function watchReason(signal: WatchSignal, tier: WatchTier): string {
   );
 }
 
+function confirmationHeadline(signal: WatchSignal, tier: WatchTier): string {
+  const stage1 = signal.qualityConfirmation?.stage1;
+  const stage2 = signal.qualityConfirmation?.stage2;
+  const timing = String(signal.entryTiming?.status || '').toLowerCase();
+
+  if (!stage1 && !stage2) return 'native confirmation not evaluated';
+  if (stage1?.allowed !== true) return 'stage 1 setup blocked';
+  if (stage2?.allowed === true && timing === 'valid_entry') return 'v3 confirmation complete';
+  if (String(stage2?.state || '').toLowerCase() === 'watch') return 'stage 2 trigger watch';
+  if (stage2?.allowed !== true) return 'stage 2 confirmation blocked';
+  return tier === 'hot' ? 'trigger pending' : 'setup developing';
+}
+
+function timingState(status: string): ConfirmationState {
+  if (status === 'valid_entry') return 'pass';
+  if (status === 'too_early' || status === 'wait_for_retest') return 'waiting';
+  if (status === 'late_entry' || status === 'invalidated' || status === 'news_blocked') return 'blocked';
+  return 'not_evaluated';
+}
+
+function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
+  const stage1 = signal.qualityConfirmation?.stage1;
+  const stage2 = signal.qualityConfirmation?.stage2;
+  const stage1Metrics = stage1?.metrics;
+  const stage2Metrics = stage2?.metrics;
+
+  const alignment = finite(
+    signal.primaryTimeframeAlignment?.score,
+    signal.alignment?.timeframeAlignmentScore,
+  );
+  const minimumAlignment = finite(signal.primaryTimeframeAlignment?.minimumScore) ?? 67;
+  const alignmentPassed = signal.primaryTimeframeAlignment?.passed === true ||
+    (alignment != null && alignment >= minimumAlignment);
+
+  const v3Score = finite(signal.v3Score, signal.v3?.score, signal.score, stage1Metrics?.score);
+  const minimumScore = finite(stage1Metrics?.minScore) ?? 62;
+  const rr = finite(signal.expectedRR, signal.rr, signal.riskReward, stage1Metrics?.rr);
+  const minimumRR = finite(stage1Metrics?.minRR) ?? 1.5;
+  const spread = finite(signal.spreadPips, stage1Metrics?.spread);
+  const maximumSpread = finite(stage1Metrics?.maxSpread) ?? 3.5;
+  const confidence = finite(signal.tpHitConfidence, signal.confidence, stage1Metrics?.tpHitConfidence);
+  const minimumConfidence = finite(signal.minimumTpHitConfidence, stage1Metrics?.minTpHitConfidence);
+  const timing = String(signal.entryTiming?.status || '').toLowerCase();
+  const newsBlocked = typeof stage1Metrics?.newsBlocked === 'boolean'
+    ? stage1Metrics.newsBlocked
+    : typeof signal.newsRisk?.blocked === 'boolean'
+      ? signal.newsRisk.blocked
+      : null;
+
+  const primaryTriggers = stage2?.primaryTriggers || [];
+  const supports = stage2?.supports || [];
+  const minimumSupports = finite(stage2Metrics?.minSupports) ?? 1;
+  const stage2State = String(stage2?.state || '').toLowerCase();
+
+  const finalState: ConfirmationState = !stage1 && !stage2
+    ? 'not_evaluated'
+    : stage1?.allowed !== true
+      ? 'blocked'
+      : stage2?.allowed === true && timing === 'valid_entry'
+        ? 'pass'
+        : stage2State === 'watch' || timing === 'too_early' || timing === 'wait_for_retest'
+          ? 'waiting'
+          : 'blocked';
+
+  return [
+    {
+      label: 'Primary alignment',
+      state: alignment == null ? 'not_evaluated' : alignmentPassed ? 'pass' : 'blocked',
+      value: alignment == null ? 'Not calculated' : `${alignment}/100 · minimum ${minimumAlignment}`,
+      detail: signal.primaryTimeframeAlignment?.reason,
+    },
+    {
+      label: 'V3 setup score',
+      state: v3Score == null ? 'not_evaluated' : v3Score >= minimumScore ? 'pass' : 'blocked',
+      value: v3Score == null ? 'Not calculated' : `${v3Score} · minimum ${minimumScore}`,
+      detail: v3Score != null && v3Score < minimumScore ? `Needs ${minimumScore - v3Score} more point${minimumScore - v3Score === 1 ? '' : 's'}.` : undefined,
+    },
+    {
+      label: 'R:R geometry',
+      state: rr == null ? 'not_evaluated' : rr >= minimumRR ? 'pass' : 'blocked',
+      value: rr == null ? 'Entry, stop, and target not calculated' : `${rr.toFixed(2)}R · minimum ${minimumRR.toFixed(2)}R`,
+    },
+    {
+      label: 'Spread',
+      state: spread == null ? 'not_evaluated' : spread <= maximumSpread ? 'pass' : 'blocked',
+      value: spread == null ? 'Not returned' : `${spread.toFixed(1)} pips · maximum ${maximumSpread.toFixed(1)}`,
+    },
+    {
+      label: 'News gate',
+      state: newsBlocked == null ? 'not_evaluated' : newsBlocked ? 'blocked' : 'pass',
+      value: newsBlocked == null ? 'Not returned' : newsBlocked ? 'Blocked by news risk' : 'Clear',
+      detail: signal.newsRisk?.reason,
+    },
+    {
+      label: 'Entry timing',
+      state: timingState(timing),
+      value: timing ? words(timing) : 'Not evaluated',
+      detail: signal.entryTiming?.reason,
+    },
+    {
+      label: 'Stage 1 setup',
+      state: !stage1 ? 'not_evaluated' : stage1.allowed === true ? 'pass' : 'blocked',
+      value: !stage1 ? 'Native Stage 1 result missing' : stage1.allowed === true ? 'Passed' : 'Blocked',
+      detail: stage1 ? firstReason(stage1.reasons, 'All Stage 1 setup gates passed.') : 'This card came from dashboard alignment context rather than the native V3 confirmation payload.',
+    },
+    {
+      label: 'Stage 2 trigger',
+      state: !stage2
+        ? 'not_evaluated'
+        : stage2.allowed === true
+          ? 'pass'
+          : stage2State === 'watch'
+            ? 'waiting'
+            : 'blocked',
+      value: !stage2 ? 'Native Stage 2 result missing' : stage2.allowed === true ? 'Ready' : words(stage2State || 'blocked'),
+      detail: stage2 ? firstReason(stage2.reasons, 'All Stage 2 trigger gates passed.') : 'No native trigger evaluation was returned for this pair.',
+    },
+    {
+      label: 'Primary trigger',
+      state: !stage2
+        ? 'not_evaluated'
+        : primaryTriggers.length > 0
+          ? 'pass'
+          : stage2State === 'watch'
+            ? 'waiting'
+            : 'blocked',
+      value: !stage2 ? 'Not evaluated' : readableList(primaryTriggers),
+      detail: !stage2 || primaryTriggers.length > 0
+        ? undefined
+        : 'Waiting for a confirmed retest, liquidity sweep, aligned BOS/CHoCH, or compression-to-expansion trigger.',
+    },
+    {
+      label: 'Supporting confirmation',
+      state: !stage2
+        ? 'not_evaluated'
+        : supports.length >= minimumSupports
+          ? 'pass'
+          : stage2State === 'watch'
+            ? 'waiting'
+            : 'blocked',
+      value: !stage2 ? 'Not evaluated' : `${supports.length}/${minimumSupports} · ${readableList(supports)}`,
+    },
+    {
+      label: 'TP-hit confidence',
+      state: confidence == null
+        ? 'not_evaluated'
+        : minimumConfidence == null
+          ? 'info'
+          : confidence >= minimumConfidence
+            ? 'pass'
+            : 'blocked',
+      value: confidence == null
+        ? 'Not calculated'
+        : minimumConfidence == null
+          ? `${confidence}% · final threshold not returned`
+          : `${confidence}% · minimum ${minimumConfidence}%`,
+    },
+    {
+      label: 'V3 confirmation',
+      state: finalState,
+      value: finalState === 'pass'
+        ? 'Stage 1 and Stage 2 complete'
+        : finalState === 'waiting'
+          ? 'Waiting on the next confirmation'
+          : finalState === 'blocked'
+            ? 'Not executable'
+            : 'Native confirmation payload missing',
+      detail: finalState === 'pass'
+        ? 'The pair must still pass live pricing, risk, margin, duplicate-trade, and broker execution checks.'
+        : undefined,
+    },
+  ];
+}
+
 function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
   const hot = tier === 'hot';
   const direction = signal.direction === 'long' || signal.direction === 'short'
@@ -90,10 +348,13 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
     : 'neutral';
   const confidence = finite(signal.tpHitConfidence, signal.confidence);
   const v3Score = finite(signal.v3Score, signal.v3?.score, signal.score);
-  const alignment = finite(signal.alignment?.timeframeAlignmentScore);
+  const alignment = finite(signal.primaryTimeframeAlignment?.score, signal.alignment?.timeframeAlignmentScore);
   const rr = finite(signal.expectedRR, signal.rr, signal.riskReward);
-  const timing = signal.entryTiming?.status?.replace(/_/g, ' ') || (hot ? 'trigger pending' : 'setup developing');
-  const fibonacci = signal.fibonacci;
+  const timing = confirmationHeadline(signal, tier);
+  const fibonacci = signal.fibonacci || signal.v3?.fib;
+  const confirmations = buildConfirmations(signal);
+  const passedCount = confirmations.filter((item) => item.state === 'pass').length;
+  const evaluatedCount = confirmations.filter((item) => item.state !== 'not_evaluated').length;
 
   return (
     <article
@@ -164,6 +425,18 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
         <Metric label="Fib 38.2%" value={formatWatchPrice(signal, fibonacci?.retracementLevels?.level382)} />
       </div>
 
+      <div style={{ marginTop: 2, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ color: 'var(--text)', fontSize: 12, fontWeight: 800 }}>Confirmation progress</div>
+          <div style={{ color: 'var(--muted)', fontSize: 10, fontFamily: 'ui-monospace, monospace' }}>
+            {passedCount} passed · {evaluatedCount}/{confirmations.length} evaluated
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 7 }}>
+          {confirmations.map((item) => <Confirmation key={item.label} item={item} />)}
+        </div>
+      </div>
+
       {signal.spreadPips != null && Number.isFinite(Number(signal.spreadPips)) && (
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>
           Current spread: {Number(signal.spreadPips).toFixed(1)} pips
@@ -178,6 +451,36 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div style={{ padding: '8px 9px', background: 'rgba(0,0,0,0.22)', borderRadius: 7 }}>
       <div style={{ fontSize: 9, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>{label}</div>
       <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text)', fontWeight: 700, fontFamily: 'ui-monospace, monospace' }}>{value}</div>
+    </div>
+  );
+}
+
+function Confirmation({ item }: { item: ConfirmationItem }) {
+  const presentation: Record<ConfirmationState, { label: string; foreground: string; background: string; border: string }> = {
+    pass: { label: 'PASS', foreground: '#2dff7a', background: '#0d3320', border: '#1a5c38' },
+    waiting: { label: 'WAITING', foreground: '#ffb347', background: '#3a2407', border: '#7a4d12' },
+    blocked: { label: 'BLOCKED', foreground: '#ff7777', background: '#320d0d', border: '#5c1a1a' },
+    not_evaluated: { label: 'NOT RUN', foreground: '#a5adba', background: '#171b22', border: '#343b47' },
+    info: { label: 'INFO', foreground: '#66c7ff', background: '#102f48', border: '#24658f' },
+  };
+  const state = presentation[item.state];
+
+  return (
+    <div style={{ padding: '9px 10px', borderRadius: 7, background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+        <div style={{ color: 'var(--text)', fontSize: 11, fontWeight: 750 }}>{item.label}</div>
+        <span style={{ padding: '3px 6px', borderRadius: 5, fontSize: 8, fontWeight: 900, letterSpacing: '0.45px', color: state.foreground, background: state.background, border: `1px solid ${state.border}`, whiteSpace: 'nowrap' }}>
+          {state.label}
+        </span>
+      </div>
+      <div style={{ marginTop: 5, color: '#d7dbea', fontSize: 10, lineHeight: 1.4, fontFamily: 'ui-monospace, monospace' }}>
+        {item.value}
+      </div>
+      {item.detail && (
+        <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 9, lineHeight: 1.4 }}>
+          {item.detail}
+        </div>
+      )}
     </div>
   );
 }
@@ -245,8 +548,8 @@ export function ScannerWatchStatus({ hasBroker }: { hasBroker: boolean }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 18 }}>V3 watch status</h2>
-          <p style={{ color: 'var(--muted)', margin: '5px 0 0', fontSize: 13, lineHeight: 1.5, maxWidth: 720 }}>
-            Pairs that passed enough setup context to remain monitored are shown here instead of being grouped with fully rejected signals. Watch status is informational and never bypasses execution gates.
+          <p style={{ color: 'var(--muted)', margin: '5px 0 0', fontSize: 13, lineHeight: 1.5, maxWidth: 760 }}>
+            Each card shows the pair&apos;s current progress through alignment, Stage 1 setup quality, Stage 2 trigger confirmation, and final V3 readiness. Watch status is informational and never bypasses execution gates.
           </p>
           {scannedAt && (
             <div style={{ marginTop: 5, color: 'var(--muted)', fontSize: 11 }}>
@@ -287,7 +590,7 @@ export function ScannerWatchStatus({ hasBroker }: { hasBroker: boolean }) {
       )}
 
       {hasBroker && !error && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(330px, 1fr))', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(430px, 1fr))', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <h3 style={{ margin: 0, color: '#ffb347', fontSize: 15 }}>Hot Watch</h3>
