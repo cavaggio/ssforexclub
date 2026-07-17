@@ -1,13 +1,11 @@
 /**
  * web/app/api/scanner/trade/route.ts
  *
- * Authenticated, per-user trade execution endpoint. Forwards a validated
- * signal to Railway's internal `/api/internal/oanda/trade` with the caller's
- * decrypted broker credentials. Hard-fails when:
- *
- *   - Clerk session missing (401)
- *   - No usable credentials for the selected mode (409)
- *   - activeEnvironment is not 'live' (409) — trades only run in live mode
+ * Authenticated, per-user manual execution endpoint for a qualified native V3
+ * signal shown under Recent Signals. The browser may submit the displayed
+ * candidate, but Railway always refreshes the exact pair from current OANDA
+ * pricing/candles and requires native Stage 1 + Stage 2 to remain complete
+ * before an order can reach the broker executor.
  *
  * Never falls back to platform-default credentials. Never reaches Railway's
  * public /api/oanda/* endpoints. The user's token never touches the browser.
@@ -24,6 +22,14 @@ export const runtime = 'nodejs';
 type SignalInput = {
   pair?: unknown;
   direction?: unknown;
+  architecture?: unknown;
+  legacyScannerUsed?: unknown;
+  legacyConfirmationsUsed?: unknown;
+  entryTiming?: { status?: unknown } | null;
+  qualityConfirmation?: {
+    stage1?: { allowed?: unknown } | null;
+    stage2?: { allowed?: unknown } | null;
+  } | null;
   [k: string]: unknown;
 };
 
@@ -31,14 +37,29 @@ function validateSignal(raw: unknown): { ok: true; signal: Record<string, unknow
   if (!raw || typeof raw !== 'object') {
     return { ok: false, error: 'Missing signal in request body' };
   }
-  const s = raw as SignalInput;
-  if (typeof s.pair !== 'string' || !/^[A-Z]{3}_[A-Z]{3}$/.test(s.pair)) {
+  const signal = raw as SignalInput;
+  if (typeof signal.pair !== 'string' || !/^[A-Z]{3}_[A-Z]{3}$/.test(signal.pair)) {
     return { ok: false, error: 'Invalid signal.pair (expected e.g. EUR_USD)' };
   }
-  if (s.direction !== 'long' && s.direction !== 'short') {
+  if (signal.direction !== 'long' && signal.direction !== 'short') {
     return { ok: false, error: 'Invalid signal.direction (must be long or short)' };
   }
-  return { ok: true, signal: s as Record<string, unknown> };
+  if (signal.architecture !== 'independent_v3_raw_market_data') {
+    return { ok: false, error: 'Only independent native V3 Recent Signals can be executed manually' };
+  }
+  if (signal.legacyScannerUsed === true || signal.legacyConfirmationsUsed === true) {
+    return { ok: false, error: 'Legacy scanner or legacy confirmation payloads cannot be executed' };
+  }
+  if (signal.qualityConfirmation?.stage1?.allowed !== true) {
+    return { ok: false, error: 'V3 Stage 1 is not complete for this Recent Signal' };
+  }
+  if (signal.qualityConfirmation?.stage2?.allowed !== true) {
+    return { ok: false, error: 'V3 Stage 2 is not complete for this Recent Signal' };
+  }
+  if (signal.entryTiming?.status !== 'valid_entry') {
+    return { ok: false, error: 'The displayed V3 entry is no longer marked valid_entry' };
+  }
+  return { ok: true, signal: signal as Record<string, unknown> };
 }
 
 export async function POST(req: Request) {
@@ -52,14 +73,18 @@ export async function POST(req: Request) {
   if (!validated.ok) {
     return NextResponse.json({ ok: false, error: validated.error }, { status: 400 });
   }
+
   return callScannerForCurrentUser({
     internalPath: '/api/internal/oanda/trade',
-    logTag: 'SCANNER_TRADE',
+    logTag: 'V3_RECENT_SIGNAL_TRADE',
     payloadKey: 'trade',
-    // Paper/practice may execute too — the resolver only returns ready creds for
-    // live when the platform flag + live-ack are satisfied, so live stays gated.
+    // Practice/paper execution remains available. Live execution still requires
+    // the platform live flag and the user's live-trading acknowledgment upstream.
     requireLive: false,
-    extraBody: { signal: validated.signal },
+    extraBody: {
+      signal: validated.signal,
+      executionSource: 'recent_signals_v3',
+    },
     afterCall: async (ctx, result) => {
       const signal = validated.signal;
       const trade = (result.data ?? {}) as Record<string, unknown>;
@@ -84,9 +109,12 @@ export async function POST(req: Request) {
         confidence: typeof signal.confidence === 'number' ? signal.confidence : null,
         recommendation: typeof signal.rrTier === 'string' ? signal.rrTier : null,
         reason: reasonStr,
-        rawPayload: { signal, trade },
-        // V3 Edge Intelligence — capture the conditions this trade was opened
-        // under. Entry-time fields only; pnl/exit are filled on the close event.
+        rawPayload: {
+          executionSource: 'recent_signals_v3',
+          refreshedBeforeExecution: trade.refreshPerformed === true,
+          signal,
+          trade,
+        },
         edge: opened ? edgeSnapshotFromSignal(signal) : null,
       });
     },
