@@ -1,7 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import './pprEngine.test.js';
-import './pprExecutionPolicy.test.js';
 import { resolveAutoEngine, runAutoForUser } from './autoAiRouter.js';
 
 const INSIDE_WINDOW = new Date('2026-07-13T13:00:00Z'); // Monday 09:00 ET
