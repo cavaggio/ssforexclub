@@ -4,17 +4,25 @@ import { evaluateV3 } from './v3Engine.js';
 import { getForexNewsRisk } from './oandaNewsRisk.js';
 import { evaluateV3SetupStage, evaluateV3TriggerStage } from './v3QualityConfirmation.js';
 import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';
-import { deriveV3EntryTiming, validateDirectionLock } from './v3EntryContract.js';
+import {
+  deriveV3EntryTiming,
+  selectExecutablePrice,
+  validateDirectionLock,
+} from './v3EntryContract.js';
 
 const DEFAULT_V3_WATCHLIST = [
   'EUR_USD',
+  'GBP_USD',
+  'USD_JPY',
   'USD_CAD',
+  'USD_CHF',
   'AUD_USD',
   'NZD_USD',
-  'USD_CHF',
   'EUR_GBP',
   'EUR_CHF',
   'AUD_CAD',
+  'GBP_JPY',
+  'EUR_JPY',
 ];
 
 function envNumber(name, fallback) {
@@ -62,19 +70,21 @@ function validTargetForDirection(target, direction, entry) {
   return direction === 'long' ? price > entry : price < entry;
 }
 
-function pickV3Target(v3 = {}, direction, entry, minRR) {
+function pickV3Target(v3 = {}, direction, entry, pair, minRR) {
   const stopPips = Math.abs(Number(v3?.slPipsEst));
   if (!Number.isFinite(stopPips) || stopPips <= 0) return null;
 
+  const pipSize = pipSizeFor(pair);
   const targets = [v3?.targets?.tp1, v3?.targets?.tp2, v3?.targets?.tp3].filter(Boolean);
-  return targets.find((target) => {
-    const rewardPips = Math.abs(Number(target?.pips));
-    return (
-      Number.isFinite(rewardPips) &&
-      rewardPips / stopPips >= minRR &&
-      validTargetForDirection(target, direction, entry)
-    );
-  }) || null;
+  for (const target of targets) {
+    if (!validTargetForDirection(target, direction, entry)) continue;
+    const targetPrice = Number(target.price);
+    const rewardPips = Math.abs(targetPrice - entry) / pipSize;
+    if (Number.isFinite(rewardPips) && rewardPips / stopPips >= minRR) {
+      return { ...target, rewardPips };
+    }
+  }
+  return null;
 }
 
 export function computeV3OnlyEntryQualityConfidence(v3 = {}) {
@@ -84,16 +94,16 @@ export function computeV3OnlyEntryQualityConfidence(v3 = {}) {
   let confidence = score;
   if (v3?.qualified === true) confidence += 14;
   if (v3?.earlyTrigger === true) confidence += 5;
-  if (Number(v3?.premiumDiscount?.premiumDiscountScore) >= 0.75) confidence += 5;
   if (Number(v3?.liquidityIntent?.intentScore ?? v3?.liquidityIntent?.score) >= 0.65) confidence += 6;
+  if (v3?.marketMovement?.triggerConfirmed === true) confidence += 5;
 
   return Math.max(0, Math.min(100, Math.round(confidence)));
 }
 
 /**
  * Build an executable candidate exclusively from V3 output and current OANDA
- * pricing. No legacy scanner candidate, direction, confidence, lifecycle, or
- * rejection state is accepted as an input.
+ * pricing. Long candidates use the current ask; short candidates use the current
+ * bid. The order path refreshes that side again immediately before submission.
  */
 export function buildIndependentV3Candidate({
   pair,
@@ -104,7 +114,9 @@ export function buildIndependentV3Candidate({
   minRR = envNumber('FOREX_MIN_EXECUTABLE_RR', 1.5),
 } = {}) {
   const direction = normalizeDirection(v3?.direction);
-  const entry = Number(pricing?.mid);
+  const executableSide = selectExecutablePrice(direction, pricing);
+  const fallbackMid = Number(pricing?.mid);
+  const entry = Number.isFinite(executableSide) ? executableSide : fallbackMid;
   const spreadPips = Number(pricing?.spreadPips);
   const stopLossPips = Math.abs(Number(v3?.slPipsEst));
 
@@ -112,7 +124,7 @@ export function buildIndependentV3Candidate({
     return null;
   }
 
-  const target = pickV3Target(v3, direction, entry, minRR);
+  const target = pickV3Target(v3, direction, entry, pair, minRR);
   if (!target) return null;
 
   const pipSize = pipSizeFor(pair);
@@ -123,7 +135,7 @@ export function buildIndependentV3Candidate({
     pair,
   );
   const takeProfit = roundPrice(Number(target.price), pair);
-  const takeProfitPips = Math.abs(Number(target.pips));
+  const takeProfitPips = Number(target.rewardPips);
   const expectedRR = Number((takeProfitPips / stopLossPips).toFixed(2));
 
   if (
@@ -146,6 +158,8 @@ export function buildIndependentV3Candidate({
     entry,
     entryPrice: entry,
     currentPrice: entry,
+    entryPriceSide: direction === 'long' ? 'ask' : 'bid',
+    candidateEntryCalculatedAt: new Date().toISOString(),
     stopLoss,
     takeProfit,
     targetProfit: takeProfit,
@@ -155,8 +169,11 @@ export function buildIndependentV3Candidate({
     rr: expectedRR,
     spreadPips,
     maxSpreadPips: maxSpreadFor(pair),
+    atrPips: Number.isFinite(Number(v3?.atrPips)) ? Number(v3.atrPips) : null,
     session,
     newsRisk,
+    institutionalFlow: v3?.institutionalFlow || null,
+    marketMovement: v3?.marketMovement || null,
     v3,
     engine: 'v3',
     strategy: 'V3',
@@ -203,7 +220,7 @@ function rejectionRecord({ pair, reason, reasons = [], pricing = null, v3 = null
     reason,
     rejectionReasons: reasons.length ? reasons : [reason],
     spreadPips: pricing?.spreadPips ?? candidate?.spreadPips ?? null,
-    currentPrice: pricing?.mid ?? candidate?.currentPrice ?? null,
+    currentPrice: candidate?.currentPrice ?? pricing?.mid ?? null,
     v3,
     engine: 'v3',
     source: 'v3_independent_raw_market_data',
@@ -220,7 +237,10 @@ export async function scanV3IndependentMarket({
   scanMode = 'full',
   log = () => {},
 } = {}) {
-  const watchlist = [...new Set((Array.isArray(pairs) && pairs.length ? pairs : configuredWatchlist()).map((pair) => String(pair).toUpperCase()))];
+  const watchlist = [...new Set(
+    (Array.isArray(pairs) && pairs.length ? pairs : configuredWatchlist())
+      .map((pair) => String(pair).toUpperCase()),
+  )];
   const session = getForexSession();
   const qualified = [];
   const rejected = [];
@@ -310,11 +330,18 @@ export async function scanV3IndependentMarket({
 
       const candidate = buildIndependentV3Candidate({ pair, pricing, v3, newsRisk, session });
       if (!candidate) {
-        const reasons = [
-          ...(Array.isArray(v3?.rejectionReasons) ? v3.rejectionReasons : []),
-          'Independent V3 could not build valid stop/target geometry of at least 1.5R',
-        ];
-        rejected.push(rejectionRecord({ pair, pricing, v3, reason: reasons[0], reasons }));
+        const nativeReasons = Array.isArray(v3?.rejectionReasons) ? v3.rejectionReasons : [];
+        const candidateReason = !v3?.direction
+          ? 'Independent V3 did not produce an executable Daily/H4 direction'
+          : 'Independent V3 could not build valid stop/target geometry of at least 1.5R';
+        const reasons = [...nativeReasons, candidateReason];
+        rejected.push(rejectionRecord({
+          pair,
+          pricing,
+          v3,
+          reason: reasons[0] || candidateReason,
+          reasons,
+        }));
         continue;
       }
 
@@ -354,8 +381,9 @@ export async function scanV3IndependentMarket({
         qualified.push(candidate);
         log(
           `independent-ready pair=${pair} dir=${candidate.direction} score=${v3.score} ` +
+          `entry=${candidate.entry} sl=${candidate.stopLoss} tp=${candidate.takeProfit} ` +
           `tpConf=${candidate.tpHitConfidence} rr=${candidate.expectedRR} ` +
-          `triggers=${stage2.primaryTriggers.join(',') || 'none'}`,
+          `trigger=${candidate.entryTiming?.triggerType || 'none'}`,
         );
       } else {
         const record = rejectionRecord({
@@ -408,8 +436,12 @@ export async function scanV3IndependentMarket({
   };
 }
 
-
-export async function refreshIndependentV3CandidateForExecution({ candidate, client, now = new Date(), log = () => {} } = {}) {
+export async function refreshIndependentV3CandidateForExecution({
+  candidate,
+  client,
+  now = new Date(),
+  log = () => {},
+} = {}) {
   const pair = candidate?.pair;
   if (!pair) return { allowed: false, reason: 'execution refresh missing pair', candidate: null };
 
@@ -433,11 +465,20 @@ export async function refreshIndependentV3CandidateForExecution({ candidate, cli
 
   const lock = validateDirectionLock({
     candidateDirection: candidate.direction,
-    confirmedDirection: candidate.qualityConfirmation?.stage2?.metrics?.lockedDirection || candidate.directionLock?.confirmedDirection || candidate.direction,
+    confirmedDirection:
+      candidate.qualityConfirmation?.stage2?.metrics?.lockedDirection ||
+      candidate.directionLock?.confirmedDirection ||
+      candidate.direction,
     freshDirection: freshCandidate.direction,
   });
   if (!lock.allowed) {
-    return { allowed: false, reason: lock.reasons.join('; '), candidate: null, refreshScan, directionLock: lock };
+    return {
+      allowed: false,
+      reason: lock.reasons.join('; '),
+      candidate: null,
+      refreshScan,
+      directionLock: lock,
+    };
   }
 
   freshCandidate.directionLock = {
