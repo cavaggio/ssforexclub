@@ -6,7 +6,7 @@ let _t = Date.UTC(2026, 4, 25, 0, 0, 0);
 function bar(high, low) {
   const mid = (high + low) / 2;
   const b = { time: new Date(_t).toISOString(), open: mid, high, low, close: mid, volume: 100 };
-  _t += 15 * 60 * 1000;
+  _t += 60 * 60 * 1000;
   return b;
 }
 function flat(price) { return bar(price, price); }
@@ -44,44 +44,41 @@ const bearishStructure = () => makeStructure([
   { kind: 'low', price: 1.0900 },
 ]);
 
-test('market structure uses M15 rising HH HL sequence', () => {
-  const r = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: bullishStructure() });
+test('market structure uses H1 when H1 candles are available', () => {
+  const r = analyzeMarketStructure({
+    pair: 'EUR_USD',
+    h1Candles: bullishStructure(),
+    m15Candles: bearishStructure(),
+  });
   assert.equal(r.structureTrend, 'bullish');
-  assert.equal(r.timeframeUsed, 'M15');
-  assert.equal(r.h1Used, false);
+  assert.equal(r.timeframeUsed, 'H1');
+  assert.equal(r.h1Used, true);
   assert.ok(r.structureStrength > 50, `strength ${r.structureStrength} > 50`);
 });
 
-test('market structure uses M15 falling LH LL sequence', () => {
+test('M15 is the first fallback when H1 is unavailable', () => {
   const r = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: bearishStructure() });
   assert.equal(r.structureTrend, 'bearish');
   assert.equal(r.timeframeUsed, 'M15');
   assert.equal(r.h1Used, false);
-  assert.ok(r.structureStrength > 50);
 });
 
-test('H4 is fallback structure only when M15 is unavailable', () => {
-  const r = analyzeMarketStructure({ pair: 'EUR_USD', h4Candles: bullishStructure(), m15Candles: [] });
+test('H4 is the final fallback when H1 and M15 are unavailable', () => {
+  const r = analyzeMarketStructure({ pair: 'EUR_USD', h4Candles: bullishStructure() });
   assert.equal(r.structureTrend, 'bullish');
   assert.equal(r.timeframeUsed, 'H4');
   assert.equal(r.h1Used, false);
 });
 
-test('H1 candles cannot influence market structure', () => {
-  const m15 = bullishStructure();
-  const h1 = bearishStructure();
-  const withOpposingH1 = analyzeMarketStructure({
+test('H1 structure is independent from Daily H4 M15 alignment scoring', () => {
+  const r = analyzeMarketStructure({
     pair: 'EUR_USD',
-    m15Candles: m15,
-    h1Candles: h1,
+    h1Candles: bearishStructure(),
+    m15Candles: bullishStructure(),
   });
-  const withoutH1 = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: m15 });
-
-  assert.equal(withOpposingH1.structureTrend, 'bullish');
-  assert.equal(withOpposingH1.structureTrend, withoutH1.structureTrend);
-  assert.equal(withOpposingH1.structureStrength, withoutH1.structureStrength);
-  assert.equal(withOpposingH1.timeframeUsed, 'M15');
-  assert.equal(withOpposingH1.h1Used, false);
+  assert.equal(r.structureTrend, 'bearish');
+  assert.equal(r.timeframeUsed, 'H1');
+  assert.equal(r.h1Used, true);
 });
 
 test('market structure broadening sequence is ranging and capped', () => {
@@ -93,13 +90,13 @@ test('market structure broadening sequence is ranging and capped', () => {
     { kind: 'low', price: 1.0910 },
     { kind: 'high', price: 1.1020 },
   ]);
-  const r = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: candles });
+  const r = analyzeMarketStructure({ pair: 'EUR_USD', h1Candles: candles });
   assert.equal(r.structureTrend, 'ranging');
   assert.ok(r.structureStrength <= 45, `ranging strength capped (${r.structureStrength})`);
 });
 
-test('market structure insufficient M15 H4 data degrades safely', () => {
-  const r = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: [], h4Candles: [] });
+test('market structure insufficient data degrades safely', () => {
+  const r = analyzeMarketStructure({ pair: 'EUR_USD' });
   assert.equal(r.structureTrend, 'ranging');
   assert.equal(r.bosDetected, false);
   assert.equal(r.chochDetected, false);
@@ -109,7 +106,7 @@ test('market structure insufficient M15 H4 data degrades safely', () => {
 });
 
 test('market structure exposes BOS CHoCH booleans and break shape', () => {
-  const r = analyzeMarketStructure({ pair: 'EUR_USD', m15Candles: bullishStructure() });
+  const r = analyzeMarketStructure({ pair: 'EUR_USD', h1Candles: bullishStructure() });
   assert.equal(typeof r.bosDetected, 'boolean');
   assert.equal(typeof r.chochDetected, 'boolean');
   if (r.lastStructureBreak) {
