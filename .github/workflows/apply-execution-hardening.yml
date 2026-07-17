@@ -72,7 +72,21 @@ jobs:
         run: node --test server/ictExecution.test.js server/ictIndependence.test.js
 
       - name: Run full server test suite
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > full-server-test.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Failure summary"
+            grep -nE "not ok|AssertionError|ERR_TEST_FAILURE|# fail [1-9]" full-server-test.log | tail -n 120 || true
+            echo "::endgroup::"
+            echo "::group::Last 220 log lines"
+            tail -n 220 full-server-test.log
+            echo "::endgroup::"
+            exit "$status"
+          fi
+          cat full-server-test.log
 
       - name: Install web dependencies
         run: npm --prefix web ci
