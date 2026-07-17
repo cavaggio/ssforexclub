@@ -18,7 +18,7 @@ function inWindow(now = new Date()) {
   const weekday = read('weekday');
   if (weekday === 'Sat' || weekday === 'Sun') return false;
   const minutes = (parseInt(read('hour'), 10) % 24) * 60 + parseInt(read('minute'), 10);
-  return minutes >= 2 * 60 + 15 && minutes < 14 * 60;
+  return minutes >= 2 * 60 && minutes < 10 * 60;
 }
 
 function normalizeMode(value: unknown): ScanMode {
@@ -141,7 +141,7 @@ export async function POST(req: Request) {
     nearQualifiedPairs: [...near],
     hotPairs: [...hot],
     lateEntryPairs: [...late],
-    entryWindow: '02:15-14:00 America/New_York',
+    entryWindow: '02:00-10:00 America/New_York, Monday-Friday',
     results,
   });
 }
