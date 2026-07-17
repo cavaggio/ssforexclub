@@ -15,6 +15,17 @@ def replace_once(path, old, new, label):
     target.write_text(text.replace(old, new, 1), encoding='utf-8')
 
 
+def replace_all(path, old, new, minimum, label):
+    target = ROOT / path
+    text = target.read_text(encoding='utf-8')
+    if old not in text and new in text:
+        return
+    count = text.count(old)
+    if count < minimum:
+        raise RuntimeError(f'{label}: expected at least {minimum} anchors, found {count}')
+    target.write_text(text.replace(old, new), encoding='utf-8')
+
+
 # Actual H1 candle data is reserved for detectFibSetup. Existing liquidity and
 # session helpers still accept a historically named h1Candles argument, so V3
 # supplies M15 data to that intraday slot rather than H1 data.
@@ -45,13 +56,14 @@ replace_once(
     'dashboard H1 structure role',
 )
 
-# Expand the compatibility types so the UI can state the role explicitly rather
-# than displaying a fabricated bullish/bearish/flat H1 trend.
-replace_once(
+# Expand both legacy compatibility interfaces plus AlignmentResult so the UI can
+# state the H1 role explicitly rather than fabricating a trend.
+replace_all(
     'web/types/forex.ts',
     "  h1Trend: 'bullish' | 'bearish' | 'neutral';",
     "  h1Trend: 'bullish' | 'bearish' | 'neutral' | 'fib_only';",
-    'StructureAnalysis H1 fib-only type',
+    2,
+    'H1 fib-only compatibility types',
 )
 replace_once(
     'web/types/forex.ts',
