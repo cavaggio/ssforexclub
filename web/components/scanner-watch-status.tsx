@@ -19,6 +19,12 @@ type Stage1Metrics = {
 
 type Stage2Metrics = {
   minSupports?: number;
+  triggerType?: string | null;
+  triggerTime?: string | null;
+  triggerPrice?: number | null;
+  triggerAgeBars?: number | null;
+  triggerDistancePips?: number | null;
+  triggerDistanceAtr?: number | null;
 };
 
 type ConfirmationStage = {
@@ -29,6 +35,20 @@ type ConfirmationStage = {
   metrics?: Stage1Metrics & Stage2Metrics;
   primaryTriggers?: string[];
   supports?: string[];
+};
+
+type EntryTiming = {
+  status?: string;
+  reason?: string;
+  timingSource?: string;
+  triggerConfirmed?: boolean;
+  triggerType?: string | null;
+  triggerTime?: string | null;
+  triggerPrice?: number | null;
+  triggerAgeBars?: number | null;
+  triggerDistancePips?: number | null;
+  triggerDistanceAtr?: number | null;
+  fibUsedForConfirmation?: boolean;
 };
 
 type WatchSignal = {
@@ -47,7 +67,21 @@ type WatchSignal = {
   riskReward?: number;
   spreadPips?: number;
   displayQualification?: string;
-  entryTiming?: { status?: string; reason?: string } | null;
+  entry?: number | null;
+  entryPrice?: number | null;
+  currentPrice?: number | null;
+  entryPriceSide?: 'ask' | 'bid' | string | null;
+  candidateEntryCalculatedAt?: string | null;
+  stopLoss?: number | null;
+  sl?: number | null;
+  takeProfit?: number | null;
+  targetProfit?: number | null;
+  tp?: number | null;
+  lifecycle?: {
+    sl?: { stopLossPrice?: number | null } | null;
+    tp?: { takeProfitPrice?: number | null } | null;
+  } | null;
+  entryTiming?: EntryTiming | null;
   alignment?: { timeframeAlignmentScore?: number } | null;
   primaryTimeframeAlignment?: {
     passed?: boolean;
@@ -63,18 +97,15 @@ type WatchSignal = {
   newsRisk?: { blocked?: boolean; reason?: string } | null;
   v3?: {
     score?: number;
-    fib?: {
-      timeframeUsed?: string | null;
-      swingHigh?: number | null;
-      swingLow?: number | null;
-      retracementLevels?: { level382?: number | null } | null;
+    marketMovement?: {
+      triggerType?: string | null;
+      triggerTime?: string | null;
+      triggerPrice?: number | null;
+      triggerAgeBars?: number | null;
+      triggerDistancePips?: number | null;
+      triggerDistanceAtr?: number | null;
+      fibUsedForConfirmation?: boolean;
     } | null;
-  } | null;
-  fibonacci?: {
-    timeframeUsed?: string | null;
-    swingHigh?: number | null;
-    swingLow?: number | null;
-    retracementLevels?: { level382?: number | null } | null;
   } | null;
   dashboardWatchTier?: { tier?: string; reason?: string } | null;
   watchTier?: { tier?: string; reason?: string } | null;
@@ -148,6 +179,33 @@ function confirmationTime(signal: WatchSignal): string | null {
     null;
 }
 
+function entryPrice(signal: WatchSignal): number | null {
+  return finite(signal.entry, signal.entryPrice, signal.currentPrice);
+}
+
+function stopPrice(signal: WatchSignal): number | null {
+  return finite(signal.stopLoss, signal.sl, signal.lifecycle?.sl?.stopLossPrice);
+}
+
+function targetPrice(signal: WatchSignal): number | null {
+  return finite(signal.takeProfit, signal.targetProfit, signal.tp, signal.lifecycle?.tp?.takeProfitPrice);
+}
+
+function triggerPrice(signal: WatchSignal): number | null {
+  return finite(
+    signal.entryTiming?.triggerPrice,
+    signal.qualityConfirmation?.stage2?.metrics?.triggerPrice,
+    signal.v3?.marketMovement?.triggerPrice,
+  );
+}
+
+function triggerType(signal: WatchSignal): string | null {
+  return signal.entryTiming?.triggerType ||
+    signal.qualityConfirmation?.stage2?.metrics?.triggerType ||
+    signal.v3?.marketMovement?.triggerType ||
+    null;
+}
+
 function progressSummary(signal: WatchSignal): ProgressSummary {
   const stage1 = signal.qualityConfirmation?.stage1;
   const stage2 = signal.qualityConfirmation?.stage2;
@@ -171,10 +229,10 @@ function progressSummary(signal: WatchSignal): ProgressSummary {
     return { state: 'not_evaluated', label: 'STAGE 2 NOT RUN', detail: 'Stage 1 passed, but no native Stage 2 trigger result was returned.' };
   }
   if (stage2.allowed === true && timing === 'valid_entry') {
-    return { state: 'pass', label: 'V3 CONFIRMATIONS COMPLETE', detail: 'Stage 1 and Stage 2 passed. Execution gates still apply.' };
+    return { state: 'pass', label: 'V3 CONFIRMATIONS COMPLETE', detail: 'Stage 1 and Stage 2 passed. The quote and geometry are refreshed again before execution.' };
   }
   if (stage2State === 'watch' || timing === 'too_early' || timing === 'wait_for_retest') {
-    return { state: 'waiting', label: 'IN PROGRESS · STAGE 2', detail: firstReason(stage2.reasons, 'Waiting for a fresh trigger or retest.') };
+    return { state: 'waiting', label: 'IN PROGRESS · STAGE 2', detail: firstReason(stage2.reasons, 'Waiting for a fresh market-movement entry.') };
   }
   return { state: 'blocked', label: 'BLOCKED AT STAGE 2', detail: firstReason(stage2.reasons, 'One or more trigger gates failed.') };
 }
@@ -194,7 +252,7 @@ function watchReason(signal: WatchSignal, tier: WatchTier): string {
     signal.reason ||
     signal.rejectionReasons?.[0] ||
     (tier === 'hot'
-      ? 'Waiting for a fresh trigger or confirmed retest.'
+      ? 'Waiting for a fresh pair-specific market-movement trigger.'
       : 'Setup is developing but not yet trigger-ready.'),
   );
 }
@@ -235,14 +293,21 @@ function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
   const minimumSupports = finite(stage2Metrics?.minSupports) ?? 1;
   const stage2State = String(stage2?.state || '').toLowerCase();
   const progress = progressSummary(signal);
+  const entry = entryPrice(signal);
+  const stop = stopPrice(signal);
+  const target = targetPrice(signal);
+  const trigger = triggerPrice(signal);
+  const triggerName = triggerType(signal);
+  const triggerDistancePips = finite(signal.entryTiming?.triggerDistancePips, stage2Metrics?.triggerDistancePips);
+  const triggerDistanceAtr = finite(signal.entryTiming?.triggerDistanceAtr, stage2Metrics?.triggerDistanceAtr);
 
   return [
     {
       label: 'Calculation source',
       state: stage1 || stage2 ? 'info' : 'not_evaluated',
-      value: stage1 || stage2 ? 'Native V3 confirmation payload' : 'Legacy dashboard context only',
+      value: stage1 || stage2 ? 'Native V3 Stage 1 / Stage 2' : 'Legacy dashboard context only',
       detail: stage1 || stage2
-        ? 'The card contains actual Stage 1/Stage 2 output.'
+        ? 'The card contains native V3 confirmation output. Fibonacci is not used as a confirmation.'
         : 'The bot did not return the native confirmation payload for this card.',
     },
     {
@@ -257,6 +322,16 @@ function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
       value: v3Score == null ? 'Not calculated' : `${v3Score} · minimum ${minimumScore}`,
       detail: v3Score != null && v3Score < minimumScore
         ? `Needs ${minimumScore - v3Score} more point${minimumScore - v3Score === 1 ? '' : 's'}.`
+        : undefined,
+    },
+    {
+      label: 'Execution prices',
+      state: entry != null && stop != null && target != null ? 'info' : 'not_evaluated',
+      value: entry != null && stop != null && target != null
+        ? `Entry ${formatWatchPrice(signal, entry)} · SL ${formatWatchPrice(signal, stop)} · TP ${formatWatchPrice(signal, target)}`
+        : 'Entry, stop, or target was not returned',
+      detail: entry != null
+        ? `Candidate entry uses the current ${signal.entryPriceSide || (signal.direction === 'long' ? 'ask' : 'bid')} and is refreshed before order submission.`
         : undefined,
     },
     {
@@ -283,6 +358,19 @@ function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
       detail: signal.entryTiming?.reason,
     },
     {
+      label: 'Market-movement entry',
+      state: triggerName ? timingState(timing) : stage2State === 'watch' ? 'waiting' : 'not_evaluated',
+      value: triggerName
+        ? `${words(triggerName)} @ ${formatWatchPrice(signal, trigger)}`
+        : 'No fresh trigger confirmed',
+      detail: triggerName
+        ? [
+            triggerDistancePips == null ? null : `${triggerDistancePips.toFixed(1)} pips from trigger`,
+            triggerDistanceAtr == null ? null : `${triggerDistanceAtr.toFixed(2)} ATR from trigger`,
+          ].filter(Boolean).join(' · ')
+        : 'Waiting for an aligned sweep/reclaim, retest, BOS/CHoCH, or compression expansion.',
+    },
+    {
       label: 'Stage 1 setup',
       state: !stage1 ? 'not_evaluated' : stage1.allowed === true ? 'pass' : 'blocked',
       value: !stage1 ? 'Native Stage 1 result missing' : stage1.allowed === true ? 'Passed' : 'Blocked',
@@ -295,14 +383,14 @@ function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
       state: !stage2
         ? 'not_evaluated'
         : primaryTriggers.length > 0
-          ? 'pass'
+          ? timingState(timing)
           : stage2State === 'watch'
             ? 'waiting'
             : 'blocked',
       value: !stage2 ? 'Not evaluated' : readableList(primaryTriggers),
       detail: !stage2 || primaryTriggers.length > 0
         ? undefined
-        : 'Waiting for a confirmed retest, liquidity sweep, aligned BOS/CHoCH, or compression-to-expansion trigger.',
+        : 'Waiting for a fresh pair-specific market-movement trigger.',
     },
     {
       label: 'Supporting confirmation',
@@ -401,7 +489,11 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
   const v3Score = finite(signal.v3Score, signal.v3?.score, signal.score);
   const alignment = finite(signal.primaryTimeframeAlignment?.score, signal.alignment?.timeframeAlignmentScore);
   const rr = finite(signal.expectedRR, signal.rr, signal.riskReward);
-  const fibonacci = signal.fibonacci || signal.v3?.fib;
+  const entry = entryPrice(signal);
+  const stop = stopPrice(signal);
+  const target = targetPrice(signal);
+  const trigger = triggerPrice(signal);
+  const triggerName = triggerType(signal);
   const confirmations = buildConfirmations(signal);
   const progress = progressSummary(signal);
   const buttonStyle = progressButtonStyle(progress.state);
@@ -438,10 +530,14 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(75px, 1fr))', gap: 8 }}>
-        <Metric label="Fib timeframe" value={fibonacci?.timeframeUsed || '—'} />
-        <Metric label="Swing high" value={formatWatchPrice(signal, fibonacci?.swingHigh)} />
-        <Metric label="Swing low" value={formatWatchPrice(signal, fibonacci?.swingLow)} />
-        <Metric label="Fib 38.2%" value={formatWatchPrice(signal, fibonacci?.retracementLevels?.level382)} />
+        <Metric label={`Entry${signal.entryPriceSide ? ` (${signal.entryPriceSide})` : ''}`} value={formatWatchPrice(signal, entry)} />
+        <Metric label="Stop loss" value={formatWatchPrice(signal, stop)} />
+        <Metric label="Take profit" value={formatWatchPrice(signal, target)} />
+        <Metric label="Movement trigger" value={triggerName ? `${words(triggerName)} @ ${formatWatchPrice(signal, trigger)}` : 'Waiting'} />
+      </div>
+
+      <div style={{ color: 'var(--muted)', fontSize: 9, lineHeight: 1.4 }}>
+        Candidate entry, SL, and TP are pair-specific. The executable quote and R:R are recalculated immediately before an order is submitted.
       </div>
 
       <button
@@ -479,7 +575,7 @@ function WatchCard({ signal, tier }: { signal: WatchSignal; tier: WatchTier }) {
 function EmptyWatch({ tier }: { tier: WatchTier }) {
   return (
     <div style={{ padding: 18, background: 'var(--bg)', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--muted)', fontSize: 12, lineHeight: 1.5, textAlign: 'center' }}>
-      {tier === 'hot' ? 'No pairs are currently waiting only on a trigger or retest.' : 'No pairs are currently close enough to retain as Near Qualified.'}
+      {tier === 'hot' ? 'No pairs are currently waiting on a fresh market-movement entry.' : 'No pairs are currently close enough to retain as Near Qualified.'}
     </div>
   );
 }
@@ -525,7 +621,7 @@ export function ScannerWatchStatus({ hasBroker }: { hasBroker: boolean }) {
         <div>
           <h2 style={{ margin: 0, fontSize: 18 }}>V3 watch status</h2>
           <p style={{ color: 'var(--muted)', margin: '5px 0 0', fontSize: 13, lineHeight: 1.5, maxWidth: 780 }}>
-            Open each pair&apos;s progress button to see what was actually calculated, what passed, what failed, and what was not run. A missing native result is shown as NOT RUN rather than being described as an active wait.
+            Every card shows its current candidate entry, SL, TP, market-movement trigger, and exact Stage 1/Stage 2 status. Fibonacci may remain available elsewhere as chart context, but it is not an entry confirmation.
           </p>
           {scannedAt && <div style={{ marginTop: 5, color: 'var(--muted)', fontSize: 11 }}>Watch scan completed {new Date(scannedAt).toLocaleString()}</div>}
         </div>

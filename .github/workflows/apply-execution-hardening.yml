@@ -41,8 +41,23 @@ jobs:
       - name: Test V3 timeframe classification
         run: node --test server/v3TimeframeClassification.test.js
 
-      - name: Test V3 dashboard mapping
-        run: node --test server/v3DashboardScan.test.js
+      - name: Test dashboard Hot Watch mapping
+        run: node --test --test-name-pattern="native Stage 1 pass plus Stage 2 watch" server/v3DashboardScan.test.js
+
+      - name: Test dashboard Near Qualified mapping
+        run: node --test --test-name-pattern="native Stage 1 score development" server/v3DashboardScan.test.js
+
+      - name: Test dashboard timeframe mapping
+        run: node --test --test-name-pattern="dashboard scores Daily H4 M15" server/v3DashboardScan.test.js
+
+      - name: Test dashboard full alignment mapping
+        run: node --test --test-name-pattern="100 alignment requires" server/v3DashboardScan.test.js
+
+      - name: Test dashboard hard blocker mapping
+        run: node --test --test-name-pattern="hard native blockers" server/v3DashboardScan.test.js
+
+      - name: Test dashboard terminal Stage 2 mapping
+        run: node --test --test-name-pattern="completed or terminal Stage 2" server/v3DashboardScan.test.js
 
       - name: Test independent V3 scanner
         run: node --test server/v3IndependentScanner.test.js

@@ -1,4 +1,5 @@
 import { evaluatePrimaryTimeframeAlignment } from './primaryTimeframeAlignment.js';
+import { deriveMarketMovementEntryTiming } from './v3MarketMovement.js';
 
 export const ENTRY_TIMING_STATUSES = Object.freeze([
   'valid_entry',
@@ -50,13 +51,40 @@ function priceDecimalsFor(pair = '') {
   return String(pair).includes('JPY') ? 3 : 5;
 }
 
+function marketMovementEvents(signal = {}) {
+  const v3 = extractV3(signal);
+  return Array.isArray(v3?.marketMovement?.events) ? v3.marketMovement.events : [];
+}
+
 function confirmedRetest(signal = {}, direction) {
   const sign = directionSign(direction);
   const timing = signal.entryTiming || extractV3(signal).entryTiming || {};
-  const retest = timing.retest || signal.retest || null;
+  const movementRetest = marketMovementEvents(signal)
+    .filter((event) => event?.type === 'confirmed_retest')
+    .filter((event) => !event?.direction || String(event.direction).toLowerCase() === sign)
+    .sort((left, right) => (eventTimestamp(left) ?? 0) - (eventTimestamp(right) ?? 0))
+    .at(-1) || null;
+  const flowSignals = Array.isArray(signal?.institutionalFlow?.signals)
+    ? signal.institutionalFlow.signals
+    : Array.isArray(extractV3(signal)?.institutionalFlow?.signals)
+      ? extractV3(signal).institutionalFlow.signals
+      : [];
+  const flowRetest = flowSignals
+    .filter((event) => String(event?.type || '').toLowerCase() === 'retest')
+    .filter((event) => !event?.direction || String(event.direction).toLowerCase() === sign)
+    .sort((left, right) => (eventTimestamp(left) ?? 0) - (eventTimestamp(right) ?? 0))
+    .at(-1) || null;
+  const retest = movementRetest || flowRetest || timing.retest || signal.retest || null;
   const aligned = !retest?.direction || String(retest.direction).toLowerCase() === sign;
+  const confirmed = Boolean(
+    aligned && (
+      movementRetest ||
+      flowRetest ||
+      timing.retestDetected === true
+    )
+  );
   return {
-    confirmed: timing.retestDetected === true && aligned,
+    confirmed,
     retest,
     time: eventTimestamp(retest) || eventTimestamp(timing.triggerCandle),
   };
@@ -77,6 +105,18 @@ function structureEvents(signal = {}, direction) {
 
 function confirmedSweeps(signal = {}) {
   const v3 = extractV3(signal);
+  const movementEvents = marketMovementEvents(signal)
+    .filter((item) => item?.type === 'confirmed_liquidity_sweep');
+
+  // When the native market-movement engine is present, it is authoritative.
+  // This prevents the older rolling five-candle sweep detector from repeatedly
+  // presenting a completed sweep as if it were a new event on every scan.
+  if (v3?.marketMovement) {
+    return movementEvents
+      .map((item) => ({ ...item, _eventTime: eventTimestamp(item) }))
+      .sort((a, b) => (a._eventTime ?? 0) - (b._eventTime ?? 0));
+  }
+
   const liquiditySweep = v3?.liquidity?.liquiditySweep || signal?.liquiditySweep || null;
   const flowSignals = Array.isArray(signal?.institutionalFlow?.signals)
     ? signal.institutionalFlow.signals
@@ -90,43 +130,87 @@ function confirmedSweeps(signal = {}) {
   return sweeps.sort((a, b) => (a._eventTime ?? 0) - (b._eventTime ?? 0));
 }
 
-export function classifyPriceBias(candles = []) {
-  if (!Array.isArray(candles) || candles.length < 20) return 'neutral';
-  const recent = candles.slice(-20);
-  const prior = recent.slice(0, 10);
-  const current = recent.slice(10);
-  const priorHigh = Math.max(...prior.map((c) => Number(c.high)));
-  const priorLow = Math.min(...prior.map((c) => Number(c.low)));
-  const currentHigh = Math.max(...current.map((c) => Number(c.high)));
-  const currentLow = Math.min(...current.map((c) => Number(c.low)));
-  const lastClose = Number(current[current.length - 1]?.close);
-  const comparisonClose = Number(current[Math.max(0, current.length - 6)]?.close);
-  const averageRange = recent.reduce((sum, candle) => {
-    const high = Number(candle.high);
-    const low = Number(candle.low);
-    return sum + (Number.isFinite(high) && Number.isFinite(low) ? Math.abs(high - low) : 0);
-  }, 0) / recent.length;
-  const displacement = lastClose - comparisonClose;
+export const V3_PRICE_BIAS_POLICY_VERSION = 'v3-price-action-trend-v2-2026-07-17';
 
-  if (
-    Number.isFinite(lastClose) &&
-    currentHigh > priorHigh &&
-    currentLow > priorLow &&
-    displacement >= -(averageRange * 0.1)
-  ) return 'bullish';
+function finitePriceCandle(candle = {}) {
+  const open = Number(candle.open);
+  const high = Number(candle.high);
+  const low = Number(candle.low);
+  const close = Number(candle.close);
+  if (![open, high, low, close].every(Number.isFinite)) return null;
+  if (high < low) return null;
+  return { ...candle, open, high, low, close };
+}
 
-  if (
-    Number.isFinite(lastClose) &&
-    currentHigh < priorHigh &&
-    currentLow < priorLow &&
-    displacement <= averageRange * 0.1
-  ) return 'bearish';
+function average(values = []) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
 
-  if (Number.isFinite(displacement) && averageRange > 0) {
-    if (displacement >= averageRange * 0.75) return 'bullish';
-    if (displacement <= -(averageRange * 0.75)) return 'bearish';
+function regressionSlope(values = []) {
+  if (values.length < 2) return 0;
+  const xMean = (values.length - 1) / 2;
+  const yMean = average(values);
+  let numerator = 0;
+  let denominator = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const xDelta = index - xMean;
+    numerator += xDelta * (values[index] - yMean);
+    denominator += xDelta * xDelta;
   }
+  return denominator > 0 ? numerator / denominator : 0;
+}
 
+/** Native V3 price-action classifier. No legacy indicators are used. */
+export function classifyPriceBias(candles = []) {
+  if (!Array.isArray(candles)) return 'neutral';
+  const valid = candles.map(finitePriceCandle).filter(Boolean);
+  if (valid.length < 20) return 'neutral';
+
+  const recent = valid.slice(-Math.min(30, valid.length));
+  const closes = recent.map((candle) => candle.close);
+  const ranges = recent.map((candle) => Math.max(0, candle.high - candle.low));
+  const averageRange = average(ranges.filter((value) => value > 0));
+  if (!Number.isFinite(averageRange) || averageRange <= 0) return 'neutral';
+
+  const sample = Math.max(4, Math.floor(recent.length / 5));
+  const firstCloseMean = average(closes.slice(0, sample));
+  const lastCloseMean = average(closes.slice(-sample));
+  const netChange = closes.at(-1) - closes[0];
+  const rollingShift = lastCloseMean - firstCloseMean;
+  const projectedSlope = regressionSlope(closes) * (closes.length - 1);
+
+  const split = Math.floor(recent.length / 2);
+  const prior = recent.slice(0, split);
+  const current = recent.slice(split);
+  const priorHigh = Math.max(...prior.map((candle) => candle.high));
+  const priorLow = Math.min(...prior.map((candle) => candle.low));
+  const currentHigh = Math.max(...current.map((candle) => candle.high));
+  const currentLow = Math.min(...current.map((candle) => candle.low));
+  const structureBuffer = averageRange * 0.05;
+  const bullishStructure = currentHigh > priorHigh + structureBuffer && currentLow > priorLow + structureBuffer;
+  const bearishStructure = currentHigh < priorHigh - structureBuffer && currentLow < priorLow - structureBuffer;
+
+  const windowHigh = Math.max(...recent.map((candle) => candle.high));
+  const windowLow = Math.min(...recent.map((candle) => candle.low));
+  const windowRange = windowHigh - windowLow;
+  const closeLocation = windowRange > 0 ? (closes.at(-1) - windowLow) / windowRange : 0.5;
+
+  let bullishVotes = 0;
+  let bearishVotes = 0;
+  if (netChange >= averageRange * 0.4) bullishVotes += 1;
+  if (netChange <= -averageRange * 0.4) bearishVotes += 1;
+  if (rollingShift >= averageRange * 0.3) bullishVotes += 1;
+  if (rollingShift <= -averageRange * 0.3) bearishVotes += 1;
+  if (projectedSlope >= averageRange * 0.4) bullishVotes += 1;
+  if (projectedSlope <= -averageRange * 0.4) bearishVotes += 1;
+  if (bullishStructure) bullishVotes += 1;
+  if (bearishStructure) bearishVotes += 1;
+  if (closeLocation >= 0.6) bullishVotes += 1;
+  if (closeLocation <= 0.4) bearishVotes += 1;
+
+  if (bullishVotes >= 3 && bullishVotes > bearishVotes) return 'bullish';
+  if (bearishVotes >= 3 && bearishVotes > bullishVotes) return 'bearish';
   return 'neutral';
 }
 
@@ -223,77 +307,23 @@ export function deriveV3EntryTiming(signal = {}) {
   const sweepBlock = evaluateOpposingSweepBlock(signal, direction);
   const reversal = evaluateReversalSequence(signal, direction);
   const retest = confirmedRetest(signal, direction);
-  const { choch, bos, structure } = structureEvents(signal, direction);
-  const fibStatus = String(v3?.fib?.entryZoneStatus || signal?.fibonacci?.entryZoneStatus || '').toLowerCase();
-  const entryDistance = numberOrNull(v3.entryDistanceFromOriginPct ?? signal.entryDistanceFromOriginPct);
-  const maxEntryDistance = Number(process.env.V3_QUALITY_MAX_ENTRY_DISTANCE || 0.55);
-  const liquidity = v3.liquidity || {};
-  const sweep = liquidity.liquiditySweep || null;
-  const pendingSweep = Boolean(
-    liquidity.liquiditySweepDetected === true &&
-    (sweep?.pending === true || String(sweep?.subtype || '').toLowerCase() === 'pending_sweep')
-  );
-  const marketState = String(
-    v3?.marketRegime?.regime ||
-    v3?.marketRegime?.state ||
-    structure?.marketState ||
-    structure?.structureTrend ||
-    ''
-  ).toLowerCase();
-  const ranging = marketState.includes('rang') || marketState.includes('consolidat');
-
-  let status = 'too_early';
-  let reason = 'Stage 2 trigger has not completed yet';
-
-  if (!direction || !alignment.passed) {
-    status = 'invalidated';
-    reason = alignment.reason || 'Daily/H4/M15 alignment is not executable';
-  } else if (!sweepBlock.allowed) {
-    status = 'invalidated';
-    reason = sweepBlock.reason;
-  } else if (fibStatus === 'invalidated') {
-    status = 'invalidated';
-    reason = 'price invalidated the V3 impulse origin';
-  } else if (
-    fibStatus === 'extended' ||
-    (entryDistance !== null && Number.isFinite(maxEntryDistance) && entryDistance > maxEntryDistance)
-  ) {
-    status = 'late_entry';
-    reason = 'price has moved beyond the permitted V3 entry distance';
-  } else if (pendingSweep || fibStatus === 'too_early') {
-    status = 'too_early';
-    reason = pendingSweep
-      ? 'liquidity sweep is still pending confirmation'
-      : 'price has not reached the permitted entry area';
-  } else if (!reversal.allowed) {
-    status = 'wait_for_retest';
-    reason = reversal.reason;
-  } else if (ranging && !retest.confirmed) {
-    status = 'wait_for_retest';
-    reason = 'range breakout requires a confirmed retest';
-  } else if (choch && !retest.confirmed && !reversal.alignedSweep) {
-    status = 'wait_for_retest';
-    reason = 'CHoCH is confirmed, but the sweep/retest sequence is incomplete';
-  } else if (
-    retest.confirmed ||
-    reversal.alignedSweep ||
-    bos ||
-    (choch && reversal.sequenceConfirmed)
-  ) {
-    status = 'valid_entry';
-    reason = 'Daily/H4 alignment and Stage 2 entry sequence are confirmed';
-  }
+  const movement = v3?.marketMovement || signal?.marketMovement || null;
+  const marketTiming = deriveMarketMovementEntryTiming({
+    movement,
+    alignment,
+    sweepBlock,
+    reversal,
+  });
 
   return {
-    status,
-    reason,
+    ...marketTiming,
     retestDetected: retest.confirmed,
     retest: retest.retest || null,
     alignmentScore: alignment.score,
     dailyH4Aligned: alignment.dailyH4Aligned === true,
     opposingSweepBlocked: !sweepBlock.allowed,
     reversalSequenceConfirmed: reversal.sequenceConfirmed,
-    checkedAt: new Date().toISOString(),
+    fibUsedForConfirmation: false,
   };
 }
 

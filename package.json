@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "apply:v3-entry": "python3 scripts/run_v3_entry_contract.py && python3 scripts/apply_v3_dashboard_scan.py && python3 scripts/apply_v3_timeframe_classification.py && python3 scripts/enforce_v3_alignment_roles.py && python3 scripts/enforce_v3_fib_entry_timing.py",
+    "apply:v3-entry": "python3 scripts/run_v3_entry_contract.py && python3 scripts/apply_v3_dashboard_scan.py && python3 scripts/apply_v3_timeframe_classification.py && python3 scripts/enforce_v3_alignment_roles.py && python3 scripts/enforce_v3_market_entry_timing.py",
     "predev:server": "npm run apply:v3-entry",
     "dev": "vite",
     "dev:server": "node server/index.js",
