@@ -9,11 +9,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 
 test('generated server source registers a read-only native PPR scan endpoint', () => {
-  const patch = read('scripts/apply_ppr_engine.py');
-  assert.match(patch, /app\.post\('\/api\/internal\/oanda\/ppr-scan'/);
-  assert.match(patch, /scanPprMarket\(\{/);
-  assert.match(patch, /legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false/);
-  const routeSection = patch.split("app.post('/api/internal/oanda/ppr-scan'")[1].split("// POST /api/internal/oanda/ict")[0];
+  const index = read('server/index.js');
+  assert.match(index, /app\.post\('\/api\/internal\/oanda\/ppr-scan'/);
+  assert.match(index, /import \{ scanPprMarket \} from '\.\/pprEngine\.js'/);
+  const routeSection = index
+    .split("app.post('/api/internal/oanda/ppr-scan'")[1]
+    .split("// POST /api/internal/oanda/ict")[0];
+  assert.match(routeSection, /scanPprMarket\(\{/);
+  assert.match(routeSection, /legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false/);
   assert.doesNotMatch(routeSection, /runAutoPprForUser|executePprTrade|runV3DashboardScan|scanForexPairs|analyzeICTPairs/);
 });
 
