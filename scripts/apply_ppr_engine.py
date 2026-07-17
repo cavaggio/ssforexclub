@@ -27,9 +27,68 @@ index = index.replace(
     '  //   path (ICT or V3) — never both. Requires environment=live (per-user creds).',
     '  //   path (ICT, V3, or PPR) — never more than one. Requires a per-user executable environment.',
 )
+
+# Register a read-only PPR dashboard endpoint. It calls only scanPprMarket and
+# never invokes execution or another strategy engine.
+ppr_import = "import { scanPprMarket } from './pprEngine.js';"
+import_anchor = "import { runAutoForUser } from './autoAiRouter.js';"
+if ppr_import not in index:
+    if import_anchor not in index:
+        raise RuntimeError('PPR scan import anchor missing from server/index.js')
+    index = index.replace(import_anchor, f"{import_anchor}\n{ppr_import}", 1)
+
+ppr_route_marker = "app.post('/api/internal/oanda/ppr-scan'"
+if ppr_route_marker not in index:
+    route_anchor = "// POST /api/internal/oanda/ict\n"
+    ppr_route = """// POST /api/internal/oanda/ppr-scan
+// Read-only, user-scoped PPR dashboard analysis. This endpoint calls the native
+// PPR raw-market scanner only and never invokes PPR execution, V3, ICT or legacy
+// scanner qualification.
+app.post('/api/internal/oanda/ppr-scan', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('PPR_SCAN', req.body);
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => scanPprMarket({
+        client,
+        pairs: req.body?.pairs || null,
+        now: new Date(),
+        log: (message) => console.log(
+          `[INTERNAL PPR_SCAN] accountId=${maskAccountId(client.accountId)} ${message}`,
+        ),
+      }),
+    );
+    console.log(
+      `[INTERNAL PPR_SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
+        `engine=ppr architecture=independent_ppr_raw_market_data ` +
+        `legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false ` +
+        `qualified=${result?.qualified?.length ?? 0} ` +
+        `watch=${result?.watchCandidates?.length ?? 0} ` +
+        `rejected=${result?.rejected?.length ?? 0}`,
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_PPR_SCAN] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+"""
+    if route_anchor not in index:
+        raise RuntimeError('PPR dashboard route anchor missing from server/index.js')
+    index = index.replace(route_anchor, ppr_route + route_anchor, 1)
+
 for marker in [
     "['ict', 'v3', 'ppr'].includes(requestedEngine)",
     'runAutoForUser({ client, engine, runId:',
+    ppr_import,
+    ppr_route_marker,
+    'scanPprMarket({',
+    'engine=ppr architecture=independent_ppr_raw_market_data',
 ]:
     if marker not in index:
         raise RuntimeError(f'PPR index integration incomplete: missing {marker}')
@@ -210,4 +269,4 @@ for marker in required_trade:
         raise RuntimeError(f'PPR trade integration incomplete: missing {marker}')
 TRADE.write_text(trade, encoding='utf-8')
 
-print('Independent PPR engine integration applied.')
+print('Independent PPR engine, dashboard scan route, and routing integration applied.')

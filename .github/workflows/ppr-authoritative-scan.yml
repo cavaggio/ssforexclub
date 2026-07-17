@@ -1,0 +1,59 @@
+name: Validate authoritative PPR scanner
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-routing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install server dependencies
+        run: npm ci
+      - name: Apply generated source twice
+        run: |
+          npm run apply:v3-entry
+          npm run apply:v3-entry
+      - name: Validate PPR scanner and routing
+        run: npm run test:ppr
+      - name: Validate existing engine router
+        run: node --test server/autoAiRouter.test.js
+      - name: Syntax-check generated server
+        run: node --check server/index.js
+
+  web-dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        run: npm ci
+      - name: Apply scanner UI twice
+        run: |
+          npm run apply:ppr
+          npm run apply:ppr
+      - name: Test engine normalization
+        run: npm run test:scanner-engine
+      - name: Typecheck dashboard
+        run: npm run typecheck
+      - name: Build dashboard
+        run: npm run build

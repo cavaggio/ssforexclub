@@ -1,8 +1,7 @@
 /**
- * web/components/auto-ai-trading-toggle.tsx
- *
- * Dashboard "Auto AI Trading" toggle. Controls AI AUTO-trading only (not manual
- * execution). Persisted per user via /api/user/auto-ai-trading (Clerk-scoped).
+ * Dashboard Scanner / Auto AI controls. The selected engine is authoritative for
+ * manual scans and autonomous scans; the ON/OFF switch controls auto-execution
+ * only. Preferences are persisted per user via /api/user/auto-ai-trading.
  */
 
 'use client';
@@ -33,7 +32,7 @@ function normalizeEngine(value: unknown): Engine {
 const ENGINE_DESCRIPTIONS: Record<Engine, string> = {
   ict: 'ICT concepts and ICT-specific confirmation/execution.',
   v3: 'Independent V3 raw-market structure and liquidity engine.',
-  ppr: 'Daily EMA bias, swing-liquidity targets, volume spike, and manipulation confirmation.',
+  ppr: 'Daily EMA9 bias, liquidity-pool targeting, volume spike, and manipulation confirmation.',
 };
 
 export function AutoAiTradingToggle() {
@@ -82,7 +81,7 @@ export function AutoAiTradingToggle() {
         setState({
           ...state,
           saving: false,
-          saveError: json?.error || `Could not save Auto AI engine (HTTP ${res.status}).`,
+          saveError: json?.error || `Could not save Scanner / Auto AI engine (HTTP ${res.status}).`,
         });
         return;
       }
@@ -93,11 +92,14 @@ export function AutoAiTradingToggle() {
         saving: false,
         saveError: null,
       });
+      window.dispatchEvent(new CustomEvent('signal-stack-engine-changed', {
+        detail: { engine: normalizeEngine(json.autoAiEngine) },
+      }));
     } catch (err) {
       setState({
         ...state,
         saving: false,
-        saveError: err instanceof Error ? err.message : 'Could not save Auto AI engine.',
+        saveError: err instanceof Error ? err.message : 'Could not save Scanner / Auto AI engine.',
       });
     }
   };
@@ -110,10 +112,10 @@ export function AutoAiTradingToggle() {
   };
 
   if (state.kind === 'loading') {
-    return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto AI Trading…</span></Box>;
+    return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Scanner / Auto AI controls…</span></Box>;
   }
   if (state.kind === 'error') {
-    return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto AI Trading: {state.message}</span></Box>;
+    return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Scanner / Auto AI: {state.message}</span></Box>;
   }
 
   const isPaper = state.environment === 'practice' || state.environment === 'paper';
@@ -125,16 +127,15 @@ export function AutoAiTradingToggle() {
     <Box>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 14 }}>Auto AI Trading</div>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>Scanner / Auto AI engine</div>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            Controls AI <strong>auto-execution</strong> of qualified signals from the selected engine — not manual execution.
-            {' '}When ON, the bot may scan and auto-execute; when OFF it analyzes only.
+            The selected engine controls every manual <strong>Run scan</strong> request and every autonomous scan.
+            {' '}The ON/OFF switch controls <strong>auto-execution only</strong>.
           </div>
           <div style={{ marginTop: 6, fontSize: 12 }}>
-            Active engine:{' '}
-            <strong style={{ color: on ? 'var(--good)' : 'var(--muted)' }}>
-              {state.engine.toUpperCase()}{on ? '' : ' (off)'}
-            </strong>
+            Active scanner:{' '}
+            <strong style={{ color: 'var(--good)' }}>{state.engine.toUpperCase()}</strong>
+            <span style={{ color: 'var(--muted)' }}>{on ? ' · auto-execution ON' : ' · auto-execution OFF'}</span>
           </div>
         </div>
         <button
@@ -188,7 +189,7 @@ export function AutoAiTradingToggle() {
       </div>
 
       <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', fontStyle: 'italic' }}>
-        {ENGINE_DESCRIPTIONS[state.engine]} Only one auto-trading engine can be active at a time.
+        {ENGINE_DESCRIPTIONS[state.engine]} Manual scans use this engine even when auto-execution is OFF. Only one engine can be selected at a time.
       </div>
 
       {state.saveError && (
@@ -210,17 +211,17 @@ export function AutoAiTradingToggle() {
 
       {disabled && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warn)' }}>
-          Disabled by platform — live auto-trading is turned off (PLATFORM_LIVE_TRADING_ENABLED). Your preference is saved but won’t run until the platform enables it.
+          Disabled by platform — live auto-trading is turned off (PLATFORM_LIVE_TRADING_ENABLED). Your scanner choice remains saved.
         </div>
       )}
       {isPaper && state.enabled && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-          Paper mode — runs on your practice account. No live-trading acknowledgement or platform flag required.
+          Paper mode — auto-execution runs on your practice account. Manual scans always use the selected engine.
         </div>
       )}
       {!disabled && !isPaper && state.enabled && !state.liveAck && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warn)' }}>
-          Note: live trading isn’t acknowledged yet — auto-trading also requires your live-trading acknowledgement and an active live broker connection.
+          Note: live trading is not acknowledged yet — auto-execution also requires your live-trading acknowledgement and an active live broker connection.
         </div>
       )}
     </Box>
