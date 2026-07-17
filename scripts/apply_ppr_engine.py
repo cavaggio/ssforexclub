@@ -50,22 +50,24 @@ trade = replace_once(
 
 # Upstream V3 generators may rebuild part of the execution header while
 # preserving PPR lines from a prior pass. Remove every generated header line and
-# insert one canonical set immediately before executableGeometry on every run.
+# insert one canonical set on every run.
 for declaration in [
     "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n",
     "  const purePprExecution = isPprExecutionSignal(signal);\n",
     "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n",
     "  let executableEntry = Number(entry);\n",
+    "  let executableGeometry = null;\n",
 ]:
     trade = trade.replace(declaration, '')
 trade = replace_once(
     trade,
-    "  let executableGeometry = null;",
+    "  const entryQualityConfidence = Number(",
     "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n"
     "  const purePprExecution = isPprExecutionSignal(signal);\n"
     "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n"
     "  let executableEntry = Number(entry);\n"
-    "  let executableGeometry = null;",
+    "  let executableGeometry = null;\n"
+    "  const entryQualityConfidence = Number(",
     'PPR execution classification',
 )
 
