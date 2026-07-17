@@ -124,6 +124,7 @@ function displayPair(signal: WatchSignal): string {
 
 function finite(...values: unknown[]): number | null {
   for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
     const parsed = Number(value);
     if (Number.isFinite(parsed)) return parsed;
   }
@@ -173,10 +174,12 @@ function confirmationHeadline(signal: WatchSignal, tier: WatchTier): string {
   const timing = String(signal.entryTiming?.status || '').toLowerCase();
 
   if (!stage1 && !stage2) return 'native confirmation not evaluated';
-  if (stage1?.allowed !== true) return 'stage 1 setup blocked';
-  if (stage2?.allowed === true && timing === 'valid_entry') return 'v3 confirmation complete';
-  if (String(stage2?.state || '').toLowerCase() === 'watch') return 'stage 2 trigger watch';
-  if (stage2?.allowed !== true) return 'stage 2 confirmation blocked';
+  if (!stage1) return 'stage 1 not evaluated';
+  if (stage1.allowed !== true) return 'stage 1 setup blocked';
+  if (!stage2) return 'stage 2 not evaluated';
+  if (stage2.allowed === true && timing === 'valid_entry') return 'v3 confirmation complete';
+  if (String(stage2.state || '').toLowerCase() === 'watch') return 'stage 2 trigger watch';
+  if (stage2.allowed !== true) return 'stage 2 confirmation blocked';
   return tier === 'hot' ? 'trigger pending' : 'setup developing';
 }
 
@@ -221,11 +224,11 @@ function buildConfirmations(signal: WatchSignal): ConfirmationItem[] {
   const minimumSupports = finite(stage2Metrics?.minSupports) ?? 1;
   const stage2State = String(stage2?.state || '').toLowerCase();
 
-  const finalState: ConfirmationState = !stage1 && !stage2
+  const finalState: ConfirmationState = !stage1 || !stage2
     ? 'not_evaluated'
-    : stage1?.allowed !== true
+    : stage1.allowed !== true
       ? 'blocked'
-      : stage2?.allowed === true && timing === 'valid_entry'
+      : stage2.allowed === true && timing === 'valid_entry'
         ? 'pass'
         : stage2State === 'watch' || timing === 'too_early' || timing === 'wait_for_retest'
           ? 'waiting'
@@ -590,7 +593,7 @@ export function ScannerWatchStatus({ hasBroker }: { hasBroker: boolean }) {
       )}
 
       {hasBroker && !error && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(430px, 1fr))', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(420px, 100%), 1fr))', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <h3 style={{ margin: 0, color: '#ffb347', fontSize: 15 }}>Hot Watch</h3>
