@@ -26,6 +26,7 @@ required = {
         'h1Candles = []',
         "const useH1 = Array.isArray(h1Candles) && h1Candles.length >= 20",
         "const timeframeUsed = useH1 ? 'H1'",
+        'h1Used: useH1',
     ],
     'server/primaryTimeframeAlignment.test.js': [
         'Daily and H4 aligned score exactly 67',
@@ -40,7 +41,7 @@ required = {
 
 forbidden = {
     'server/primaryTimeframeAlignment.js': [
-        "FIB_ONLY_TIMEFRAMES",
+        'FIB_ONLY_TIMEFRAMES',
         'H1 is reserved for Fibonacci',
     ],
     'server/v3Engine.js': [
@@ -50,7 +51,6 @@ forbidden = {
     ],
     'server/marketStructureEngine.js': [
         'H1 is intentionally excluded',
-        'h1Used: false,\n    reasons,',
     ],
     'server/v3DashboardScan.js': [
         "h1: 'fib_only'",
