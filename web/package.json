@@ -4,7 +4,7 @@
   "private": true,
   "description": "Signal Stack — multi-tenant Next.js 16 App Router front-end. Auth via Clerk; per-user broker connections in Supabase Postgres. Talks to the Express scanner in ../server as a separate service.",
   "scripts": {
-    "apply:ppr": "node scripts/apply-ppr-engine.mjs && node scripts/apply-ppr-trade-attribution-fallback.mjs",
+    "apply:ppr": "node scripts/apply-ppr-engine.mjs && node scripts/apply-ppr-trade-attribution-fallback.mjs && node scripts/apply-ppr-scanner-ui.mjs",
     "predev": "npm run apply:ppr",
     "dev": "next dev",
     "prebuild": "npm run apply:ppr",
@@ -12,7 +12,8 @@
     "start": "next start",
     "lint": "next lint",
     "pretypecheck": "npm run apply:ppr",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:scanner-engine": "node --test lib/scannerEngine.test.js"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
