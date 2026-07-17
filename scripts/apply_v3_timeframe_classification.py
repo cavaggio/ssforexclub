@@ -99,10 +99,10 @@ export function classifyPriceBias(candles = []) {
   if (closeLocation >= 0.6) bullishVotes += 1;
   if (closeLocation <= 0.4) bearishVotes += 1;
 
+  // Require three independent observations. Two weak observations can occur
+  // simply because the final candle lands near one edge of a balanced range.
   if (bullishVotes >= 3 && bullishVotes > bearishVotes) return 'bullish';
   if (bearishVotes >= 3 && bearishVotes > bullishVotes) return 'bearish';
-  if (bullishVotes >= 2 && bearishVotes === 0) return 'bullish';
-  if (bearishVotes >= 2 && bullishVotes === 0) return 'bearish';
   return 'neutral';
 }
 
