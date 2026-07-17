@@ -7,7 +7,9 @@
  * SMT, Turtle Soup, Judas Swing, IRL/ERL, the ICT recommendation (or rejection
  * reasons), and a V3-vs-ICT comparison.
  *
- * Read-only / shadow: nothing here can place or change a trade.
+ * Qualified signals expose a manual Execute Trade button. The button stays
+ * visible when execution is unavailable so the gating state is clear, while
+ * the server remains authoritative for every live or paper order.
  */
 
 'use client';
@@ -77,7 +79,7 @@ export function IctIntelligencePanel() {
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>ICT Intelligence</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            ICT-first market read — liquidity, displacement, MSS/CHoCH, PD arrays, killzones. Manual execution only when enabled; never auto-trades.
+            ICT-first market read — liquidity, displacement, MSS/CHoCH, PD arrays, killzones. Qualified signals include manual execution controls; the server re-validates every order.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -127,12 +129,14 @@ function IctCard({ a, canExecute, isPaper }: { a: IctAnalysis; canExecute: boole
   const signalTone = a.signal === 'buy' ? 'good' : a.signal === 'sell' ? 'bad' : 'muted';
   const [trade, setTrade] = useState<TradeState>({ kind: 'idle' });
 
-  // Show the execute button ONLY for a live signal, when execution is enabled
-  // and live trading is acknowledged (creds-ready is implied — the analyze call
-  // 409s otherwise). The server re-validates everything before any order.
-  const showExecute = a.signal !== 'none' && canExecute;
+  // The ICT engine represents a qualified signal as BUY or SELL. Always render
+  // the action for those signals so execution availability is explicit instead
+  // of silently hiding the control. The server still re-validates every gate.
+  const showExecute = a.signal !== 'none';
+  const executeDisabled = !canExecute || trade.kind === 'pending';
 
   const onExecute = async () => {
+    if (!canExecute) return;
     const dir = a.signal === 'buy' ? 'long' : 'short';
     if (a.entry == null || a.stopLoss == null || a.target1 == null) {
       setTrade({ kind: 'error', message: 'Missing entry/stop/target on signal.' });
@@ -190,14 +194,22 @@ function IctCard({ a, canExecute, isPaper }: { a: IctAnalysis; canExecute: boole
         </div>
       )}
 
-      {/* Execute ICT Trade — only when a live signal exists, execution is enabled
-          and live trading is acknowledged. Server re-validates before any order. */}
+      {/* Execute ICT Trade — rendered for every qualified BUY/SELL signal.
+          Availability is reflected by the disabled state; server re-validates. */}
       {showExecute && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
           <button
             onClick={() => void onExecute()}
-            disabled={trade.kind === 'pending'}
-            style={{ ...btn, background: a.signal === 'buy' ? '#0d3320' : '#320d0d', color: a.signal === 'buy' ? 'var(--good)' : 'var(--bad)', border: '1px solid var(--border)', cursor: trade.kind === 'pending' ? 'wait' : 'pointer' }}
+            disabled={executeDisabled}
+            title={canExecute ? `Execute qualified ICT ${a.signal.toUpperCase()} signal` : 'ICT execution is disabled for the active environment'}
+            style={{
+              ...btn,
+              background: a.signal === 'buy' ? '#0d3320' : '#320d0d',
+              color: a.signal === 'buy' ? 'var(--good)' : 'var(--bad)',
+              border: '1px solid var(--border)',
+              cursor: trade.kind === 'pending' ? 'wait' : canExecute ? 'pointer' : 'not-allowed',
+              opacity: canExecute ? 1 : 0.55,
+            }}
           >
             {trade.kind === 'pending'
               ? 'Submitting…'
@@ -205,6 +217,11 @@ function IctCard({ a, canExecute, isPaper }: { a: IctAnalysis; canExecute: boole
                 ? `Execute Paper ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`
                 : `Execute ICT ${a.signal === 'buy' ? 'BUY' : 'SELL'}`}
           </button>
+          {!canExecute && (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Execution is disabled. Enable the ICT execution gates to place this qualified signal.
+            </span>
+          )}
           {trade.kind === 'done' && (
             <span style={{ fontSize: 12, fontFamily: 'var(--mono, monospace)', color: trade.result.success ? 'var(--good)' : 'var(--warn)' }}>
               {trade.result.success
