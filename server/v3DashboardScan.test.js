@@ -47,8 +47,8 @@ function candidate({
         structureTrend: expected || 'ranging',
         structureStrength: 72,
         chochDetected: false,
-        timeframeUsed: 'M15',
-        h1Used: false,
+        timeframeUsed: 'H1',
+        h1Used: true,
       },
       volatility: { volatilityState: 'normal' },
     },
@@ -107,7 +107,7 @@ test('native Stage 1 score development becomes Near Qualified with its real bloc
   assert.equal(result.nearQualified[0].dashboardWatchTier.reason, 'V3 score 60 < 62');
 });
 
-test('dashboard uses Daily H4 M15 for alignment and marks H1 as fib only', () => {
+test('dashboard scores Daily H4 M15 alignment while displaying H1 structure separately', () => {
   const item = candidate({
     pair: 'USD_JPY',
     stage1Allowed: false,
@@ -121,14 +121,14 @@ test('dashboard uses Daily H4 M15 for alignment and marks H1 as fib only', () =>
   assert.equal(displayed.alignment.timeframes.daily, 'bullish');
   assert.equal(displayed.alignment.timeframes.h4, 'bullish');
   assert.equal(displayed.alignment.timeframes.m15, 'bearish');
-  assert.equal(displayed.alignment.timeframes.h1, 'fib_only');
+  assert.equal(displayed.alignment.timeframes.h1, 'bullish');
   assert.equal(displayed.alignment.timeframes.m30, 'n/a');
   assert.equal(displayed.alignment.timeframeAlignmentScore, 67);
   assert.equal(displayed.macro.macroBias, 'bullish');
   assert.equal(displayed.macro.macroConfidence, 67);
-  assert.equal(displayed.structure.h1Trend, 'fib_only');
-  assert.equal(displayed.v3.structure.timeframeUsed, 'M15');
-  assert.equal(displayed.v3.structure.h1Used, false);
+  assert.equal(displayed.structure.h1Trend, 'bullish');
+  assert.equal(displayed.v3.structure.timeframeUsed, 'H1');
+  assert.equal(displayed.v3.structure.h1Used, true);
   assert.equal(displayed.legacyScannerUsed, false);
   assert.equal(displayed.legacyConfirmationsUsed, false);
 });
@@ -149,7 +149,7 @@ test('100 alignment requires Daily H4 and M15 to agree', () => {
     [displayed.alignment.timeframes.daily, displayed.alignment.timeframes.h4, displayed.alignment.timeframes.m15],
     ['bearish', 'bearish', 'bearish'],
   );
-  assert.equal(displayed.alignment.timeframes.h1, 'fib_only');
+  assert.equal(displayed.alignment.timeframes.h1, 'bearish');
 });
 
 test('hard native blockers are rejected instead of being labeled as waiting', () => {

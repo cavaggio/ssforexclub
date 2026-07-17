@@ -10,9 +10,9 @@
  *   M15 can improve 67 to 100, but it cannot replace either Daily or H4.
  *
  * EXCLUDED FROM ALIGNMENT:
- *   H1 is reserved for Fibonacci impulse/retracement analysis. It must not
- *   contribute to direction, alignment score, conflicts, or market-structure
- *   qualification.
+ *   H1 does not contribute to direction, alignment score, alignment conflicts,
+ *   or the Daily/H4 hard gate. H1 remains available to other V3 analysis layers,
+ *   including market structure and Fibonacci analysis.
  *
  * SOFT CONTEXT ONLY:
  *   M30 + M5 may warn/conflict, but they must not reject an otherwise valid
@@ -21,10 +21,9 @@
 
 export const HARD_ALIGNMENT_TIMEFRAMES = ['daily', 'h4'];
 export const PRIMARY_ALIGNMENT_TIMEFRAMES = ['daily', 'h4', 'm15'];
-export const FIB_ONLY_TIMEFRAMES = ['h1'];
 export const CONTEXT_ALIGNMENT_TIMEFRAMES = ['m30', 'm5'];
 export const PRIMARY_ALIGNMENT_MIN_SCORE = 67;
-export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-daily-h4-67-m15-100-h1-fib-only-2026-07-17';
+export const PRIMARY_ALIGNMENT_POLICY_VERSION = 'v3-primary-daily-h4-67-m15-100-2026-07-17';
 
 function norm(value) {
   const s = String(value || '').trim().toLowerCase();
@@ -189,7 +188,6 @@ export function evaluatePrimaryTimeframeAlignment(input = {}, direction) {
     m15Aligned,
     hardTimeframes: HARD_ALIGNMENT_TIMEFRAMES,
     primaryTimeframes: PRIMARY_ALIGNMENT_TIMEFRAMES,
-    fibOnlyTimeframes: FIB_ONLY_TIMEFRAMES,
     contextTimeframes: CONTEXT_ALIGNMENT_TIMEFRAMES,
     biases,
     alignedTimeframes,

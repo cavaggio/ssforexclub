@@ -3,11 +3,12 @@
  *
  * Signal Stack V3 — Market Structure Engine (priority #2, above EMA).
  *
- *   analyzeMarketStructure({ pair, h4Candles, m15Candles })
+ *   analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles })
  *
- * Market structure is evaluated from M15 execution structure, with H4 as the
- * fallback when M15 data is unavailable. H1 is intentionally excluded because
- * it is reserved for Fibonacci impulse and retracement analysis.
+ * Market structure is independent from the Daily/H4/M15 alignment score. H1 is
+ * the primary structure timeframe when available, with M15 and then H4 used as
+ * fallbacks. H1 may therefore inform BOS/CHoCH and swing structure without ever
+ * contributing to the 67/100 or 100/100 alignment calculation.
  *
  * Replaces heavy EMA dependence with pure price structure: the sequence of
  * Higher Highs / Higher Lows / Lower Highs / Lower Lows, plus Break of
@@ -67,11 +68,18 @@ function classifyTrend(swings) {
   return 'ranging';
 }
 
-export function analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] } = {}) {
+export function analyzeMarketStructure({
+  pair,
+  h1Candles = [],
+  h4Candles = [],
+  m15Candles = [],
+} = {}) {
   const reasons = [];
-  const useM15 = Array.isArray(m15Candles) && m15Candles.length >= 20;
-  const base = useM15 ? m15Candles : h4Candles;
-  const timeframeUsed = useM15 ? 'M15' : (Array.isArray(h4Candles) && h4Candles.length >= 20 ? 'H4' : null);
+  const useH1 = Array.isArray(h1Candles) && h1Candles.length >= 20;
+  const useM15 = !useH1 && Array.isArray(m15Candles) && m15Candles.length >= 20;
+  const useH4 = !useH1 && !useM15 && Array.isArray(h4Candles) && h4Candles.length >= 20;
+  const base = useH1 ? h1Candles : useM15 ? m15Candles : h4Candles;
+  const timeframeUsed = useH1 ? 'H1' : useM15 ? 'M15' : useH4 ? 'H4' : null;
 
   if (!Array.isArray(base) || base.length < 20) {
     return {
@@ -83,7 +91,7 @@ export function analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] }
       swings: [],
       timeframeUsed: null,
       h1Used: false,
-      reasons: ['Insufficient M15/H4 candles for structure analysis.'],
+      reasons: ['Insufficient H1/M15/H4 candles for structure analysis.'],
     };
   }
 
@@ -138,7 +146,7 @@ export function analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] }
     structureStrength,
     swings: swings.slice(-8),
     timeframeUsed,
-    h1Used: false,
+    h1Used: useH1,
     reasons,
   };
 }

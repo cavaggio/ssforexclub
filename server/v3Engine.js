@@ -7,9 +7,8 @@
  *                m15Candles, currentPrice, atrPips, atrHistorical, momentum, now })
  *
  * Directional alignment is Daily/H4 minimum (67/100), with aligned M15 raising
- * the score to 100/100. H1 is excluded from direction and market-structure
- * alignment and is supplied to the Fibonacci layer only for impulse/retracement
- * selection.
+ * the score to 100/100. H1 is excluded from that alignment calculation, but it
+ * remains available to independent V3 market-structure and Fibonacci analysis.
  */
 
 import { analyzeLiquidity } from './liquidityEngine.js';
@@ -68,16 +67,16 @@ export function evaluateV3({
   const direction = directionFromDailyH4(timeframes);
   const primaryTimeframeAlignment = evaluatePrimaryTimeframeAlignment({ timeframes }, direction);
 
-  // Liquidity/session remain non-alignment context. Market structure is strictly
-  // M15 with H4 fallback; H1 cannot influence structure direction or alignment.
+  // Alignment is determined only by Daily/H4/M15. H1 remains available to the
+  // separate liquidity, session, market-structure, and Fibonacci analysis layers.
   const liquidity = analyzeLiquidity({ pair, dailyCandles, h4Candles, h1Candles, m15Candles, currentPrice: price, atrPips });
-  const structure = analyzeMarketStructure({ pair, h4Candles, m15Candles });
+  const structure = analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles });
   const session = analyzeSession({ now, h1Candles, atrPips, atrHistorical });
   const volatility = analyzeVolatilityExpansion({ pair, candles: m15Candles.length ? m15Candles : h4Candles, atrPips, atrHistorical });
 
   const structureDirection = deriveDirection({ structure, liquidity, session });
 
-  // H1 is the sole Fibonacci impulse/retracement timeframe.
+  // Fibonacci impulse/retracement analysis remains H1-specific.
   const fib = direction && Number.isFinite(price)
     ? safeFib({ direction, h1Candles, currentPrice: price, pair })
     : null;
