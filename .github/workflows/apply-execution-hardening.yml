@@ -32,6 +32,9 @@ jobs:
       - name: Verify generation is stable
         run: npm run apply:v3-entry
 
+      - name: Test V3 null-trigger safety
+        run: node --test server/v3MarketMovementNullSafety.test.js
+
       - name: Test risk controls
         run: node --test server/riskManager.test.js
 
