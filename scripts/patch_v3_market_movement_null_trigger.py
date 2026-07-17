@@ -6,6 +6,23 @@ MARKET_PATH = ROOT / 'server' / 'v3MarketMovement.js'
 ENGINE_PATH = ROOT / 'server' / 'v3Engine.js'
 
 market = MARKET_PATH.read_text(encoding='utf-8')
+
+old_finite = """function finite(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+"""
+new_finite = """function finite(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+"""
+if old_finite in market:
+    market = market.replace(old_finite, new_finite, 1)
+elif new_finite not in market:
+    raise RuntimeError('Unable to locate finite-value helper in server/v3MarketMovement.js')
+
 old_helper = """function triggerPrice(event = {}, fallback = null) {
   const values = [
     event.triggerPrice,
@@ -38,6 +55,7 @@ elif new_helper not in market:
     raise RuntimeError('Unable to locate triggerPrice helper in server/v3MarketMovement.js')
 
 required_market = [
+    "if (value === null || value === undefined || value === '') return null;",
     'function triggerPrice(event = null, fallback = null)',
     "const source = event && typeof event === 'object' ? event : {};",
     'const eventPrice = triggerPrice(trigger, price);',
@@ -60,4 +78,4 @@ if new_line not in engine:
     raise RuntimeError('Null-safe marketMovement guard was not applied in server/v3Engine.js')
 ENGINE_PATH.write_text(engine, encoding='utf-8')
 
-print('V3 market-movement null-trigger repair applied.')
+print('V3 market-movement null-trigger and missing-price repair applied.')
