@@ -3,22 +3,29 @@
  *
  * Dashboard "Auto AI Trading" toggle. Controls AI AUTO-trading only (not manual
  * execution). Persisted per user via /api/user/auto-ai-trading (Clerk-scoped).
- *
- * Two-level gate: the platform env flag (PLATFORM_LIVE_TRADING_ENABLED) is the
- * upper gate — when it's off, the toggle renders disabled with a reason and
- * auto-trading cannot run regardless of the user's choice.
  */
 
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
 
+type Engine = 'ict' | 'v3' | 'ppr';
+
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; enabled: boolean; engine: 'ict' | 'v3'; platformEnabled: boolean; liveAck: boolean; environment: string; saving: boolean };
+  | { kind: 'ready'; enabled: boolean; engine: Engine; platformEnabled: boolean; liveAck: boolean; environment: string; saving: boolean };
 
-type Engine = 'ict' | 'v3';
+function normalizeEngine(value: unknown): Engine {
+  if (value === 'v3' || value === 'ppr') return value;
+  return 'ict';
+}
+
+const ENGINE_DESCRIPTIONS: Record<Engine, string> = {
+  ict: 'ICT concepts and ICT-specific confirmation/execution.',
+  v3: 'Independent V3 raw-market structure and liquidity engine.',
+  ppr: 'Daily EMA bias, swing-liquidity targets, volume spike, and manipulation confirmation.',
+};
 
 export function AutoAiTradingToggle() {
   const [state, setState] = useState<State>({ kind: 'loading' });
@@ -28,7 +35,15 @@ export function AutoAiTradingToggle() {
       const res = await fetch('/api/user/auto-ai-trading', { cache: 'no-store' });
       const json = await res.json();
       if (!res.ok || !json?.ok) { setState({ kind: 'error', message: json?.error || `HTTP ${res.status}` }); return; }
-      setState({ kind: 'ready', enabled: !!json.autoAiTradingEnabled, engine: json.autoAiEngine === 'v3' ? 'v3' : 'ict', platformEnabled: !!json.platformLiveTradingEnabled, liveAck: !!json.liveTradingAcknowledged, environment: typeof json.activeEnvironment === 'string' ? json.activeEnvironment : 'practice', saving: false });
+      setState({
+        kind: 'ready',
+        enabled: !!json.autoAiTradingEnabled,
+        engine: normalizeEngine(json.autoAiEngine),
+        platformEnabled: !!json.platformLiveTradingEnabled,
+        liveAck: !!json.liveTradingAcknowledged,
+        environment: typeof json.activeEnvironment === 'string' ? json.activeEnvironment : 'practice',
+        saving: false,
+      });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -36,11 +51,9 @@ export function AutoAiTradingToggle() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Single POST for both the on/off toggle and the engine selection — they share
-  // one row, so only one engine can ever be active (mutual exclusivity).
+  // One persisted field guarantees mutual exclusivity: only one engine can run.
   const save = async (next: { enabled: boolean; engine: Engine }) => {
     if (state.kind !== 'ready' || state.saving) return;
-    // Paper/practice can opt in without the platform flag; live needs it.
     const paper = state.environment === 'practice' || state.environment === 'paper';
     if (!paper && !state.platformEnabled) return;
     setState({ ...state, saving: true });
@@ -50,7 +63,7 @@ export function AutoAiTradingToggle() {
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) { setState({ ...state, saving: false }); return; }
-      setState({ ...state, enabled: !!json.autoAiTradingEnabled, engine: json.autoAiEngine === 'v3' ? 'v3' : 'ict', saving: false });
+      setState({ ...state, enabled: !!json.autoAiTradingEnabled, engine: normalizeEngine(json.autoAiEngine), saving: false });
     } catch {
       setState({ ...state, saving: false });
     }
@@ -62,7 +75,6 @@ export function AutoAiTradingToggle() {
   if (state.kind === 'error') return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto AI Trading: {state.message}</span></Box>;
 
   const isPaper = state.environment === 'practice' || state.environment === 'paper';
-  // Paper/practice never needs the platform flag; live does.
   const platformOk = isPaper || state.platformEnabled;
   const on = state.enabled && platformOk;
   const disabled = !platformOk;
@@ -100,17 +112,17 @@ export function AutoAiTradingToggle() {
         </button>
       </div>
 
-      {/* Engine selector — exactly one engine (ICT or V3) can auto-trade. */}
       <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>Engine:</span>
-        {(['ict', 'v3'] as Engine[]).map((e) => {
-          const active = state.engine === e;
+        {(['ict', 'v3', 'ppr'] as Engine[]).map((engine) => {
+          const active = state.engine === engine;
           return (
             <button
-              key={e}
-              onClick={() => chooseEngine(e)}
+              key={engine}
+              onClick={() => chooseEngine(engine)}
               disabled={disabled || state.saving}
               aria-pressed={active}
+              title={ENGINE_DESCRIPTIONS[engine]}
               style={{
                 padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 800,
                 cursor: disabled ? 'not-allowed' : 'pointer',
@@ -120,13 +132,13 @@ export function AutoAiTradingToggle() {
                 opacity: disabled ? 0.55 : 1,
               }}
             >
-              {e.toUpperCase()}
+              {engine.toUpperCase()}
             </button>
           );
         })}
       </div>
       <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', fontStyle: 'italic' }}>
-        Only one auto-trading engine can be active at a time.
+        {ENGINE_DESCRIPTIONS[state.engine]} Only one auto-trading engine can be active at a time.
       </div>
 
       {disabled && (

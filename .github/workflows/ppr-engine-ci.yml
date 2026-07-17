@@ -1,0 +1,65 @@
+name: Validate independent PPR engine
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ppr-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install server dependencies
+        run: npm ci
+      - name: Apply authoritative generated source
+        run: npm run apply:v3-entry
+      - name: Verify PPR generation is stable
+        run: |
+          npm run apply:v3-entry
+          git diff --exit-code
+      - name: Test PPR scanner and manipulation logic
+        run: node --test server/pprEngine.test.js
+      - name: Test PPR execution policy and source isolation
+        run: node --test server/pprExecutionPolicy.test.js
+      - name: Test three-engine mutual exclusivity
+        run: node --test server/autoAiRouter.test.js
+      - name: Verify ICT execution remains unchanged
+        run: node --test server/ictExecution.test.js
+      - name: Verify ICT remains independent from V3
+        run: node --test server/ictIndependence.test.js
+      - name: Verify V3 execution contract remains valid
+        run: node --test server/v3EntryContract.integration.test.js
+
+  ppr-dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Apply PPR dashboard integration
+        run: npm run apply:ppr
+      - name: Verify dashboard generation is stable
+        run: |
+          npm run apply:ppr
+          git diff --exit-code
+      - name: Typecheck PPR dashboard toggle and routes
+        run: npm run typecheck
