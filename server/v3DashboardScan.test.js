@@ -13,19 +13,44 @@ function candidate({
   stage2State = 'watch',
   stage2Reasons = ['no fresh primary trigger'],
   newsBlocked = false,
+  timeframes = { daily: 'bullish', h4: 'bullish', m15: 'bearish' },
+  alignmentScore = 67,
 } = {}) {
+  const expected = direction === 'short' ? 'bearish' : direction === 'long' ? 'bullish' : null;
+  const alignment = {
+    passed: stage1Allowed || alignmentScore >= 67,
+    score: alignmentScore,
+    expected,
+    minimumScore: 67,
+    biases: timeframes,
+    opposingTimeframes: expected
+      ? Object.entries(timeframes).filter(([, value]) => value !== expected).map(([key]) => key)
+      : [],
+    failures: [],
+    reason: expected ? `Primary timeframe alignment ${alignmentScore >= 67 ? 'passed' : 'failed'}.` : 'No executable direction.',
+  };
+
   return {
     pair,
     direction,
+    score: 60,
     entryTiming: { status: timing, reason: stage2Reasons[0] || null },
     newsRisk: { blocked: newsBlocked },
+    v3: {
+      direction,
+      score: 60,
+      timeframes,
+      primaryTimeframeAlignment: alignment,
+      structure: { structureTrend: expected || 'ranging', structureStrength: 72, chochDetected: false },
+      volatility: { volatilityState: 'normal' },
+    },
     qualityConfirmation: {
       stage1: {
         stage: 1,
         allowed: stage1Allowed,
         state: stage1Allowed ? 'watch' : 'blocked',
         reasons: stage1Reasons,
-        metrics: { newsBlocked },
+        metrics: { newsBlocked, alignment, score: 60 },
       },
       stage2: {
         stage: 2,
@@ -74,6 +99,27 @@ test('native Stage 1 score development becomes Near Qualified with its real bloc
   assert.equal(result.nearQualified[0].dashboardWatchTier.reason, 'V3 score 60 < 62');
 });
 
+test('dashboard uses native V3 timeframe values instead of flat legacy defaults', () => {
+  const item = candidate({
+    pair: 'USD_JPY',
+    stage1Allowed: false,
+    stage1Reasons: ['V3 score 60 < 62'],
+    timeframes: { daily: 'bullish', h4: 'bullish', m15: 'bearish' },
+    alignmentScore: 67,
+  });
+  const result = classifyV3DashboardWatch({ rejected: [item], watchCandidates: [] });
+  const displayed = result.nearQualified[0];
+
+  assert.equal(displayed.alignment.timeframes.daily, 'bullish');
+  assert.equal(displayed.alignment.timeframes.h4, 'bullish');
+  assert.equal(displayed.alignment.timeframes.m15, 'bearish');
+  assert.equal(displayed.alignment.timeframes.m30, 'n/a');
+  assert.equal(displayed.macro.macroBias, 'bullish');
+  assert.equal(displayed.macro.macroConfidence, 67);
+  assert.equal(displayed.legacyScannerUsed, false);
+  assert.equal(displayed.legacyConfirmationsUsed, false);
+});
+
 test('hard native blockers are rejected instead of being labeled as waiting', () => {
   const newsBlocked = candidate({
     pair: 'GBP_USD',
@@ -83,9 +129,12 @@ test('hard native blockers are rejected instead of being labeled as waiting', ()
   });
   const alignmentBlocked = candidate({
     pair: 'USD_CAD',
+    direction: null,
     timing: 'invalidated',
     stage1Allowed: false,
     stage1Reasons: ['Primary timeframe alignment failed: Daily and H4 must both align'],
+    timeframes: { daily: 'bullish', h4: 'bearish', m15: 'bullish' },
+    alignmentScore: 33,
   });
   const geometryBlocked = candidate({
     pair: 'AUD_USD',
