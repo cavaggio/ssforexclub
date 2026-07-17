@@ -74,6 +74,33 @@ if strict_helpers not in source:
     raise RuntimeError('Unable to locate V3 patch helper definitions')
 source = source.replace(strict_helpers, resilient_helpers, 1)
 
+# The independent scanner now imports deriveV3EntryTiming, selectExecutablePrice,
+# and validateDirectionLock in one expanded multiline import. The historical
+# patcher checked one exact two-symbol import and inserted a duplicate import on
+# every generation run. Replace that patch block with a semantic presence check.
+legacy_scanner_import_patch = '''text = replace_once(
+    text,
+    "import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';",
+    "import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';\\nimport { deriveV3EntryTiming, validateDirectionLock } from './v3EntryContract.js';",
+    'independent entry contract import',
+)
+'''
+semantic_scanner_import_patch = '''if not (
+    "deriveV3EntryTiming" in text and
+    "validateDirectionLock" in text and
+    "from './v3EntryContract.js'" in text
+):
+    text = replace_once(
+        text,
+        "import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';",
+        "import { computeV3EntryTpHitConfidence } from './v3TpConfidence.js';\\nimport { deriveV3EntryTiming, validateDirectionLock } from './v3EntryContract.js';",
+        'independent entry contract import',
+    )
+'''
+if legacy_scanner_import_patch not in source:
+    raise RuntimeError('Unable to locate independent scanner import patch')
+source = source.replace(legacy_scanner_import_patch, semantic_scanner_import_patch, 1)
+
 source += """
 followup_path = ROOT / 'scripts' / 'apply_v3_entry_contract_fixes.py'
 followup_namespace = {'__file__': str(followup_path), '__name__': '__main__'}
