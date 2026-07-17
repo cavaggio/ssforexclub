@@ -47,13 +47,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run focused safety tests
-        run: |
-          node --test server/riskManager.test.js
-          node --test server/v3QualityConfirmation.test.js
-          node --test server/v3TimeframeClassification.test.js
-          node --test server/v3DashboardScan.test.js
-          node --test server/ictExecution.test.js
+      - name: Test risk controls
+        run: node --test server/riskManager.test.js
+
+      - name: Test V3 quality confirmation
+        run: node --test server/v3QualityConfirmation.test.js
+
+      - name: Apply generated V3 source
+        run: npm run apply:v3-entry
+
+      - name: Test V3 timeframe classification
+        run: node --test server/v3TimeframeClassification.test.js
+
+      - name: Test V3 dashboard mapping
+        run: node --test server/v3DashboardScan.test.js
+
+      - name: Test ICT execution isolation
+        run: node --test server/ictExecution.test.js
 
       - name: Run full server test suite
         run: npm test
