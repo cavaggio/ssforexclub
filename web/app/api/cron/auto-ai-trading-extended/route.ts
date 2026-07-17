@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 type ScanMode = 'full' | 'near_recheck' | 'hot_watch';
+type AutoAiEngine = 'ict' | 'v3' | 'ppr';
 
 function inWindow(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -24,6 +25,10 @@ function inWindow(now = new Date()) {
 function normalizeMode(value: unknown): ScanMode {
   const mode = String(value || 'full').toLowerCase();
   return mode === 'near_recheck' || mode === 'hot_watch' ? mode : 'full';
+}
+function normalizeEngine(value: unknown): AutoAiEngine {
+  if (value === 'v3' || value === 'ppr') return value;
+  return 'ict';
 }
 function normalizePairs(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.map((v) => String(v || '').trim()).filter(Boolean))] : [];
@@ -76,7 +81,7 @@ export async function POST(req: Request) {
         results.push({ user: row.user_id, skipped: 'decrypt_failed' });
         continue;
       }
-      const engine = row.auto_ai_engine === 'v3' ? 'v3' : 'ict';
+      const engine = normalizeEngine(row.auto_ai_engine);
       const result = await callInternalEndpoint('/api/internal/oanda/auto', {
         apiKey: credentials.token,
         accountId: credentials.accountId,
@@ -88,7 +93,7 @@ export async function POST(req: Request) {
         engine,
       });
       if (!result.ok) {
-        results.push({ user: row.user_id, error: result.error });
+        results.push({ user: row.user_id, engine, error: result.error });
         continue;
       }
       const payload = (result.data ?? {}) as Record<string, any>;

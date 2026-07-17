@@ -1,11 +1,7 @@
 /**
  * web/app/api/user/auto-ai-trading/route.ts
  *
- * Per-user "Auto AI Trading" preference. Clerk-scoped — the user_id always
- * comes from the session, never the client. GET returns the user's flag plus
- * the platform upper-gate; POST persists the flag. This controls AI
- * AUTO-trading only (not manual execution), and is the source of truth the
- * Phase 2 scheduler will consume.
+ * Clerk-scoped Auto AI preference. Exactly one engine is persisted per user.
  */
 
 import { NextResponse } from 'next/server';
@@ -15,18 +11,20 @@ import { getUserTradingSettings, setAutoAiTrading, platformLiveTradingEnabled } 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+type AutoAiEngine = 'ict' | 'v3' | 'ppr';
+
 export async function GET() {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
   try {
-    const s = await getUserTradingSettings(userId);
+    const settings = await getUserTradingSettings(userId);
     return NextResponse.json({
       ok: true,
-      autoAiTradingEnabled: s.autoAiTradingEnabled,
-      autoAiEngine: s.autoAiEngine,
+      autoAiTradingEnabled: settings.autoAiTradingEnabled,
+      autoAiEngine: settings.autoAiEngine,
       platformLiveTradingEnabled: platformLiveTradingEnabled(),
-      liveTradingAcknowledged: s.liveTradingAcknowledged,
-      activeEnvironment: s.activeEnvironment,
+      liveTradingAcknowledged: settings.liveTradingAcknowledged,
+      activeEnvironment: settings.activeEnvironment,
     });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
@@ -45,19 +43,21 @@ export async function POST(req: Request) {
   if (typeof body.enabled !== 'boolean') {
     return NextResponse.json({ ok: false, error: 'enabled must be a boolean' }, { status: 400 });
   }
-  let engine: 'ict' | 'v3' | undefined;
+
+  let engine: AutoAiEngine | undefined;
   if (body.engine !== undefined) {
-    if (body.engine !== 'ict' && body.engine !== 'v3') {
-      return NextResponse.json({ ok: false, error: "engine must be 'ict' or 'v3'" }, { status: 400 });
+    if (body.engine !== 'ict' && body.engine !== 'v3' && body.engine !== 'ppr') {
+      return NextResponse.json({ ok: false, error: "engine must be 'ict', 'v3', or 'ppr'" }, { status: 400 });
     }
     engine = body.engine;
   }
+
   try {
-    const s = await setAutoAiTrading(userId, body.enabled, engine);
+    const settings = await setAutoAiTrading(userId, body.enabled, engine);
     return NextResponse.json({
       ok: true,
-      autoAiTradingEnabled: s.autoAiTradingEnabled,
-      autoAiEngine: s.autoAiEngine,
+      autoAiTradingEnabled: settings.autoAiTradingEnabled,
+      autoAiEngine: settings.autoAiEngine,
       platformLiveTradingEnabled: platformLiveTradingEnabled(),
     });
   } catch (err) {

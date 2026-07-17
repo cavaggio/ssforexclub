@@ -1,0 +1,81 @@
+name: Validate independent PPR engine
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ppr-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install server dependencies
+        run: npm ci
+      - name: Apply authoritative generated source twice
+        run: |
+          npm run apply:v3-entry
+          npm run apply:v3-entry
+      - name: Test PPR scanner and manipulation logic
+        run: node --test server/pprEngine.test.js
+      - name: Test PPR execution policy and source isolation
+        run: node --test server/pprExecutionPolicy.test.js
+      - name: Syntax-check generated shared OANDA executor
+        run: node --check server/oandaTrade.js
+      - name: Import generated shared OANDA executor
+        run: node --input-type=module -e "await import('./server/oandaTrade.js')"
+      - name: Import PPR execution adapter
+        run: node --input-type=module -e "await import('./server/pprExecution.js')"
+      - name: Import three-engine router
+        run: node --input-type=module -e "await import('./server/autoAiRouter.js')"
+      - name: Router disabled selection
+        run: node --test --test-name-pattern="disabled toggle" server/autoAiRouter.test.js
+      - name: Router preserves all three engines
+        run: node --test --test-name-pattern="enabled preserves" server/autoAiRouter.test.js
+      - name: Router invalid selection fallback
+        run: node --test --test-name-pattern="missing/invalid" server/autoAiRouter.test.js
+      - name: Router selects exactly one engine
+        run: node --test --test-name-pattern="each selection" server/autoAiRouter.test.js
+      - name: Router never invokes two engines
+        run: node --test --test-name-pattern="never runs more than one" server/autoAiRouter.test.js
+      - name: Router enforces time and weekday boundary
+        run: node --test --test-name-pattern="blocks all engines" server/autoAiRouter.test.js
+      - name: Verify ICT execution remains unchanged
+        run: node --test server/ictExecution.test.js
+      - name: Verify ICT remains independent from V3
+        run: node --test server/ictIndependence.test.js
+      - name: Verify V3 execution contract remains valid
+        run: node --test server/v3EntryContract.integration.test.js
+      - name: Run full server test suite
+        run: npm test
+
+  ppr-dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Apply PPR dashboard integration twice
+        run: |
+          npm run apply:ppr
+          npm run apply:ppr
+      - name: Typecheck PPR dashboard toggle, attribution and routes
+        run: npm run typecheck

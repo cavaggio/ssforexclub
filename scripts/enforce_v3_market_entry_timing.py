@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import runpy
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -122,3 +123,8 @@ if failures:
     raise RuntimeError('V3 market-entry policy incomplete:\n- ' + '\n- '.join(failures))
 
 print('V3 market-entry policy verified: pair-specific movement, safe Recent Signals execution, and Fib diagnostic only.')
+
+# Apply PPR only after every V3 generator/verifier has completed. This keeps
+# the PPR strategy isolated while making its shared broker-routing hooks
+# authoritative and idempotent for prestart, prebuild, and pretest.
+runpy.run_path(str(ROOT / 'scripts' / 'apply_ppr_engine.py'), run_name='__main__')
