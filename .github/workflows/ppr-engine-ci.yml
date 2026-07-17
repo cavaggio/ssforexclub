@@ -30,8 +30,22 @@ jobs:
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
-      - name: Syntax-check generated shared OANDA executor
-        run: node --check server/oandaTrade.js
+      - name: Capture generated shared-executor syntax check
+        id: syntax
+        continue-on-error: true
+        run: node --check server/oandaTrade.js > /tmp/oanda-trade-syntax.txt 2>&1
+      - name: Upload generated shared-executor syntax result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppr-oanda-trade-syntax
+          path: /tmp/oanda-trade-syntax.txt
+          if-no-files-found: error
+      - name: Enforce generated shared-executor syntax
+        if: steps.syntax.outcome == 'failure'
+        run: |
+          cat /tmp/oanda-trade-syntax.txt
+          exit 1
       - name: Import generated shared OANDA executor
         run: node --input-type=module -e "await import('./server/oandaTrade.js')"
       - name: Import PPR execution adapter
