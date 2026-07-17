@@ -47,6 +47,7 @@ function normalizePprItem(value, fallbackStatus) {
   const ppr = object(item.ppr);
   const confirmation = object(item.pprConfirmation);
   const lifecycle = object(item.lifecycle);
+  const liquidityPools = object(item.liquidityPools || ppr.liquidityPools);
 
   return {
     pair,
@@ -80,9 +81,7 @@ function normalizePprItem(value, fallbackStatus) {
     manipulationCandidates: Array.isArray(item.manipulationCandidates)
       ? item.manipulationCandidates
       : Array.isArray(ppr.manipulationCandidates) ? ppr.manipulationCandidates : [],
-    liquidityPools: Array.isArray(item.liquidityPools)
-      ? item.liquidityPools
-      : Array.isArray(ppr.liquidityPools) ? ppr.liquidityPools : [],
+    liquidityPools,
     liquidityTarget: object(item.liquidityTarget || ppr.liquidityTarget),
     ppr,
     pprConfirmation: confirmation,
