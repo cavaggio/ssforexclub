@@ -6,9 +6,9 @@ import { evaluateStage2EntryContract } from './v3EntryContract.js';
  * Two-stage V3 quality confirmation.
  *
  * Stage 1: Is this a valid setup worth watching?
- * Stage 2: Is there a fresh, direction-specific execution trigger?
+ * Stage 2: Is there a fresh, direction-specific market-movement entry?
  *
- * This module is pure. It does not call OANDA and does not place orders.
+ * Fibonacci is diagnostic only and is not consumed anywhere in this module.
  */
 
 function envNumber(name, fallback) {
@@ -45,12 +45,6 @@ function extractV3(signal = {}) {
   return signal.v3 || signal.v3Eval || signal.v3Analysis || signal.metadata?.v3 || signal;
 }
 
-function pipSizeFor(pair = '') {
-  if (String(pair).includes('JPY')) return 0.01;
-  if (pair === 'XAU_USD' || pair === 'XAG_USD') return 0.01;
-  return 0.0001;
-}
-
 function computePriceRR({ direction, entry, stopLoss, takeProfit } = {}) {
   const d = normalizeDirection(direction);
   const e = numberOrNull(entry);
@@ -79,15 +73,19 @@ function getSignalRR(signal = {}) {
   );
 }
 
+function movementEvents(v3 = {}) {
+  return Array.isArray(v3?.marketMovement?.events) ? v3.marketMovement.events : [];
+}
+
 function alignedStructureBreak(v3, direction) {
   const sign = directionSign(direction);
-  const structure = v3?.structure || {};
-  const chochAligned =
-    structure.chochDetected === true &&
-    structure.choch?.direction === sign;
-  const bosAligned =
-    structure.bosDetected === true &&
-    structure.bos?.direction === sign;
+  const movement = movementEvents(v3);
+  const chochAligned = movement.some((event) => event?.type === 'fresh_aligned_choch') || Boolean(
+    v3?.structure?.chochDetected === true && v3?.structure?.choch?.direction === sign,
+  );
+  const bosAligned = movement.some((event) => event?.type === 'fresh_aligned_bos') || Boolean(
+    v3?.structure?.bosDetected === true && v3?.structure?.bos?.direction === sign,
+  );
   return { chochAligned, bosAligned, any: chochAligned || bosAligned };
 }
 
@@ -100,16 +98,22 @@ function structureOpposes(v3, direction) {
 
 function confirmedAlignedSweep(v3, direction) {
   const sign = directionSign(direction);
+  if (v3?.marketMovement) {
+    const confirmed = movementEvents(v3).find((event) =>
+      event?.type === 'confirmed_liquidity_sweep' && (!event?.direction || event.direction === sign),
+    );
+    const pending = Array.isArray(v3?.marketMovement?.pendingEvents) && v3.marketMovement.pendingEvents.some((event) =>
+      event?.type === 'pending_liquidity_sweep' && (!event?.direction || event.direction === sign),
+    );
+    return { confirmed: Boolean(confirmed), pending: Boolean(pending), sweep: confirmed || null };
+  }
+
   const liquidity = v3?.liquidity || {};
   const sweep = liquidity.liquiditySweep || null;
   const detected = liquidity.liquiditySweepDetected === true && sweep;
   if (!detected) return { confirmed: false, pending: false, sweep: null };
-
-  const pending =
-    sweep.pending === true ||
-    String(sweep.subtype || '').toLowerCase() === 'pending_sweep';
+  const pending = sweep.pending === true || String(sweep.subtype || '').toLowerCase() === 'pending_sweep';
   const aligned = sweep.direction === sign;
-
   return {
     confirmed: Boolean(aligned && !pending),
     pending: Boolean(aligned && pending),
@@ -120,35 +124,32 @@ function confirmedAlignedSweep(v3, direction) {
 function confirmedNativeRetest(signal, direction) {
   const sign = directionSign(direction);
   const timing = signal?.entryTiming || {};
-  const retest = timing?.retest || null;
-  const timingStatus = String(timing?.status || '').toLowerCase();
-  const aligned = !retest?.direction || retest.direction === sign;
-  const confirmed =
-    timing?.retestDetected === true &&
-    timingStatus === 'valid_entry' &&
-    aligned;
-
+  const v3 = extractV3(signal);
+  const movementRetest = movementEvents(v3).find((event) =>
+    event?.type === 'confirmed_retest' && (!event?.direction || event.direction === sign),
+  );
+  const retest = movementRetest || timing?.retest || null;
+  const confirmed = Boolean(
+    movementRetest ||
+    (
+      timing?.retestDetected === true &&
+      String(timing?.status || '').toLowerCase() === 'valid_entry' &&
+      (!retest?.direction || retest.direction === sign)
+    )
+  );
   return { confirmed, retest };
-}
-
-function favorablePremiumDiscount(v3, direction) {
-  const pd = v3?.premiumDiscount || {};
-  const state = String(pd.premiumDiscountState || '').toLowerCase();
-  const score = firstNumber(pd.premiumDiscountScore, 0) ?? 0;
-  const favorable =
-    (direction === 'long' && state === 'discount') ||
-    (direction === 'short' && state === 'premium') ||
-    state === 'equilibrium';
-  return { favorable: favorable || score >= 0.72, state, score };
 }
 
 function alignedFlowSupport(signal, direction) {
   if (confirmedNativeRetest(signal, direction).confirmed) return true;
 
+  const v3 = extractV3(signal);
   const sign = directionSign(direction);
   const signals = Array.isArray(signal?.institutionalFlow?.signals)
     ? signal.institutionalFlow.signals
-    : [];
+    : Array.isArray(v3?.institutionalFlow?.signals)
+      ? v3.institutionalFlow.signals
+      : [];
 
   return signals.some((item) => {
     const type = String(item?.type || '').toLowerCase();
@@ -156,6 +157,7 @@ function alignedFlowSupport(signal, direction) {
     const isSupportType =
       type === 'imbalance' ||
       type === 'retest' ||
+      type === 'wick_rejection' ||
       subtype.includes('retest') ||
       subtype.includes('fvg');
     return isSupportType && (!item?.direction || item.direction === sign);
@@ -171,6 +173,7 @@ function alignedSessionNarrative(v3, direction) {
 
 function alignedDisplacementProxy(signal, direction) {
   const sign = directionSign(direction);
+  const v3 = extractV3(signal);
   const momentum = signal?.momentum || {};
   const candle = signal?.candleStrength || {};
   const executionDirection = normalizeDirection(momentum.executionSignal);
@@ -179,16 +182,14 @@ function alignedDisplacementProxy(signal, direction) {
   const candleScore = firstNumber(candle.candleStrengthScore, 0) ?? 0;
 
   const momentumAligned = executionDirection === direction && executionConfidence >= 68;
-  const candleAligned =
-    candleScore >= 65 &&
-    (
-      classification.includes(sign) ||
-      classification.includes('strong') ||
-      classification.includes('impulse') ||
-      classification.includes('displacement')
-    );
-
-  return momentumAligned || candleAligned;
+  const candleAligned = candleScore >= 65 && (
+    classification.includes(sign) ||
+    classification.includes('strong') ||
+    classification.includes('impulse') ||
+    classification.includes('displacement')
+  );
+  const expansionAligned = v3?.marketMovement?.triggerType === 'compression_to_expansion';
+  return momentumAligned || candleAligned || expansionAligned;
 }
 
 function alignedLiquidityIntent(v3, direction) {
@@ -217,13 +218,8 @@ export function evaluateV3SetupStage(signal = {}) {
 
   const spread = firstNumber(signal.spreadPips);
   const targetsAccepted = v3?.targets?.accepted !== false && signal?.lifecycle?.tp?.allowed !== false;
-  const newsBlocked =
-    signal?.newsRisk?.blocked === true ||
-    v3?.newsRisk?.blocked === true;
-
+  const newsBlocked = signal?.newsRisk?.blocked === true || v3?.newsRisk?.blocked === true;
   const breaks = alignedStructureBreak(v3, direction);
-  // Internal V3 structure opposition is diagnostic only for now. The authoritative
-  // directional gate is the native Daily/H4/M15 aggregate alignment score.
   const opposingStructure = structureOpposes(v3, direction) && !breaks.chochAligned;
 
   const reasons = [];
@@ -263,6 +259,7 @@ export function evaluateV3SetupStage(signal = {}) {
       opposingStructurePolicy: 'diagnostic_only',
       alignedChoch: breaks.chochAligned,
       confirmedRetest: confirmedNativeRetest(signal, direction).confirmed,
+      fibUsedForConfirmation: false,
     },
     checkedAt: new Date().toISOString(),
   };
@@ -272,42 +269,33 @@ export function evaluateV3TriggerStage(signal = {}) {
   const v3 = extractV3(signal);
   const direction = normalizeDirection(signal.direction || v3.direction || v3.signal);
   const entryContract = evaluateStage2EntryContract(signal);
+  const entryTiming = entryContract.entryTiming || {};
+  const timingStatus = String(entryTiming.status || '').toLowerCase();
   const sweep = confirmedAlignedSweep(v3, direction);
   const retest = confirmedNativeRetest(signal, direction);
   const breaks = alignedStructureBreak(v3, direction);
   const volatilityState = String(v3?.volatility?.volatilityState || '').toLowerCase();
 
-  // The volatility engine labels "expanding" only for the compression-to-expansion
-  // transition. "compressed" by itself is watch-only and cannot trigger an order.
-  const compressionExpansion =
-    volatilityState === 'expanding' &&
-    (
-      v3?.volatility?.compressionDetected === true ||
-      v3?.volatility?.expansionDetected === true
-    );
-
   const primaryTriggers = [];
-  if (retest.confirmed) primaryTriggers.push('confirmed_retest');
-  if (sweep.confirmed) primaryTriggers.push('confirmed_liquidity_sweep');
-  if (breaks.chochAligned) primaryTriggers.push('fresh_aligned_choch');
-  if (breaks.bosAligned) primaryTriggers.push('fresh_aligned_bos');
-  if (compressionExpansion) primaryTriggers.push('compression_to_expansion');
+  if (entryTiming.triggerConfirmed === true && entryTiming.triggerType) {
+    primaryTriggers.push(String(entryTiming.triggerType));
+  }
 
   const supports = [];
-  const pd = favorablePremiumDiscount(v3, direction);
-  if (pd.favorable) supports.push('favorable_premium_discount');
-  if (alignedFlowSupport(signal, direction)) supports.push('fvg_or_retest');
+  if (alignedFlowSupport(signal, direction)) supports.push('flow_or_retest_aligned');
   if (alignedSessionNarrative(v3, direction)) supports.push('session_narrative_aligned');
   if (alignedDisplacementProxy(signal, direction)) supports.push('directional_displacement');
   if (alignedLiquidityIntent(v3, direction)) supports.push('liquidity_intent_aligned');
 
   const minSupports = envNumber('V3_QUALITY_TRIGGER_MIN_SUPPORTS', 1);
+  const waitingForValidEntry = timingStatus === 'too_early' || timingStatus === 'wait_for_retest';
+  const terminalEntryBlock = timingStatus === 'late_entry' || timingStatus === 'invalidated';
   const reasons = [...entryContract.reasons];
 
   if (!direction) reasons.push('missing direction');
-  if (sweep.pending) reasons.push('liquidity sweep is pending; close-back-inside confirmation is missing');
+  if (sweep.pending) reasons.push('liquidity sweep is pending; close-back/reclaim confirmation is missing');
   if (primaryTriggers.length === 0) {
-    reasons.push('no fresh primary trigger: confirmed retest/sweep, aligned BOS/CHoCH, or compression-to-expansion');
+    reasons.push('no fresh pair-specific market-movement trigger');
   }
   if (supports.length < minSupports) {
     reasons.push(`supporting confirmations ${supports.length} < ${minSupports}`);
@@ -316,17 +304,22 @@ export function evaluateV3TriggerStage(signal = {}) {
     reasons.push('volatility is already expanded without a fresh confirmed retest or sweep');
   }
 
+  const allowed = reasons.length === 0;
+  const state = allowed
+    ? 'ready'
+    : (!terminalEntryBlock && (waitingForValidEntry || sweep.pending || primaryTriggers.length === 0) ? 'watch' : 'blocked');
+
   return {
     stage: 2,
-    allowed: reasons.length === 0,
-    state: reasons.length === 0 ? 'ready' : (sweep.pending || primaryTriggers.length === 0 ? 'watch' : 'blocked'),
+    allowed,
+    state,
     reasons,
     primaryTriggers,
     supports,
     metrics: {
       direction,
       alignment: entryContract.alignment,
-      entryTiming: entryContract.entryTiming,
+      entryTiming,
       sweepBlock: entryContract.sweepBlock,
       reversal: entryContract.reversal,
       lockedDirection: entryContract.lockedDirection,
@@ -335,11 +328,17 @@ export function evaluateV3TriggerStage(signal = {}) {
       confirmedRetest: retest.confirmed,
       alignedChoch: breaks.chochAligned,
       alignedBos: breaks.bosAligned,
-      compressionExpansion,
       volatilityState,
-      premiumDiscountState: pd.state,
-      premiumDiscountScore: pd.score,
       minSupports,
+      waitingForValidEntry,
+      terminalEntryBlock,
+      triggerType: entryTiming.triggerType || null,
+      triggerTime: entryTiming.triggerTime || null,
+      triggerPrice: entryTiming.triggerPrice ?? null,
+      triggerAgeBars: entryTiming.triggerAgeBars ?? null,
+      triggerDistancePips: entryTiming.triggerDistancePips ?? null,
+      triggerDistanceAtr: entryTiming.triggerDistanceAtr ?? null,
+      fibUsedForConfirmation: false,
     },
     checkedAt: new Date().toISOString(),
   };
@@ -349,6 +348,5 @@ export const _test = {
   computePriceRR,
   confirmedAlignedSweep,
   confirmedNativeRetest,
-  favorablePremiumDiscount,
   normalizeDirection,
 };
