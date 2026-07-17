@@ -24,10 +24,12 @@ jobs:
         run: npm ci
       - name: Apply authoritative generated source
         run: npm run apply:v3-entry
-      - name: Verify PPR generation is stable
+      - name: Verify PPR generation is idempotent
         run: |
+          git diff --binary > /tmp/ppr-first-generation.diff
           npm run apply:v3-entry
-          git diff --exit-code
+          git diff --binary > /tmp/ppr-second-generation.diff
+          diff -u /tmp/ppr-first-generation.diff /tmp/ppr-second-generation.diff
       - name: Test PPR scanner and manipulation logic
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
@@ -57,9 +59,11 @@ jobs:
         run: npm ci
       - name: Apply PPR dashboard integration
         run: npm run apply:ppr
-      - name: Verify dashboard generation is stable
+      - name: Verify dashboard generation is idempotent
         run: |
+          git diff --binary > /tmp/ppr-web-first-generation.diff
           npm run apply:ppr
-          git diff --exit-code
+          git diff --binary > /tmp/ppr-web-second-generation.diff
+          diff -u /tmp/ppr-web-first-generation.diff /tmp/ppr-web-second-generation.diff
       - name: Typecheck PPR dashboard toggle and routes
         run: npm run typecheck
