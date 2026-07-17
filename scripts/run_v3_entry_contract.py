@@ -84,9 +84,9 @@ postconditions = r'''
 
 required = {
     'server/primaryTimeframeAlignment.js': [
-        "v3-primary-daily-h4-67-m15-100-h1-fib-only-2026-07-17",
+        "v3-primary-daily-h4-67-m15-100-2026-07-17",
         "export const HARD_ALIGNMENT_TIMEFRAMES = ['daily', 'h4']",
-        "export const FIB_ONLY_TIMEFRAMES = ['h1']",
+        "export const PRIMARY_ALIGNMENT_TIMEFRAMES = ['daily', 'h4', 'm15']",
         "const dailyH4Aligned = biases.daily === expected && biases.h4 === expected",
         "const score = dailyH4Aligned ? (m15Aligned ? 100 : 67)",
         "passed = dailyH4Aligned && score >= PRIMARY_ALIGNMENT_MIN_SCORE",
@@ -95,12 +95,13 @@ required = {
         "derivePrimaryTimeframes",
         "directionFromDailyH4",
         "primaryTimeframeAlignment",
-        "analyzeMarketStructure({ pair, h4Candles, m15Candles })",
+        "analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles })",
         "safeFib({ direction, h1Candles, currentPrice: price, pair })",
     ],
     'server/marketStructureEngine.js': [
-        "analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] }",
-        "h1Used: false",
+        "h1Candles = []",
+        "const useH1 = Array.isArray(h1Candles) && h1Candles.length >= 20",
+        "const timeframeUsed = useH1 ? 'H1'",
     ],
     'server/oandaInstitutionalFlow.js': ["time: last.time || null"],
     'server/v3QualityConfirmation.js': ["evaluateStage2EntryContract", "lockedDirection"],
@@ -124,7 +125,10 @@ required = {
         "Daily H4 and M15 aligned scores 100",
         "H1 never changes the alignment score",
     ],
-    'server/marketStructureEngine.test.js': ["H1 candles cannot influence market structure"],
+    'server/marketStructureEngine.test.js': [
+        "market structure uses H1 when H1 candles are available",
+        "M15 is the first fallback when H1 is unavailable",
+    ],
     'server/v3EntryContract.integration.test.js': ["generated independent V3 candidate passes Stage 1 and Stage 2"],
 }
 forbidden = {
@@ -133,6 +137,11 @@ forbidden = {
         "import { evaluateV3FreshExecutionStage }",
         "V3_QUALITY_STAGE_3",
         "Stage-3 fresh execution rejected",
+    ],
+    'server/primaryTimeframeAlignment.js': ["FIB_ONLY_TIMEFRAMES"],
+    'server/v3Engine.js': [
+        "analyzeMarketStructure({ pair, h4Candles, m15Candles })",
+        "h1Candles: m15Candles",
     ],
 }
 failures = []
