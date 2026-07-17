@@ -17,28 +17,150 @@ function firstReason(values = [], fallback = '') {
 }
 
 function watchIdentity(item = {}) {
-  return `${pairOf(item) || 'unknown'}:${String(item?.direction || 'neutral').toLowerCase()}`;
+  return `${pairOf(item) || 'unknown'}:${String(item?.direction || item?.v3?.direction || 'neutral').toLowerCase()}`;
 }
 
+function normalizeTrend(value, fallback = 'n/a') {
+  const trend = String(value || '').trim().toLowerCase();
+  if (trend === 'long' || trend === 'buy' || trend === 'bull') return 'bullish';
+  if (trend === 'short' || trend === 'sell' || trend === 'bear') return 'bearish';
+  if (trend === 'bullish' || trend === 'bearish' || trend === 'neutral' || trend === 'ranging') return trend;
+  return fallback;
+}
+
+function directionBias(direction) {
+  const value = String(direction || '').toLowerCase();
+  if (value === 'long') return 'bullish';
+  if (value === 'short') return 'bearish';
+  return null;
+}
+
+/**
+ * Adapt native V3 fields into the dashboard's existing visual shape without
+ * inventing legacy analysis. Daily/H4/M15 come from V3's raw-candle classifier;
+ * unavailable legacy-only timeframes are explicitly marked n/a instead of flat.
+ */
 function hydrateNativeSignal(item = {}) {
+  const v3 = item?.v3 || {};
   const stage1 = item?.qualityConfirmation?.stage1;
-  const primaryTimeframeAlignment = item?.primaryTimeframeAlignment || stage1?.metrics?.alignment || null;
+  const stage2 = item?.qualityConfirmation?.stage2;
+  const direction = item?.direction || v3?.direction || null;
+  const primaryTimeframeAlignment =
+    item?.primaryTimeframeAlignment ||
+    stage1?.metrics?.alignment ||
+    v3?.primaryTimeframeAlignment ||
+    null;
+  const nativeTimeframes = v3?.timeframes || primaryTimeframeAlignment?.biases || {};
+  const dailyTrend = normalizeTrend(nativeTimeframes?.daily);
+  const h4Trend = normalizeTrend(nativeTimeframes?.h4);
+  const m15Trend = normalizeTrend(nativeTimeframes?.m15);
+  const structureTrend = normalizeTrend(v3?.structure?.structureTrend);
+  const expectedBias = normalizeTrend(
+    primaryTimeframeAlignment?.expected || directionBias(direction),
+    'ranging',
+  );
+  const alignmentScore = Number(
+    item?.alignment?.timeframeAlignmentScore ??
+    primaryTimeframeAlignment?.score ??
+    stage1?.metrics?.alignment?.score,
+  );
+  const safeAlignmentScore = Number.isFinite(alignmentScore) ? alignmentScore : 0;
+  const alignmentPassed = primaryTimeframeAlignment?.passed === true;
+  const alignmentStatus = alignmentPassed
+    ? safeAlignmentScore >= 100 ? 'strong' : 'mixed'
+    : 'conflicting';
+  const v3Score = Number(item?.v3Score ?? v3?.score ?? item?.score ?? stage1?.metrics?.score);
+  const safeV3Score = Number.isFinite(v3Score) ? v3Score : 0;
+  const tpHitConfidence = Number(
+    item?.tpHitConfidence ??
+    stage1?.metrics?.tpHitConfidence ??
+    item?.confidence,
+  );
+  const safeTpHitConfidence = Number.isFinite(tpHitConfidence) ? tpHitConfidence : 0;
+  const structureStrength = Number(v3?.structure?.structureStrength);
+  const safeStructureStrength = Number.isFinite(structureStrength) ? structureStrength : 0;
+  const volatilityRegime = String(v3?.volatility?.volatilityState || 'unknown');
+  const entryTiming = item?.entryTiming || v3?.entryTiming || null;
+
   const alignment = {
     ...(item?.alignment || {}),
-    timeframeAlignmentScore:
-      item?.alignment?.timeframeAlignmentScore ?? primaryTimeframeAlignment?.score ?? null,
-    tradeQualified:
-      item?.alignment?.tradeQualified ?? primaryTimeframeAlignment?.passed === true,
+    timeframes: {
+      daily: dailyTrend,
+      h4: h4Trend,
+      h1: structureTrend,
+      m30: 'n/a',
+      m15: m15Trend,
+      m5: 'n/a',
+    },
+    timeframeAlignmentScore: safeAlignmentScore,
+    alignmentStatus,
+    dominantBias: expectedBias,
+    tradeQualified: alignmentPassed,
     primaryConflictPolicy: 'native_v3_only',
+    conflictingTimeframes:
+      item?.alignment?.conflictingTimeframes ||
+      primaryTimeframeAlignment?.failures ||
+      primaryTimeframeAlignment?.opposingTimeframes ||
+      [],
     primaryConflictingTimeframes:
-      item?.alignment?.primaryConflictingTimeframes || primaryTimeframeAlignment?.opposingTimeframes || [],
+      item?.alignment?.primaryConflictingTimeframes ||
+      primaryTimeframeAlignment?.opposingTimeframes ||
+      [],
+    contextConflictingTimeframes: [],
+    rejectionReasons: alignmentPassed ? [] : [primaryTimeframeAlignment?.reason].filter(Boolean),
+    warnings: [],
+  };
+
+  const macro = {
+    ...(item?.macro || {}),
+    macroBias: expectedBias,
+    dailyTrend,
+    h4Trend,
+    volatilityRegime,
+    macroConfidence: safeAlignmentScore,
+    trendStrength: safeAlignmentScore,
+    source: 'native_v3_raw_candles',
+  };
+
+  const structure = {
+    ...(item?.structure || {}),
+    h1Trend: structureTrend,
+    m30Trend: 'n/a',
+    reversalRisk: v3?.structure?.chochDetected === true ? 'medium' : 'low',
+    structuralConfidence: safeStructureStrength,
+    continuationProbability: safeStructureStrength,
+    structureAligned: structureTrend === expectedBias,
+    pullbackDetected: entryTiming?.status === 'wait_for_retest',
+    source: 'native_v3_market_structure',
+  };
+
+  const momentum = {
+    ...(item?.momentum || {}),
+    m15Trend,
+    m5Trend: 'n/a',
+    executionSignal: direction === 'long' || direction === 'short' ? direction : null,
+    executionConfidence: safeTpHitConfidence,
+    momentumStrength: safeV3Score,
+    entryQuality: safeV3Score,
+    timingScore: stage2?.allowed === true ? 100 : stage2?.state === 'watch' ? 67 : 0,
+    candleConfirmation: stage2?.primaryTriggers?.[0] || 'none',
+    source: 'native_v3_stage2',
   };
 
   return {
     ...item,
-    v3Score: item?.v3Score ?? item?.v3?.score ?? item?.score ?? stage1?.metrics?.score ?? null,
+    direction,
+    score: Number.isFinite(Number(item?.score)) ? Number(item.score) : safeV3Score,
+    v3Score: safeV3Score,
+    confidence: Number.isFinite(Number(item?.confidence)) ? Number(item.confidence) : safeTpHitConfidence,
+    tpHitConfidence: safeTpHitConfidence,
     primaryTimeframeAlignment,
     alignment,
+    macro,
+    structure,
+    momentum,
+    fibonacci: item?.fibonacci || v3?.fib || null,
+    entryTiming,
     architecture: 'independent_v3_raw_market_data',
     legacyScannerUsed: false,
     legacyConfirmationsUsed: false,
