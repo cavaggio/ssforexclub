@@ -2,9 +2,10 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PATH = ROOT / 'server' / 'index.js'
+INDEX_PATH = ROOT / 'server' / 'index.js'
+SCANNER_PATH = ROOT / 'server' / 'v3IndependentScanner.js'
 
-text = PATH.read_text(encoding='utf-8')
+text = INDEX_PATH.read_text(encoding='utf-8')
 
 import_line = "import { runV3DashboardScan } from './v3DashboardScan.js';"
 import_anchor = "import { scanForexPairs } from './oandaScanner.js';"
@@ -93,5 +94,41 @@ missing = [marker for marker in required if marker not in text]
 if missing:
     raise RuntimeError('V3 dashboard scan patch incomplete: ' + ', '.join(missing))
 
-PATH.write_text(text, encoding='utf-8')
-print('Native V3 dashboard scan route applied.')
+INDEX_PATH.write_text(text, encoding='utf-8')
+
+scanner = SCANNER_PATH.read_text(encoding='utf-8')
+old_watchlist = """const DEFAULT_V3_WATCHLIST = [
+  'EUR_USD',
+  'USD_CAD',
+  'AUD_USD',
+  'NZD_USD',
+  'USD_CHF',
+  'EUR_GBP',
+  'EUR_CHF',
+  'AUD_CAD',
+];"""
+new_watchlist = """const DEFAULT_V3_WATCHLIST = [
+  'EUR_USD',
+  'GBP_USD',
+  'USD_JPY',
+  'USD_CAD',
+  'USD_CHF',
+  'AUD_USD',
+  'NZD_USD',
+  'EUR_GBP',
+  'EUR_CHF',
+  'AUD_CAD',
+  'GBP_JPY',
+  'EUR_JPY',
+];"""
+if new_watchlist not in scanner:
+    if old_watchlist not in scanner:
+        raise RuntimeError('Independent V3 default watchlist anchor not found')
+    scanner = scanner.replace(old_watchlist, new_watchlist, 1)
+
+for pair in ['GBP_USD', 'USD_JPY', 'GBP_JPY', 'EUR_JPY']:
+    if f"'{pair}'" not in scanner:
+        raise RuntimeError(f'Independent V3 watchlist missing {pair}')
+
+SCANNER_PATH.write_text(scanner, encoding='utf-8')
+print('Native V3 dashboard scan route and complete watchlist applied.')
