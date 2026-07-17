@@ -48,22 +48,24 @@ trade = replace_once(
     'PPR policy import',
 )
 
-# Upstream V3 generators may rebuild the pure-V3 declaration while preserving
-# PPR lines from a prior pass. Remove all strategy-classification declarations
-# and insert one canonical set before executableEntry on every run.
+# Upstream V3 generators may rebuild part of the execution header while
+# preserving PPR lines from a prior pass. Remove every generated header line and
+# insert one canonical set immediately before executableGeometry on every run.
 for declaration in [
     "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n",
     "  const purePprExecution = isPprExecutionSignal(signal);\n",
     "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n",
+    "  let executableEntry = Number(entry);\n",
 ]:
     trade = trade.replace(declaration, '')
 trade = replace_once(
     trade,
-    "  let executableEntry = Number(entry);",
+    "  let executableGeometry = null;",
     "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n"
     "  const purePprExecution = isPprExecutionSignal(signal);\n"
     "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n"
-    "  let executableEntry = Number(entry);",
+    "  let executableEntry = Number(entry);\n"
+    "  let executableGeometry = null;",
     'PPR execution classification',
 )
 
