@@ -30,6 +30,14 @@ jobs:
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
+      - name: Syntax-check generated shared OANDA executor
+        run: node --check server/oandaTrade.js
+      - name: Import generated shared OANDA executor
+        run: node --input-type=module -e "await import('./server/oandaTrade.js')"
+      - name: Import PPR execution adapter
+        run: node --input-type=module -e "await import('./server/pprExecution.js')"
+      - name: Import three-engine router
+        run: node --input-type=module -e "await import('./server/autoAiRouter.js')"
       - name: Router disabled selection
         run: node --test --test-name-pattern="disabled toggle" server/autoAiRouter.test.js
       - name: Router preserves all three engines
