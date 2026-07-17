@@ -6,26 +6,34 @@ import {
   AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
   AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
   getAutoAiWatchState,
+  inActiveTradeManagementWindow,
   inAutoAiWindow,
   stopAutoAiScheduler,
   updateWatchStateFromCronResponse,
 } from './ictAutoScheduler.js';
 
-test('auto-AI window: NY weekday 02:15–14:00 ET is open', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:15:00Z')), true); // 02:15 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), true); // 10:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T17:59:00Z')), true); // 13:59 ET Tue
+test('auto-AI entry window: NY weekday 02:00–10:00 ET is open', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:00:00Z')), true); // 02:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET Tue
 });
 
-test('auto-AI window: before 02:15 / at-or-after 14:00 ET is closed', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
+test('auto-AI entry window: before 02:00 / at-or-after 10:00 ET is closed', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T05:59:00Z')), false); // 01:59 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), false); // 10:00 ET Tue
   assert.equal(inAutoAiWindow(new Date('2026-06-09T18:00:00Z')), false); // 14:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T19:00:00Z')), false); // 15:00 ET Tue
 });
 
-test('auto-AI window: weekends are closed even mid-window', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-06T14:00:00Z')), false); // Saturday
-  assert.equal(inAutoAiWindow(new Date('2026-06-07T14:00:00Z')), false); // Sunday
+test('auto-AI entry window: weekends are closed even mid-window', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-06-06T13:00:00Z')), false); // 09:00 ET Saturday
+  assert.equal(inAutoAiWindow(new Date('2026-06-07T13:00:00Z')), false); // 09:00 ET Sunday
+});
+
+test('active-trade management runs 10:00–17:30 ET on weekdays', () => {
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T13:59:00Z')), false); // 09:59 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T14:00:00Z')), true); // 10:00 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:29:00Z')), true); // 17:29 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:30:00Z')), false); // 17:30 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-06T16:00:00Z')), false); // Saturday
 });
 
 test('auto-AI scheduler intervals default to staged cadence', () => {
