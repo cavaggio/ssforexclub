@@ -6,13 +6,10 @@
  *   evaluateV3({ pair, legacyDirection, dailyCandles, h4Candles, h1Candles,
  *                m15Candles, currentPrice, atrPips, atrHistorical, momentum, now })
  *
- * Runs the five V3 engines (liquidity, structure, session, volatility, dynamic
- * targeting) and the re-weighted scoring model, and computes the entry-distance-
- * from-move-origin timing metric (the primary KPI for "do we enter earlier").
- *
- * V3 derives its OWN direction (independent of the legacy waterfall) so shadow
- * comparison is meaningful. This module is PURE and side-effect free; the
- * scanner decides what to do with the result based on FOREX_V3_ENGINE_MODE.
+ * Directional alignment is Daily/H4 minimum (67/100), with aligned M15 raising
+ * the score to 100/100. H1 is excluded from direction and market-structure
+ * alignment and is supplied to the Fibonacci layer only for impulse/retracement
+ * selection.
  */
 
 import { analyzeLiquidity } from './liquidityEngine.js';
@@ -40,8 +37,6 @@ function safeFib(args) {
  * Entry distance from move origin, as a fraction (0..1) of the current impulse.
  * Low = price is near where the move began (early). High = price has already
  * travelled most of the impulse (late). null when no clean impulse is found.
- * Takes a PRE-COMPUTED fib swing (shared with the premium/discount engine) so
- * detectFibSetup is only run once per pair.
  */
 function entryDistanceFromOrigin({ direction, fib, currentPrice }) {
   if (!direction || !Number.isFinite(currentPrice) || !fib) return null;
@@ -73,26 +68,24 @@ export function evaluateV3({
   const direction = directionFromDailyH4(timeframes);
   const primaryTimeframeAlignment = evaluatePrimaryTimeframeAlignment({ timeframes }, direction);
 
+  // Liquidity/session remain non-alignment context. Market structure is strictly
+  // M15 with H4 fallback; H1 cannot influence structure direction or alignment.
   const liquidity = analyzeLiquidity({ pair, dailyCandles, h4Candles, h1Candles, m15Candles, currentPrice: price, atrPips });
-  const structure = analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles });
+  const structure = analyzeMarketStructure({ pair, h4Candles, m15Candles });
   const session = analyzeSession({ now, h1Candles, atrPips, atrHistorical });
-  const volatility = analyzeVolatilityExpansion({ pair, candles: m15Candles.length ? m15Candles : h1Candles, atrPips, atrHistorical });
+  const volatility = analyzeVolatilityExpansion({ pair, candles: m15Candles.length ? m15Candles : h4Candles, atrPips, atrHistorical });
 
   const structureDirection = deriveDirection({ structure, liquidity, session });
 
-  // Fib swing — computed ONCE; feeds both the premium/discount engine and the
-  // entry-distance-from-origin KPI (avoids calling detectFibSetup twice).
+  // H1 is the sole Fibonacci impulse/retracement timeframe.
   const fib = direction && Number.isFinite(price)
-    ? safeFib({ direction, h1Candles, h4Candles, currentPrice: price, pair })
+    ? safeFib({ direction, h1Candles, currentPrice: price, pair })
     : null;
 
-  // V3.5 liquidity-first engines (all pure / read-only).
   const liquidityIntent = analyzeLiquidityIntent({ pair, direction, currentPrice: price, liquidity, structure, atrPips });
   const premiumDiscount = analyzePremiumDiscount({ pair, direction, currentPrice: price, fib });
   const sessionNarrative = buildSessionNarrative({ session, liquidity, structure });
 
-  // Independent V3 stop estimate (the legacy lifecycle SL is computed elsewhere
-  // and only for legacy-qualified pairs). Used for the remaining-opportunity gate.
   const slPipsEst = Math.max(8, (Number.isFinite(atrPips) ? atrPips : 10) * 1.2);
   const targets = direction && Number.isFinite(price)
     ? computeLiquidityTargets({ pair, direction, entryPrice: price, stopLossPips: slPipsEst, liquidity, atrPips })
@@ -121,6 +114,8 @@ export function evaluateV3({
     mode: V3_MODE,
     direction: primaryTimeframeAlignment.passed ? scored.direction : null,
     structureDirection,
+    structureTimeframe: structure.timeframeUsed || null,
+    fibTimeframe: fib?.timeframeUsed || 'H1',
     timeframes,
     primaryTimeframeAlignment,
     legacyDirection,
@@ -148,7 +143,6 @@ export function evaluateV3({
   };
 }
 
-
 // June 23 soft-filter scoring
 // These filters should influence confidence, not hard-reject otherwise valid trades.
 export function applyJune23SoftFilterScoring(candidate = {}) {
@@ -157,36 +151,36 @@ export function applyJune23SoftFilterScoring(candidate = {}) {
 
   if (candidate.regimeAligned === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Regime aligned: +1 confidence");
+    softReasons.push('Regime aligned: +1 confidence');
   } else if (candidate.regimeAligned === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Regime not aligned: -1 confidence");
+    softReasons.push('Regime not aligned: -1 confidence');
   }
 
   if (candidate.liquidityIntentStrong === true) {
     confidenceAdjustment += 2;
-    softReasons.push("Strong liquidity intent: +2 confidence");
+    softReasons.push('Strong liquidity intent: +2 confidence');
   } else if (candidate.liquidityIntentStrong === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Weak liquidity intent: -1 confidence");
+    softReasons.push('Weak liquidity intent: -1 confidence');
   }
 
   if (candidate.calibrationPositive === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Positive calibration: +1 confidence");
+    softReasons.push('Positive calibration: +1 confidence');
   } else if (candidate.calibrationPositive === false) {
     confidenceAdjustment -= 1;
-    softReasons.push("Negative calibration: -1 confidence");
+    softReasons.push('Negative calibration: -1 confidence');
   }
 
   if (candidate.smtDivergence === true) {
     confidenceAdjustment += 1;
-    softReasons.push("SMT divergence present: +1 confidence");
+    softReasons.push('SMT divergence present: +1 confidence');
   }
 
   if (candidate.sessionNarrativeAligned === true) {
     confidenceAdjustment += 1;
-    softReasons.push("Session narrative aligned: +1 confidence");
+    softReasons.push('Session narrative aligned: +1 confidence');
   }
 
   const baseConfidence = Number(candidate.confidence ?? 0);

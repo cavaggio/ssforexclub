@@ -3,7 +3,11 @@
  *
  * Signal Stack V3 — Market Structure Engine (priority #2, above EMA).
  *
- *   analyzeMarketStructure({ pair, h1Candles, h4Candles, m15Candles })
+ *   analyzeMarketStructure({ pair, h4Candles, m15Candles })
+ *
+ * Market structure is evaluated from M15 execution structure, with H4 as the
+ * fallback when M15 data is unavailable. H1 is intentionally excluded because
+ * it is reserved for Fibonacci impulse and retracement analysis.
  *
  * Replaces heavy EMA dependence with pure price structure: the sequence of
  * Higher Highs / Higher Lows / Lower Highs / Lower Lows, plus Break of
@@ -12,17 +16,6 @@
  *
  * Reuses the production detectBreakOfStructure() / detectChangeOfCharacter()
  * from oandaInstitutionalFlow.js rather than re-deriving them.
- *
- * Output:
- *   {
- *     structureTrend: 'bullish' | 'bearish' | 'ranging',
- *     bosDetected, bos,            // break of structure detail | null
- *     chochDetected, choch,        // change of character detail | null
- *     lastStructureBreak,          // { kind, direction, level, reason } | null
- *     structureStrength,           // 0–100
- *     swings,                      // recent labelled pivots
- *     reasons: []
- *   }
  */
 
 import { detectBreakOfStructure, detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
@@ -69,15 +62,16 @@ function classifyTrend(swings) {
   const hasLL = recent.includes('LL');
   if (hasHH && hasHL && !hasLL) return 'bullish';
   if (hasLL && hasLH && !hasHH) return 'bearish';
-  // Fall back to the last two pivots if the window is mixed.
   if (hasHH && hasHL) return 'bullish';
   if (hasLL && hasLH) return 'bearish';
   return 'ranging';
 }
 
-export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m15Candles = [] } = {}) {
+export function analyzeMarketStructure({ pair, h4Candles = [], m15Candles = [] } = {}) {
   const reasons = [];
-  const base = h1Candles.length >= 20 ? h1Candles : (m15Candles.length >= 20 ? m15Candles : h4Candles);
+  const useM15 = Array.isArray(m15Candles) && m15Candles.length >= 20;
+  const base = useM15 ? m15Candles : h4Candles;
+  const timeframeUsed = useM15 ? 'M15' : (Array.isArray(h4Candles) && h4Candles.length >= 20 ? 'H4' : null);
 
   if (!Array.isArray(base) || base.length < 20) {
     return {
@@ -87,15 +81,19 @@ export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m
       lastStructureBreak: null,
       structureStrength: 0,
       swings: [],
-      reasons: ['Insufficient candles for structure analysis.'],
+      timeframeUsed: null,
+      h1Used: false,
+      reasons: ['Insufficient M15/H4 candles for structure analysis.'],
     };
   }
 
   const swings = labelSwings(findPivots(base));
   const structureTrend = classifyTrend(swings);
-  reasons.push(`Swing sequence → ${structureTrend} (${swings.slice(-4).map((s) => s.label).filter(Boolean).join(' ') || 'n/a'}).`);
+  reasons.push(
+    `${timeframeUsed} swing sequence → ${structureTrend} ` +
+    `(${swings.slice(-4).map((s) => s.label).filter(Boolean).join(' ') || 'n/a'}).`,
+  );
 
-  // BOS in the prevailing structure direction (ranging → probe both, keep first).
   const dirForBos = structureTrend === 'bullish' ? 'long' : structureTrend === 'bearish' ? 'short' : 'long';
   let bos = detectBreakOfStructure({ candles: base, direction: dirForBos, pair });
   if (!bos && structureTrend === 'ranging') {
@@ -104,13 +102,11 @@ export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m
   const bosDetected = Boolean(bos);
   if (bosDetected) reasons.push(bos.reason);
 
-  // CHoCH against the prevailing trend (only meaningful with a prior trend).
   const priorTrend = structureTrend === 'ranging' ? null : structureTrend;
-  let choch = priorTrend ? detectChangeOfCharacter({ candles: base, priorTrend, pair }) : null;
+  const choch = priorTrend ? detectChangeOfCharacter({ candles: base, priorTrend, pair }) : null;
   const chochDetected = Boolean(choch);
   if (chochDetected) reasons.push(choch.reason);
 
-  // Most recent structural break — CHoCH (regime change) takes precedence over BOS.
   let lastStructureBreak = null;
   if (chochDetected) {
     lastStructureBreak = { kind: 'CHoCH', direction: choch.direction, level: choch.brokenLevel, reason: choch.reason };
@@ -118,7 +114,6 @@ export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m
     lastStructureBreak = { kind: 'BOS', direction: bos.direction, level: bos.brokenLevel, reason: bos.reason };
   }
 
-  // Structure strength — cleanliness of the sequence + confirmation by a break.
   let structureStrength = 40;
   const recentLabels = swings.map((s) => s.label).filter(Boolean).slice(-4);
   const aligned =
@@ -131,11 +126,7 @@ export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m
     structureStrength += 20;
     reasons.push('BOS confirms prevailing structure direction.');
   }
-  if (chochDetected) {
-    // A CHoCH against trend signals a potential regime flip — strong signal, but
-    // it lowers confidence in the *old* trend direction.
-    structureStrength = Math.min(structureStrength + 10, 95);
-  }
+  if (chochDetected) structureStrength = Math.min(structureStrength + 10, 95);
   if (structureTrend === 'ranging') structureStrength = Math.min(structureStrength, 45);
   structureStrength = Math.max(0, Math.min(100, structureStrength));
 
@@ -146,6 +137,8 @@ export function analyzeMarketStructure({ pair, h1Candles = [], h4Candles = [], m
     lastStructureBreak,
     structureStrength,
     swings: swings.slice(-8),
+    timeframeUsed,
+    h1Used: false,
     reasons,
   };
 }
