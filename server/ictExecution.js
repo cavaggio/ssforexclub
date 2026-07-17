@@ -40,6 +40,8 @@ import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 import { isExplicitSwingSignal } from './scalpOnlyPolicy.js';
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
@@ -359,6 +361,7 @@ export async function executeIctTrade(params = {}, {
     resp = await client.post(`/v3/accounts/${accountId}/orders`, orderPayload);
   } catch (err) {
     if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'failed');
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'failed');
     rec(`rejected: submit error ${err.message}`);
     return { success: false, blocked: false, executionState: 'REJECTED', reason: `Order submission failed: ${err.message}`, sizing, executionLog: log };
   }
@@ -368,6 +371,7 @@ export async function executeIctTrade(params = {}, {
     const friendlyReason = reason === 'TAKE_PROFIT_ON_FILL_LOSS'
       ? 'Order cancelled by OANDA: TAKE_PROFIT_ON_FILL_LOSS — the take-profit was no longer safely beyond the actual fill price. Signal/target was stale or too close after spread. Refresh the signal and execute only if TP is still beyond current executable price.'
       : `Order cancelled by OANDA: ${reason}`;
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'cancelled');
     if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'cancelled');
     rec(`rejected: cancelled by OANDA (${reason})`);
     return { success: false, blocked: false, executionState: 'CANCELLED', reason: friendlyReason, sizing, oandaResponse: resp, executionLog: log };
@@ -381,6 +385,7 @@ export async function executeIctTrade(params = {}, {
   // Filled — SL/TP attached atomically on fill. Register the shared lock.
   registerTradeLock(pair, direction);
   const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;
+  if (params.__reservationHash) await markExecutionOpen({ hash: params.__reservationHash, tradeId });
   if (params.__reservationHash) await markExecutionOpen({ hash: params.__reservationHash, tradeId });
   const fillPrice = parseFloat(fill.price ?? entry);
   // Projected hold-time for the ICT lifecycle reassessment (recorded at open).

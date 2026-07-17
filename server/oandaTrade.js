@@ -47,6 +47,9 @@ import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolic
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 
+import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
@@ -829,6 +832,9 @@ export async function executeTrade(signal, options = {}) {
     if (!directionLock.allowed) return blocked(`Direction lock rejected: ${directionLock.reasons.join('; ')}`);
   }
 
+  const universalPolicy = evaluateUniversalEntryPolicy(signal);
+  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+
   // ── Guard 4: SL and TP present ────────────────────────────────────────────
   if (!stopLoss || !takeProfit) {
     return blocked('stopLoss or takeProfit not set on signal');
@@ -1286,6 +1292,7 @@ export async function executeTrade(signal, options = {}) {
     console.error(`[TRADE] ✗ Order submission error: ${err.message}`);
     executionLog.push(logEntry('SUBMIT_ERROR', { error: err.message }));
     await releaseExecution(executionReservationHash, 'failed');
+    await releaseExecution(executionReservationHash, 'failed');
     return {
       success:        false,
       blocked:        false,
@@ -1312,6 +1319,7 @@ export async function executeTrade(signal, options = {}) {
     const cancelReason = cancelInfo.reason || cancelInfo.cancelReason || 'UNKNOWN';
     console.log(`[TRADE] ✗ Order CANCELLED by OANDA: ${cancelReason}`);
     executionLog.push(logEntry('ORDER_CANCEL', { transaction: cancelInfo, cancelReason }));
+    await releaseExecution(executionReservationHash, 'cancelled');
     await releaseExecution(executionReservationHash, 'cancelled');
     return {
       success:        false,
@@ -1350,6 +1358,7 @@ export async function executeTrade(signal, options = {}) {
   // broker fill because market slippage can change geometric R:R after submission.
   const fillInfo        = extractFillTx(orderFillTransaction);
   const tradeId         = fillInfo.tradeId;
+  await markExecutionOpen({ hash: executionReservationHash, tradeId });
   await markExecutionOpen({ hash: executionReservationHash, tradeId });
   const fillPrice       = parseFloat(fillInfo.price || executableEntry);
   const tradeMarginUsed = parseFloat(
