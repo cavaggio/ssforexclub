@@ -18,8 +18,8 @@ required = {
         'fibUsedForConfirmation: false',
     ],
     'server/v3EntryContract.js': [
-        "deriveMarketMovementEntryTiming",
-        "timingSource: 'pair_market_movement'",
+        'deriveMarketMovementEntryTiming',
+        'const movement = v3?.marketMovement',
         'fibUsedForConfirmation: false',
     ],
     'server/v3Engine.js': [
