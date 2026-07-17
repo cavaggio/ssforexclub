@@ -28,7 +28,7 @@ jobs:
           cache: npm
 
       - name: Apply hardening patch
-        run: python3 scripts/apply_execution_hardening.py
+        run: python3 scripts/run_execution_hardening_resilient.py
 
       - name: Commit generated source to PR branch
         env:
@@ -39,7 +39,7 @@ jobs:
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add server web/lib supabase/migrations scripts/apply_execution_hardening.py
+            git add server web/lib supabase/migrations scripts/apply_execution_hardening.py scripts/run_execution_hardening_resilient.py
             git commit -m "Harden execution timing, duplicate, range, and daily risk controls"
             git push origin HEAD:"${TARGET_BRANCH}"
           fi
@@ -48,12 +48,12 @@ jobs:
         run: npm ci
 
       - name: Run focused safety tests
-        continue-on-error: true
         run: |
           node --test server/riskManager.test.js
           node --test server/v3QualityConfirmation.test.js
+          node --test server/v3TimeframeClassification.test.js
+          node --test server/v3DashboardScan.test.js
           node --test server/ictExecution.test.js
 
       - name: Run full server test suite
-        continue-on-error: true
         run: npm test
