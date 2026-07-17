@@ -48,7 +48,7 @@ test('Fib analysis always uses the H1 impulse even when a valid H4 impulse is su
   assert.equal(result.swingLow, 1.09);
   assert.equal(result.retracementLevels.level382, 1.10854);
   assert.equal(result.entryZoneStatus, 'too_early');
-  assert.match(result.reason, /not yet inside H1 entry zone/);
+  assert.match(result.reason, /waiting for the pair-specific H1 entry zone/);
   assert.doesNotMatch(result.reason, /H1\/H4/);
 });
 
