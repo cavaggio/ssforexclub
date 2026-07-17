@@ -275,10 +275,23 @@ export function evaluateV3TriggerStage(signal = {}) {
   const retest = confirmedNativeRetest(signal, direction);
   const breaks = alignedStructureBreak(v3, direction);
   const volatilityState = String(v3?.volatility?.volatilityState || '').toLowerCase();
+  const compressionExpansion = volatilityState === 'expanding' && (
+    v3?.volatility?.compressionDetected === true ||
+    v3?.volatility?.expansionDetected === true
+  );
 
   const primaryTriggers = [];
   if (entryTiming.triggerConfirmed === true && entryTiming.triggerType) {
     primaryTriggers.push(String(entryTiming.triggerType));
+  } else if (!v3?.marketMovement) {
+    // Compatibility for older native callers and test fixtures. The independent
+    // production scanner always supplies marketMovement, so its pair-specific
+    // trigger remains authoritative. Fib is not used in either path.
+    if (retest.confirmed) primaryTriggers.push('confirmed_retest');
+    if (sweep.confirmed) primaryTriggers.push('confirmed_liquidity_sweep');
+    if (breaks.chochAligned) primaryTriggers.push('fresh_aligned_choch');
+    if (breaks.bosAligned) primaryTriggers.push('fresh_aligned_bos');
+    if (compressionExpansion) primaryTriggers.push('compression_to_expansion');
   }
 
   const supports = [];
@@ -328,11 +341,12 @@ export function evaluateV3TriggerStage(signal = {}) {
       confirmedRetest: retest.confirmed,
       alignedChoch: breaks.chochAligned,
       alignedBos: breaks.bosAligned,
+      compressionExpansion,
       volatilityState,
       minSupports,
       waitingForValidEntry,
       terminalEntryBlock,
-      triggerType: entryTiming.triggerType || null,
+      triggerType: entryTiming.triggerType || primaryTriggers[0] || null,
       triggerTime: entryTiming.triggerTime || null,
       triggerPrice: entryTiming.triggerPrice ?? null,
       triggerAgeBars: entryTiming.triggerAgeBars ?? null,
