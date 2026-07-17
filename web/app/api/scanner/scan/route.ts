@@ -1,25 +1,21 @@
 /**
  * web/app/api/scanner/scan/route.ts
  *
- * Authenticated, per-user scanner endpoint. Calls the Railway scanner's
- * internal `/api/internal/oanda/scan` with credentials resolved from the
- * current user's broker connection. Hard-fails when no usable credentials
- * exist and never falls back to platform defaults.
+ * Authenticated, per-user native V3 scanner endpoint. Calls Railway's internal
+ * `/api/internal/oanda/v3-scan` with credentials resolved from the current
+ * user's active OANDA connection. The response is rendered directly from the
+ * independent V3 raw-market scanner: Stage 1 is evaluated first, followed by
+ * Stage 2. No legacy scanner signal, direction, confidence, promotion, or
+ * confirmation is accepted by this route.
  */
 
 import { NextResponse } from 'next/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
-import {
-  applyPrimaryDirectionDisplayPolicy,
-  PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
-} from '@/lib/v3PrimaryDirectionDisplay.js';
-import {
-  normalizeScanForV3Display,
-  V3_PROVISIONING_POLICY_VERSION,
-} from '@/lib/v3ScanDisplayPolicy.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+const V3_DASHBOARD_SCAN_POLICY_VERSION = 'v3-independent-stage1-stage2-2026-07-17';
 
 type ScanRequestBody = { pairs?: string[] };
 type AnyRecord = Record<string, any>;
@@ -73,6 +69,13 @@ function makeSignalRenderSafe(raw: unknown): AnyRecord {
           reason: safeText(signal.dashboardWatchTier.reason),
         }
       : null,
+    watchTier: signal.watchTier && typeof signal.watchTier === 'object'
+      ? {
+          ...signal.watchTier,
+          tier: safeText(signal.watchTier.tier, 'none'),
+          reason: safeText(signal.watchTier.reason),
+        }
+      : null,
     macro: {
       ...macro,
       macroBias: safeText(macro.macroBias, 'ranging'),
@@ -111,9 +114,14 @@ function makeSignalRenderSafe(raw: unknown): AnyRecord {
         ...EMPTY_TIMEFRAMES,
         ...timeframes,
       },
-      timeframeAlignmentScore: finiteNumber(alignment.timeframeAlignmentScore),
-      alignmentStatus: safeText(alignment.alignmentStatus, 'conflicting'),
-      dominantBias: safeText(alignment.dominantBias, 'ranging'),
+      timeframeAlignmentScore: finiteNumber(
+        alignment.timeframeAlignmentScore ?? signal.primaryTimeframeAlignment?.score,
+      ),
+      alignmentStatus: safeText(
+        alignment.alignmentStatus,
+        signal.primaryTimeframeAlignment?.passed === true ? 'aligned' : 'conflicting',
+      ),
+      dominantBias: safeText(alignment.dominantBias, signal.direction || 'ranging'),
       conflictingTimeframes: Array.isArray(alignment.conflictingTimeframes)
         ? alignment.conflictingTimeframes.map((value: unknown) => safeText(value)).filter(Boolean)
         : [],
@@ -130,6 +138,9 @@ function makeSignalRenderSafe(raw: unknown): AnyRecord {
         ? alignment.warnings.map((warning: unknown) => safeText(warning)).filter(Boolean)
         : [],
     },
+    architecture: 'independent_v3_raw_market_data',
+    legacyScannerUsed: false,
+    legacyConfirmationsUsed: false,
   };
 }
 
@@ -138,14 +149,27 @@ function safeSignalArray(value: unknown): AnyRecord[] {
 }
 
 function makeScanRenderSafe(scan: AnyRecord): AnyRecord {
+  const meta = scan.meta && typeof scan.meta === 'object' ? scan.meta : {};
   return {
     ...scan,
+    engine: 'v3',
+    architecture: 'independent_v3_raw_market_data',
+    legacyScannerUsed: false,
+    legacyConfirmationsUsed: false,
     qualified: safeSignalArray(scan.qualified),
     rejected: safeSignalArray(scan.rejected),
     nearQualified: safeSignalArray(scan.nearQualified),
     hotWatch: safeSignalArray(scan.hotWatch),
-    v3PrimaryPassedContext: safeSignalArray(scan.v3PrimaryPassedContext),
-    meta: scan.meta && typeof scan.meta === 'object' ? scan.meta : {},
+    v3PrimaryPassedContext: [],
+    meta: {
+      ...meta,
+      scanner: 'v3_independent',
+      calculationSource: 'independent_v3_raw_market_data',
+      policyVersion: V3_DASHBOARD_SCAN_POLICY_VERSION,
+      stageOrder: ['stage1', 'stage2'],
+      legacyScannerUsed: false,
+      legacyConfirmationsUsed: false,
+    },
   };
 }
 
@@ -158,8 +182,8 @@ async function handle(req: Request) {
   }
 
   const response = await callScannerForCurrentUser({
-    internalPath: '/api/internal/oanda/scan',
-    logTag: 'SCANNER_SCAN',
+    internalPath: '/api/internal/oanda/v3-scan',
+    logTag: 'V3_SCANNER_SCAN',
     payloadKey: 'scan',
     extraBody: { pairs: Array.isArray(body.pairs) ? body.pairs : undefined },
   });
@@ -171,45 +195,55 @@ async function handle(req: Request) {
     const rawScan = envelope.scan && typeof envelope.scan === 'object'
       ? envelope.scan as AnyRecord
       : {};
-
-    // Correct stale legacy LONG/SHORT labels from the authoritative Daily/H4/M15
-    // majority before alignment scoring. This changes dashboard display only.
-    const directionCorrected = applyPrimaryDirectionDisplayPolicy(rawScan);
-    const normalized = normalizeScanForV3Display(directionCorrected);
-    const scan = makeScanRenderSafe(normalized);
+    const scan = makeScanRenderSafe(rawScan);
 
     console.log(
-      `[SCANNER_SCAN_POLICY] version=${V3_PROVISIONING_POLICY_VERSION} ` +
-      `directionPolicy=${PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION} ` +
-      `alignment=Daily/H4/M15-2of3 legacyConfidenceGates=diagnostic_only ` +
-      `watchDisplay=near_hot_separated renderSafety=enabled`,
+      `[V3_SCANNER_SCAN_POLICY] version=${V3_DASHBOARD_SCAN_POLICY_VERSION} ` +
+      `scanner=v3_independent stageOrder=stage1_then_stage2 ` +
+      `legacyScannerUsed=false legacyConfirmationsUsed=false renderSafety=enabled`,
     );
 
     return NextResponse.json({
       ...envelope,
       scan,
-      policyVersion: V3_PROVISIONING_POLICY_VERSION,
-      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
+      policyVersion: V3_DASHBOARD_SCAN_POLICY_VERSION,
+      scanner: 'v3_independent',
+      architecture: 'independent_v3_raw_market_data',
+      legacyScannerUsed: false,
+      legacyConfirmationsUsed: false,
     });
   } catch (err) {
     console.warn(
-      `[SCANNER_SCAN_POLICY] normalization failed; returning safe empty scan: ` +
+      `[V3_SCANNER_SCAN_POLICY] render normalization failed; returning safe empty scan: ` +
       `${err instanceof Error ? err.message : String(err)}`,
     );
 
     return NextResponse.json({
       ok: false,
-      error: 'Scanner response could not be rendered safely. Please run the scan again.',
+      error: 'Native V3 scanner response could not be rendered safely. Please run the scan again.',
       scan: {
+        engine: 'v3',
+        architecture: 'independent_v3_raw_market_data',
+        legacyScannerUsed: false,
+        legacyConfirmationsUsed: false,
         qualified: [],
         rejected: [],
         nearQualified: [],
         hotWatch: [],
         v3PrimaryPassedContext: [],
-        meta: {},
+        meta: {
+          scanner: 'v3_independent',
+          calculationSource: 'independent_v3_raw_market_data',
+          policyVersion: V3_DASHBOARD_SCAN_POLICY_VERSION,
+          stageOrder: ['stage1', 'stage2'],
+          legacyScannerUsed: false,
+          legacyConfirmationsUsed: false,
+        },
       },
-      policyVersion: V3_PROVISIONING_POLICY_VERSION,
-      directionPolicyVersion: PRIMARY_DIRECTION_DISPLAY_POLICY_VERSION,
+      policyVersion: V3_DASHBOARD_SCAN_POLICY_VERSION,
+      scanner: 'v3_independent',
+      legacyScannerUsed: false,
+      legacyConfirmationsUsed: false,
     }, { status: 502 });
   }
 }
