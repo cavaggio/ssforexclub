@@ -20,9 +20,34 @@ function watchIdentity(item = {}) {
   return `${pairOf(item) || 'unknown'}:${String(item?.direction || 'neutral').toLowerCase()}`;
 }
 
-function withWatchTier(item, tier, reason) {
+function hydrateNativeSignal(item = {}) {
+  const stage1 = item?.qualityConfirmation?.stage1;
+  const primaryTimeframeAlignment = item?.primaryTimeframeAlignment || stage1?.metrics?.alignment || null;
+  const alignment = {
+    ...(item?.alignment || {}),
+    timeframeAlignmentScore:
+      item?.alignment?.timeframeAlignmentScore ?? primaryTimeframeAlignment?.score ?? null,
+    tradeQualified:
+      item?.alignment?.tradeQualified ?? primaryTimeframeAlignment?.passed === true,
+    primaryConflictPolicy: 'native_v3_only',
+    primaryConflictingTimeframes:
+      item?.alignment?.primaryConflictingTimeframes || primaryTimeframeAlignment?.opposingTimeframes || [],
+  };
+
   return {
     ...item,
+    v3Score: item?.v3Score ?? item?.v3?.score ?? item?.score ?? stage1?.metrics?.score ?? null,
+    primaryTimeframeAlignment,
+    alignment,
+    architecture: 'independent_v3_raw_market_data',
+    legacyScannerUsed: false,
+    legacyConfirmationsUsed: false,
+  };
+}
+
+function withWatchTier(item, tier, reason) {
+  return {
+    ...hydrateNativeSignal(item),
     dashboardWatchTier: { tier, reason },
     watchTier: { tier, reason },
     displayQualification: `v3_native_${tier}_watch`,
@@ -46,6 +71,7 @@ function isStage1Developing(item = {}) {
     return value.includes('missing pair') ||
       value.includes('missing v3 direction') ||
       value.includes('alignment failed') ||
+      value.includes('alignment unavailable') ||
       value.includes('news block') ||
       value.includes('spread ') ||
       value.includes('remaining opportunity rejected') ||
@@ -70,7 +96,8 @@ export function classifyV3DashboardWatch(scan = {}) {
   const nearQualified = [];
   const watched = new Set();
 
-  for (const item of Array.isArray(scan?.watchCandidates) ? scan.watchCandidates : []) {
+  for (const rawItem of Array.isArray(scan?.watchCandidates) ? scan.watchCandidates : []) {
+    const item = hydrateNativeSignal(rawItem);
     const stage1 = item?.qualityConfirmation?.stage1;
     const stage2 = item?.qualityConfirmation?.stage2;
     const state = String(stage2?.state || '').toLowerCase();
@@ -90,7 +117,8 @@ export function classifyV3DashboardWatch(scan = {}) {
     }
   }
 
-  for (const item of Array.isArray(scan?.rejected) ? scan.rejected : []) {
+  for (const rawItem of Array.isArray(scan?.rejected) ? scan.rejected : []) {
+    const item = hydrateNativeSignal(rawItem);
     const identity = watchIdentity(item);
     if (watched.has(identity) || !isStage1Developing(item)) continue;
 
@@ -105,6 +133,7 @@ export function classifyV3DashboardWatch(scan = {}) {
   }
 
   const rejected = (Array.isArray(scan?.rejected) ? scan.rejected : [])
+    .map(hydrateNativeSignal)
     .filter((item) => !watched.has(watchIdentity(item)));
 
   return { hotWatch, nearQualified, rejected };
@@ -118,13 +147,19 @@ export async function runV3DashboardScan({
 } = {}) {
   if (!client) throw new Error('V3 dashboard scan requires a user-scoped OANDA client');
 
-  const nativeScan = await scanV3IndependentMarket({
+  const rawScan = await scanV3IndependentMarket({
     pairs,
     client,
     now,
     scanMode: 'dashboard',
     log,
   });
+  const nativeScan = {
+    ...rawScan,
+    qualified: (Array.isArray(rawScan?.qualified) ? rawScan.qualified : []).map(hydrateNativeSignal),
+    rejected: (Array.isArray(rawScan?.rejected) ? rawScan.rejected : []).map(hydrateNativeSignal),
+    watchCandidates: (Array.isArray(rawScan?.watchCandidates) ? rawScan.watchCandidates : []).map(hydrateNativeSignal),
+  };
   const buckets = classifyV3DashboardWatch(nativeScan);
   const scannedAt = new Date().toISOString();
 
@@ -134,6 +169,8 @@ export async function runV3DashboardScan({
     nearQualified: buckets.nearQualified,
     hotWatch: buckets.hotWatch,
     v3PrimaryPassedContext: [],
+    legacyScannerUsed: false,
+    legacyConfirmationsUsed: false,
     meta: {
       ...(nativeScan?.meta || {}),
       scannedAt,
