@@ -47,9 +47,19 @@ trade = replace_once(
     "import { evaluatePprExecutionPolicy, isPprExecutionSignal, pprSetupFingerprint } from './pprExecutionPolicy.js';",
     'PPR policy import',
 )
+
+# Upstream V3 generators may rebuild the pure-V3 declaration while preserving
+# PPR lines from a prior pass. Remove all strategy-classification declarations
+# and insert one canonical set before executableEntry on every run.
+for declaration in [
+    "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n",
+    "  const purePprExecution = isPprExecutionSignal(signal);\n",
+    "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n",
+]:
+    trade = trade.replace(declaration, '')
 trade = replace_once(
     trade,
-    "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n  let executableEntry = Number(entry);",
+    "  let executableEntry = Number(entry);",
     "  const pureV3Execution = isPureV3ExecutionSignal(signal);\n"
     "  const purePprExecution = isPprExecutionSignal(signal);\n"
     "  const independentStrategyExecution = pureV3Execution || purePprExecution;\n"
