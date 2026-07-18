@@ -59,7 +59,18 @@ jobs:
       - name: Verify V3 execution contract remains valid
         run: node --test server/v3EntryContract.integration.test.js
       - name: Run full server test suite
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/full-server-test.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "Full server test suite failed. Relevant failure lines:"
+            grep -nE "not ok|failureType|ERR_ASSERTION|AssertionError|error:|Error:" /tmp/full-server-test.log | tail -160 || true
+            echo "Final test summary:"
+            tail -80 /tmp/full-server-test.log
+          fi
+          exit "$status"
 
   ppr-dashboard:
     runs-on: ubuntu-latest
