@@ -30,6 +30,8 @@ jobs:
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
+      - name: Test PPR diagnostic-only confidence isolation
+        run: node --test server/pprConfidenceDiagnostic.test.js
       - name: Syntax-check generated shared OANDA executor
         run: node --check server/oandaTrade.js
       - name: Import generated shared OANDA executor
@@ -56,8 +58,72 @@ jobs:
         run: node --test server/ictIndependence.test.js
       - name: Verify V3 execution contract remains valid
         run: node --test server/v3EntryContract.integration.test.js
-      - name: Run full server test suite
-        run: npm test
+      - name: Regression group A — lifecycle and base scanner
+        run: >-
+          node --test
+          server/oandaTradeLifecycleEngine.test.js
+          server/oandaCalibration.test.js
+          server/oandaClose.test.js
+          web/lib/sanitizePayload.test.js
+          server/oandaFibonacci.test.js
+          server/v3FibEntryTiming.test.js
+          server/v3MarketMovementNullSafety.test.js
+          server/v3ManualExecution.test.js
+          server/liquidityEngine.test.js
+          server/liquidityIntent.test.js
+          server/premiumDiscount.test.js
+          server/marketStructureEngine.test.js
+      - name: Regression group B — V3 architecture
+        run: >-
+          node --test
+          server/sessionEngine.test.js
+          server/volatilityExpansionEngine.test.js
+          server/liquidityTargeting.test.js
+          server/v3ExecutionModel.test.js
+          server/v3ShadowLog.test.js
+          server/primaryTimeframeAlignment.test.js
+          server/v3QualityConfirmation.test.js
+          server/v3IndependentScanner.test.js
+          server/v3DashboardScan.test.js
+          server/v3TimeframeClassification.test.js
+          server/v3EntryContract.integration.test.js
+      - name: Regression group C — ICT and risk controls
+        run: >-
+          node --test
+          server/ictConcepts.test.js
+          server/ictEngine.test.js
+          server/ictExecution.test.js
+          server/ictExecutionPaper.test.js
+          server/ictIndependence.test.js
+          server/forexFactoryNews.test.js
+          server/ictLifecycleEngine.test.js
+          server/ictAutoScheduler.test.js
+          server/autoAiRouter.test.js
+          server/autoAiRiskLimits.test.js
+          server/autoAiGating.test.js
+          server/riskManager.test.js
+      - name: Regression D1 — providers and futures
+        run: >-
+          node --test
+          server/providerRouting.test.js
+          server/futuresSymbols.test.js
+          server/ninjatraderClient.test.js
+          server/topstepClient.test.js
+          server/futuresNoSecretLeak.test.js
+      - name: Regression D2 — OANDA trade-cap source contract
+        run: node --test server/oandaTradeCap.test.js
+      - name: Regression D3 — PPR scanner and routing
+        run: >-
+          node --test
+          server/pprEngine.test.js
+          server/pprExecutionPolicy.test.js
+          server/pprScannerRouting.test.js
+      - name: Regression D4 — dashboard helper contracts
+        run: >-
+          node --test
+          web/lib/scannerEngine.test.js
+          web/lib/futuresStatus.test.js
+          web/lib/brokerDisplay.test.js
 
   ppr-dashboard:
     runs-on: ubuntu-latest
