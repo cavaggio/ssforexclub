@@ -30,6 +30,8 @@ jobs:
         run: node --test server/pprEngine.test.js
       - name: Test PPR execution policy and source isolation
         run: node --test server/pprExecutionPolicy.test.js
+      - name: Test PPR diagnostic-only confidence isolation
+        run: node --test server/pprConfidenceDiagnostic.test.js
       - name: Syntax-check generated shared OANDA executor
         run: node --check server/oandaTrade.js
       - name: Import generated shared OANDA executor
