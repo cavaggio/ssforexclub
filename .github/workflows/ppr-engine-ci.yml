@@ -59,8 +59,6 @@ jobs:
       - name: Verify V3 execution contract remains valid
         run: node --test server/v3EntryContract.integration.test.js
       - name: Regression group A — lifecycle and base scanner
-        id: group_a
-        continue-on-error: true
         run: >-
           node --test
           server/oandaTradeLifecycleEngine.test.js
@@ -76,8 +74,6 @@ jobs:
           server/premiumDiscount.test.js
           server/marketStructureEngine.test.js
       - name: Regression group B — V3 architecture
-        id: group_b
-        continue-on-error: true
         run: >-
           node --test
           server/sessionEngine.test.js
@@ -92,8 +88,6 @@ jobs:
           server/v3TimeframeClassification.test.js
           server/v3EntryContract.integration.test.js
       - name: Regression group C — ICT and risk controls
-        id: group_c
-        continue-on-error: true
         run: >-
           node --test
           server/ictConcepts.test.js
@@ -109,8 +103,6 @@ jobs:
           server/autoAiGating.test.js
           server/riskManager.test.js
       - name: Regression group D — providers, caps, PPR and dashboard helpers
-        id: group_d
-        continue-on-error: true
         run: >-
           node --test
           server/providerRouting.test.js
@@ -125,14 +117,6 @@ jobs:
           web/lib/scannerEngine.test.js
           web/lib/futuresStatus.test.js
           web/lib/brokerDisplay.test.js
-      - name: Require all regression groups
-        if: always()
-        run: |
-          echo "A=${{ steps.group_a.outcome }} B=${{ steps.group_b.outcome }} C=${{ steps.group_c.outcome }} D=${{ steps.group_d.outcome }}"
-          test "${{ steps.group_a.outcome }}" = success
-          test "${{ steps.group_b.outcome }}" = success
-          test "${{ steps.group_c.outcome }}" = success
-          test "${{ steps.group_d.outcome }}" = success
 
   ppr-dashboard:
     runs-on: ubuntu-latest
