@@ -15,6 +15,7 @@
     "prestart": "npm run apply:v3-entry",
     "start": "node server/index.js",
     "pretest": "npm run apply:v3-entry",
+    "pretest:ppr": "npm run apply:v3-entry",
     "test:lifecycle": "node --test server/oandaTradeLifecycleEngine.test.js",
     "test:calibration": "node --test server/oandaCalibration.test.js",
     "test:close": "node --test server/oandaClose.test.js",
