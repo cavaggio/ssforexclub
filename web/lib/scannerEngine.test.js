@@ -95,8 +95,8 @@ test('ICT normalization maps native buy/sell signals and preserves all 12 scanne
   assert.equal(JSON.stringify(scan).includes('v3Comparison'), false);
 });
 
-test('generated dashboard limits the 1.5R visibility filter to V3 only', () => {
-  const source = readFileSync(new URL('../scripts/fix-ict-scanner-results.mjs', import.meta.url), 'utf8');
+test('authoritative dashboard generator limits the 1.5R visibility filter to V3 only', () => {
+  const source = readFileSync(new URL('../scripts/apply-ppr-scanner-ui.mjs', import.meta.url), 'utf8');
   assert.match(source, /const qualified = selectedEngine === 'v3'/);
   assert.match(source, /const rejected = selectedEngine === 'v3'/);
   assert.match(source, /ICT and PPR\n  \/\/ must retain every native result/);
