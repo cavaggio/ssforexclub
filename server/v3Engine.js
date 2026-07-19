@@ -139,7 +139,7 @@ export function evaluateV3({
     targets,
   });
 
-  const earlyTrigger = marketMovement.triggerConfirmed === true;
+  const earlyTrigger = marketMovement?.triggerConfirmed === true;
   const rejectionReasons = (Array.isArray(scored.rejectionReasons) ? scored.rejectionReasons : [])
     .filter((reason) => !String(reason).toLowerCase().includes('no early-entry trigger'));
   if (!earlyTrigger) {

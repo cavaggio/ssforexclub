@@ -37,8 +37,8 @@ function directionBias(direction) {
 
 /**
  * Adapt native V3 fields into the dashboard's existing visual shape without
- * inventing legacy analysis. Daily/H4/M15 come from V3's raw-candle classifier;
- * unavailable legacy-only timeframes are explicitly marked n/a instead of flat.
+ * inventing foreign-engine analysis. Daily/H4/M15 come from V3's raw-candle classifier;
+ * unavailable unavailable timeframes are explicitly marked n/a instead of flat.
  */
 function hydrateNativeSignal(item = {}) {
   const v3 = item?.v3 || {};
@@ -162,8 +162,6 @@ function hydrateNativeSignal(item = {}) {
     fibonacci: item?.fibonacci || v3?.fib || null,
     entryTiming,
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
-    legacyConfirmationsUsed: false,
   };
 }
 
@@ -205,7 +203,7 @@ function isStage1Developing(item = {}) {
 
 /**
  * Convert only native independent-V3 results into the dashboard watch buckets.
- * No legacy scanner signal, direction, confidence, promotion, or confirmation is
+ * No foreign-engine signal, direction, confidence, promotion, or confirmation is
  * accepted here.
  *
  * - Near Qualified: native Stage 1 was evaluated and is still developing.
@@ -291,8 +289,6 @@ export async function runV3DashboardScan({
     nearQualified: buckets.nearQualified,
     hotWatch: buckets.hotWatch,
     v3PrimaryPassedContext: [],
-    legacyScannerUsed: false,
-    legacyConfirmationsUsed: false,
     meta: {
       ...(nativeScan?.meta || {}),
       scannedAt,
@@ -300,9 +296,7 @@ export async function runV3DashboardScan({
       calculationSource: 'independent_v3_raw_market_data',
       policyVersion: V3_DASHBOARD_SCAN_POLICY_VERSION,
       stageOrder: ['stage1', 'stage2'],
-      legacyScannerUsed: false,
-      legacyConfirmationsUsed: false,
-      nearQualifiedCount: buckets.nearQualified.length,
+          nearQualifiedCount: buckets.nearQualified.length,
       hotWatchCount: buckets.hotWatch.length,
     },
   };

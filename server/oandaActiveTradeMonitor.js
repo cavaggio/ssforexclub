@@ -20,6 +20,7 @@ import {
 } from './oandaTradeLifecycle.js';
 import { findTradeByBrokerOrderId } from './oandaTradeHistory.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
+import { analyzeV3OpenTrade } from './v3ActiveTradeMonitor.js';
 
 function getPipSize(pair) {
   if (pair.includes('JPY'))                      return 0.01;
@@ -71,6 +72,11 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
   const takeProfit = oandaTrade.takeProfitOrder
     ? parseFloat(oandaTrade.takeProfitOrder.price)
     : null;
+
+  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  if (isPureV3TradeRecord(historyRecord || {})) {
+    return analyzeV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
+  }
 
   // Live mid price for the instrument
   const pricing = (await getPricing([pair], { client }))[0];
@@ -128,8 +134,7 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
   });
 
 
-  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
-  const pureV3Trade = isPureV3TradeRecord(historyRecord || {});
+  const pureV3Trade = false; // V3 trades returned before foreign analysis
   const tradeSign = side === 'long' ? 'bullish' : 'bearish';
   const macroBias = String(macro?.macroBias || macro?.h4Trend || '').toLowerCase();
   const macroOpposes = Boolean(macroBias && macroBias !== 'neutral' && !macroBias.includes(tradeSign));
