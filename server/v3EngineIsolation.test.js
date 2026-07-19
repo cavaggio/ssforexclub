@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runAutoForUser } from './autoAiRouter.js';
+import { validateV3ExecutionSignal } from './v3TradeExecution.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -16,6 +17,8 @@ const V3_STRATEGY_FILES = [
   'server/v3DashboardScan.js',
   'server/v3QualityConfirmation.js',
   'server/v3ExecutionModel.js',
+  'server/v3TradeExecution.js',
+  'server/v3ActiveTradeMonitor.js',
 ];
 
 test('V3 strategy graph has no ICT, PPR, or retired legacy dependencies', () => {
@@ -72,8 +75,45 @@ test('V3 route executes only the V3 runner', async () => {
 
 test('engine-neutral window replaces ICT scheduler dependency in router', () => {
   const router = read('server/autoAiRouter.js');
+  const window = read('server/autoAiWindow.js');
   assert.match(router, /from ['"]\.\/autoAiWindow\.js['"]/);
   assert.doesNotMatch(router, /from ['"]\.\/ictAutoScheduler\.js['"]/);
+  assert.doesNotMatch(window, /from ['"]\.\/(ict|ppr|v3)/i);
+});
+
+test('V3 execution contract rejects foreign strategy payloads', () => {
+  const base = {
+    engine: 'v3',
+    architecture: 'independent_v3_raw_market_data',
+    selectedLogicType: 'v3_pure',
+    direction: 'long',
+    v3: { engine: 'v3' },
+    qualityConfirmation: {
+      stage1: { allowed: true },
+      stage2: { allowed: true, metrics: { lockedDirection: 'long', direction: 'long' } },
+    },
+    directionLock: { confirmedDirection: 'long', freshDirection: 'long' },
+  };
+
+  assert.equal(validateV3ExecutionSignal(base).allowed, true);
+  const contaminated = validateV3ExecutionSignal({ ...base, ictSignalId: 'foreign-id' });
+  assert.equal(contaminated.allowed, false);
+  assert.match(contaminated.reasons.join(' '), /ictSignalId/);
+});
+
+test('V3 auto runner cannot call the shared executor directly', () => {
+  const auto = read('server/v3AutoTrade.js');
+  assert.match(auto, /from ['"]\.\/v3TradeExecution\.js['"]/);
+  assert.match(auto, /executeV3Trade\(signal/);
+  assert.doesNotMatch(auto, /from ['"]\.\/oandaTrade\.js['"]/);
+  assert.doesNotMatch(auto, /executeTrade\(signal/);
+});
+
+test('V3 open positions dispatch before foreign post-entry analysis', () => {
+  const monitor = read('server/oandaActiveTradeMonitor.js');
+  const reassessor = read('server/oandaActiveTradeReassessor.js');
+  assert.ok(monitor.indexOf('return analyzeV3OpenTrade(') < monitor.indexOf('analyzeMacro('));
+  assert.ok(reassessor.indexOf('return reassessV3OpenTrade(') < reassessor.indexOf('analyzeMacro('));
 });
 
 test('shared OANDA transport no longer imports the legacy decision policy', () => {
