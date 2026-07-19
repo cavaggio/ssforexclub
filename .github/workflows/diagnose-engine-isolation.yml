@@ -44,9 +44,12 @@ jobs:
             server/ictExecutionPaper.test.js \
             server/ictIndependence.test.js > ict-tests.log 2>&1
           printf '%s\n' "$?" > ict-tests-exit.txt
+          npm test > full-tests.log 2>&1
+          printf '%s\n' "$?" > full-tests-exit.txt
           tail -n 300 generation.log > generation-tail.log
           tail -n 300 v3-tests.log > v3-tests-tail.log
           tail -n 300 ict-tests.log > ict-tests-tail.log
+          tail -n 500 full-tests.log > full-tests-tail.log
           git diff --binary > reapplied.patch
           exit 0
       - uses: actions/upload-artifact@v4
@@ -63,4 +66,7 @@ jobs:
             ict-tests.log
             ict-tests-tail.log
             ict-tests-exit.txt
+            full-tests.log
+            full-tests-tail.log
+            full-tests-exit.txt
             reapplied.patch
