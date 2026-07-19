@@ -1,0 +1,17 @@
+{
+  "analyses": [
+    { "pair": "EUR_USD", "signal": "buy", "rr": 1.8, "confidence": 90 },
+    { "pair": "GBP_USD", "signal": "sell", "rr": 1.6, "confidence": 88 },
+    { "pair": "USD_JPY", "signal": "none", "rr": 0.9, "confidence": 42 },
+    { "pair": "USD_CAD", "signal": "none", "rr": 1.0, "confidence": 40 },
+    { "pair": "USD_CHF", "signal": "none", "rr": 0.8, "confidence": 38 },
+    { "pair": "AUD_USD", "signal": "none", "rr": 1.1, "confidence": 44 },
+    { "pair": "NZD_USD", "signal": "none", "rr": 0.7, "confidence": 35 },
+    { "pair": "EUR_GBP", "signal": "none", "rr": 1.2, "confidence": 48 },
+    { "pair": "EUR_CHF", "signal": "none", "rr": 0.9, "confidence": 37 },
+    { "pair": "AUD_CAD", "signal": "none", "rr": 1.1, "confidence": 45 },
+    { "pair": "GBP_JPY", "signal": "none", "rr": 0.8, "confidence": 39 },
+    { "pair": "EUR_JPY", "signal": "none", "rr": 1.0, "confidence": 43 }
+  ],
+  "meta": { "pairsAnalyzed": 12 }
+}
