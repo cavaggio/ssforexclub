@@ -14,7 +14,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function bullishV3(overrides = {}) {
   return {
     direction: 'long',
-    legacyDirection: 'short',
     score: 78,
     qualified: true,
     earlyTrigger: true,
@@ -36,7 +35,7 @@ test('entry-quality confidence is computed from V3 fields only', () => {
   assert.equal(confidence, 100);
 });
 
-test('candidate direction comes from V3 even when legacyDirection says short', () => {
+test('candidate direction and geometry come only from native V3 state', () => {
   const candidate = buildIndependentV3Candidate({
     pair: 'AUD_CAD',
     pricing: { mid: 1.1, spreadPips: 1.2 },
@@ -48,8 +47,8 @@ test('candidate direction comes from V3 even when legacyDirection says short', (
 
   assert.ok(candidate);
   assert.equal(candidate.direction, 'long');
-  assert.equal(candidate.legacyDirection, null);
-  assert.equal(candidate.legacyScannerUsed, false);
+  assert.equal(Object.hasOwn(candidate, 'legacyDirection'), false);
+  assert.equal(Object.hasOwn(candidate, 'legacyScannerUsed'), false);
   assert.equal(candidate.architecture, 'independent_v3_raw_market_data');
   assert.equal(candidate.stopLoss < candidate.entry, true);
   assert.equal(candidate.takeProfit > candidate.entry, true);
@@ -72,7 +71,7 @@ test('candidate rejects a target on the wrong side of the V3 direction', () => {
   assert.equal(candidate, null);
 });
 
-test('V3 auto runner has no legacy scanner or shared retrace-watch dependency', () => {
+test('V3 auto runner has no foreign scanner or shared retrace-watch dependency', () => {
   const source = fs.readFileSync(path.join(__dirname, 'v3AutoTrade.js'), 'utf8');
   assert.equal(source.includes("from './oandaScanner.js'"), false);
   assert.equal(source.includes('scanForexPairs('), false);
