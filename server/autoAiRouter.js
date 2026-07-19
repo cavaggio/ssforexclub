@@ -4,13 +4,11 @@
  * Engine selection + routing for Auto AI Trading. A user runs exactly one of:
  * ICT, independent raw-market V3, or independent raw-market PPR.
  *
- * This router may know that the engines exist, but no engine is allowed to call
- * or fall through to another engine. Scheduling policy is engine-neutral.
+ * Engine modules are loaded lazily only after selection. Selecting V3 therefore
+ * does not initialize ICT or PPR strategy code, and injected test runners do not
+ * load any production engine at all.
  */
 
-import { runAutoAiForUser } from './ictAutoTrade.js';
-import { runAutoV3ForUser } from './v3AutoTrade.js';
-import { runAutoPprForUser } from './pprAutoTrade.js';
 import { autoAiWindowReason, inAutoAiWindow } from './autoAiWindow.js';
 
 export function normalizeAutoEngine(value) {
@@ -38,10 +36,23 @@ function outsideWindowResult(engine) {
   };
 }
 
-/**
- * Run exactly one engine for one user. Injected runners make engine isolation
- * directly testable and prevent accidental multi-engine execution.
- */
+async function resolveRunner(engine, injectedRunner) {
+  if (injectedRunner) return injectedRunner;
+
+  if (engine === 'v3') {
+    const module = await import('./v3AutoTrade.js');
+    return module.runAutoV3ForUser;
+  }
+  if (engine === 'ppr') {
+    const module = await import('./pprAutoTrade.js');
+    return module.runAutoPprForUser;
+  }
+
+  const module = await import('./ictAutoTrade.js');
+  return module.runAutoAiForUser;
+}
+
+/** Run exactly one selected engine for one user. */
 export async function runAutoForUser({
   client,
   engine,
@@ -59,16 +70,13 @@ export async function runAutoForUser({
 
   const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
   const args = { client, now, runId, scanMode, pairs: safePairs };
+  const injectedRunner = selectedEngine === 'v3'
+    ? runV3
+    : selectedEngine === 'ppr'
+      ? runPpr
+      : runIct;
+  const runner = await resolveRunner(selectedEngine, injectedRunner);
+  const result = await runner(args);
 
-  if (selectedEngine === 'v3') {
-    const runner = runV3 || runAutoV3ForUser;
-    return { engine: 'v3', ...(await runner(args)) };
-  }
-  if (selectedEngine === 'ppr') {
-    const runner = runPpr || runAutoPprForUser;
-    return { engine: 'ppr', ...(await runner(args)) };
-  }
-
-  const runner = runIct || runAutoAiForUser;
-  return { engine: 'ict', ...(await runner(args)) };
+  return { engine: selectedEngine, ...result };
 }
