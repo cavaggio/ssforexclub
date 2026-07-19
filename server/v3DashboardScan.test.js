@@ -70,7 +70,6 @@ function candidate({
       },
     },
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
   };
 }
 
@@ -129,8 +128,8 @@ test('dashboard scores Daily H4 M15 alignment while displaying H1 structure sepa
   assert.equal(displayed.structure.h1Trend, 'bullish');
   assert.equal(displayed.v3.structure.timeframeUsed, 'H1');
   assert.equal(displayed.v3.structure.h1Used, true);
-  assert.equal(displayed.legacyScannerUsed, false);
-  assert.equal(displayed.legacyConfirmationsUsed, false);
+  assert.equal(Object.hasOwn(displayed, 'legacyScannerUsed'), false);
+  assert.equal(Object.hasOwn(displayed, 'legacyConfirmationsUsed'), false);
 });
 
 test('100 alignment requires Daily H4 and M15 to agree', () => {
