@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - agent/v3-engine-isolation-remove-legacy
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'scripts/**'
+      - 'package.json'
+      - '.github/workflows/diagnose-engine-isolation.yml'
 
 permissions:
   contents: read
