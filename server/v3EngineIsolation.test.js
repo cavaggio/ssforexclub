@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runAutoForUser } from './autoAiRouter.js';
-import { validateV3ExecutionSignal } from './v3TradeExecution.js';
+import { validateV3ExecutionSignal } from './v3ExecutionBoundary.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -73,11 +73,12 @@ test('V3 route executes only the V3 runner', async () => {
   assert.equal(result.scanned, 1);
 });
 
-test('engine-neutral window replaces ICT scheduler dependency in router', () => {
+test('engine-neutral window and lazy router load no foreign strategy', () => {
   const router = read('server/autoAiRouter.js');
   const window = read('server/autoAiWindow.js');
   assert.match(router, /from ['"]\.\/autoAiWindow\.js['"]/);
-  assert.doesNotMatch(router, /from ['"]\.\/ictAutoScheduler\.js['"]/);
+  assert.doesNotMatch(router, /^import .*\.\/(ict|ppr|v3)/im);
+  assert.match(router, /await import\('\.\/v3AutoTrade\.js'\)/);
   assert.doesNotMatch(window, /from ['"]\.\/(ict|ppr|v3)/i);
 });
 
@@ -99,6 +100,12 @@ test('V3 execution contract rejects foreign strategy payloads', () => {
   const contaminated = validateV3ExecutionSignal({ ...base, ictSignalId: 'foreign-id' });
   assert.equal(contaminated.allowed, false);
   assert.match(contaminated.reasons.join(' '), /ictSignalId/);
+});
+
+test('pure execution boundary has no broker or strategy imports', () => {
+  const boundary = read('server/v3ExecutionBoundary.js');
+  assert.doesNotMatch(boundary, /from ['"]\.\/(oandaTrade|ict|ppr)/i);
+  assert.match(boundary, /V3_FOREIGN_STRATEGY_FIELDS/);
 });
 
 test('V3 auto runner cannot call the shared executor directly', () => {
