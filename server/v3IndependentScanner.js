@@ -180,8 +180,6 @@ export function buildIndependentV3Candidate({
     selectedLogicType: 'v3_pure',
     source: 'v3_independent_raw_market_data',
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
-    legacyDirection: null,
     lifecycle: {
       allowed: true,
       source: 'v3_independent_lifecycle',
@@ -225,8 +223,6 @@ function rejectionRecord({ pair, reason, reasons = [], pricing = null, v3 = null
     engine: 'v3',
     source: 'v3_independent_raw_market_data',
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
-    legacyDirection: null,
   };
 }
 
@@ -306,7 +302,6 @@ export async function scanV3IndependentMarket({
 
       const v3 = evaluateV3({
         pair,
-        legacyDirection: null,
         dailyCandles,
         h4Candles,
         h1Candles,
@@ -418,7 +413,6 @@ export async function scanV3IndependentMarket({
   return {
     engine: 'v3',
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
     scanMode,
     session,
     qualified,

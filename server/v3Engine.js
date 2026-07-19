@@ -1,11 +1,14 @@
 /**
  * server/v3Engine.js
  *
- * Signal Stack V3 — execution-engine orchestrator.
+ * Signal Stack V3 — independent execution-engine orchestrator.
  *
  * Directional alignment is Daily/H4 minimum (67/100), with aligned M15 raising
  * the score to 100/100. H1 remains available to structure and optional chart
  * diagnostics, but Fibonacci does not pass, delay, block, or score an entry.
+ *
+ * Boundary rule: V3 accepts raw market data only. It does not accept a direction,
+ * confidence, candidate, confirmation, or decision produced by another engine.
  */
 
 import { analyzeLiquidity } from './liquidityEngine.js';
@@ -30,7 +33,6 @@ function safeFib(args) {
 
 export function evaluateV3({
   pair,
-  legacyDirection = null,
   dailyCandles = [],
   h4Candles = [],
   h1Candles = [],
@@ -93,8 +95,8 @@ export function evaluateV3({
     volatility,
   });
 
-  // Retained only as optional chart context. It is deliberately excluded from
-  // scoring, Stage 1, Stage 2, entry timing, and execution.
+  // Optional chart context only. It is excluded from scoring, Stage 1, Stage 2,
+  // entry timing, and execution.
   const fib = direction && Number.isFinite(price)
     ? safeFib({ direction, h1Candles, currentPrice: price, pair })
     : null;
@@ -137,7 +139,7 @@ export function evaluateV3({
     targets,
   });
 
-  const earlyTrigger = marketMovement.triggerConfirmed === true;
+  const earlyTrigger = marketMovement?.triggerConfirmed === true;
   const rejectionReasons = (Array.isArray(scored.rejectionReasons) ? scored.rejectionReasons : [])
     .filter((reason) => !String(reason).toLowerCase().includes('no early-entry trigger'));
   if (!earlyTrigger) {
@@ -150,13 +152,13 @@ export function evaluateV3({
 
   return {
     mode: V3_MODE,
+    engine: 'v3',
+    architecture: 'independent_v3_raw_market_data',
     direction: primaryTimeframeAlignment.passed ? scored.direction : null,
     structureDirection,
     structureTimeframe: structure.timeframeUsed || null,
     timeframes,
     primaryTimeframeAlignment,
-    legacyDirection,
-    directionAgrees: scored.direction != null && legacyDirection != null && scored.direction === legacyDirection,
     score: scored.score,
     qualified,
     earlyTrigger,
@@ -180,57 +182,5 @@ export function evaluateV3({
     marketMovement,
     atrPips,
     slPipsEst,
-  };
-}
-
-// June 23 soft-filter scoring
-// These filters should influence confidence, not hard-reject otherwise valid trades.
-export function applyJune23SoftFilterScoring(candidate = {}) {
-  let confidenceAdjustment = 0;
-  const softReasons = [];
-
-  if (candidate.regimeAligned === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Regime aligned: +1 confidence');
-  } else if (candidate.regimeAligned === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Regime not aligned: -1 confidence');
-  }
-
-  if (candidate.liquidityIntentStrong === true) {
-    confidenceAdjustment += 2;
-    softReasons.push('Strong liquidity intent: +2 confidence');
-  } else if (candidate.liquidityIntentStrong === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Weak liquidity intent: -1 confidence');
-  }
-
-  if (candidate.calibrationPositive === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Positive calibration: +1 confidence');
-  } else if (candidate.calibrationPositive === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Negative calibration: -1 confidence');
-  }
-
-  if (candidate.smtDivergence === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('SMT divergence present: +1 confidence');
-  }
-
-  if (candidate.sessionNarrativeAligned === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Session narrative aligned: +1 confidence');
-  }
-
-  const baseConfidence = Number(candidate.confidence ?? 0);
-  const finalConfidence = Math.max(0, Math.min(100, baseConfidence + confidenceAdjustment));
-
-  return {
-    ...candidate,
-    baseConfidence,
-    confidence: finalConfidence,
-    confidenceAdjustment,
-    softReasons,
   };
 }

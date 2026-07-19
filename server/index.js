@@ -14,16 +14,16 @@ import alpacaAssets from './alpacaAssets.js';
 // ─── OANDA imports ─────────────────────────────────────────────────────────
 import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
-import { scanForexPairs } from './oandaScanner.js';
 import { V3_MODE } from './v3Engine.js';
 import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
-import { computeV3Comparisons } from './v3IctComparison.js';
 import { buildFtmoClient, validateFtmoCredentials } from './ftmoClient.js';
 import { runAutoAiForUser } from './ictAutoTrade.js';
 import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
+import { scanPprMarket } from './pprEngine.js';
+import { runV3DashboardScan } from './v3DashboardScan.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
 import { getRiskStatus } from './riskManager.js';
 import {
@@ -42,6 +42,7 @@ import { reassessActiveTrades, startReassessmentScheduler } from './oandaActiveT
 import { createOandaClient } from './oandaClient.js';
 import { getCalibrationSnapshot } from './oandaCalibration.js';
 import { runUserScoped } from './requestContext.js';
+import { executeRecentQualifiedV3Signal } from './v3ManualExecution.js';
 import { PROVIDERS, assertExecutionProvider } from './providerRouting.js';
 import {
   ninjaTraderConnectivityCheck, buildNinjaTraderClient, getNinjaTraderAccounts,
@@ -1661,29 +1662,7 @@ app.get('/api/oanda/candles', async (req, res) => {
   }
 });
 
-app.get('/api/oanda/scan', async (req, res) => {
-  try {
-    const pairs = req.query.pairs ? req.query.pairs.split(',') : null;
-    const result = await scanForexPairs(pairs);
-    res.json(result);
-  } catch (err) {
-    console.error('[SCAN] Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.post('/api/oanda/trade', async (req, res) => {
-  try {
-    const { signal } = req.body;
-    if (!signal) {
-      return res.status(400).json({ error: 'Request body must contain a signal object' });
-    }
-    const result = await executeTrade(signal);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 app.post('/api/oanda/close', async (req, res) => {
   try {
@@ -1992,24 +1971,77 @@ app.post('/api/internal/oanda/risk-status', async (req, res) => {
 });
 
 // POST /api/internal/oanda/scan
-app.post('/api/internal/oanda/scan', async (req, res) => {
+
+// POST /api/internal/oanda/v3-scan
+// Dashboard-only native V3 analysis. This route reads raw user-scoped OANDA
+// pricing/candles and evaluates V3 Stage 1 followed by V3 Stage 2. It never
+// invokes or consumes ICT, PPR, or retired legacy strategy logic.
+app.post('/api/internal/oanda/v3-scan', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
   assertClientMatchesRequest(client, req.body);
-  logInternalCall('SCAN', req.body);
+  logInternalCall('V3_SCAN', req.body);
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => scanForexPairs(req.body?.pairs || null, { client }),
+      () => runV3DashboardScan({
+        client,
+        pairs: req.body?.pairs || null,
+        now: new Date(),
+        log: (message) => console.log(
+          `[INTERNAL V3_SCAN] accountId=${maskAccountId(client.accountId)} ${message}`,
+        ),
+      }),
     );
     console.log(
-      `[INTERNAL SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
-        `qualified=${result?.qualified?.length ?? 0} rejected=${result?.rejected?.length ?? 0}`,
+      `[INTERNAL V3_SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
+        `scanner=v3_independent foreignStrategyInputs=false ` +
+        `qualified=${result?.qualified?.length ?? 0} ` +
+        `near=${result?.nearQualified?.length ?? 0} ` +
+        `hot=${result?.hotWatch?.length ?? 0} ` +
+        `rejected=${result?.rejected?.length ?? 0}`,
     );
     res.json(result);
   } catch (err) {
-    console.error('[INTERNAL_SCAN] error:', err?.message || err);
+    console.error('[INTERNAL_V3_SCAN] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/ppr-scan
+// Read-only, user-scoped PPR dashboard analysis. This endpoint calls the native
+// PPR raw-market scanner only and never invokes PPR execution, V3, ICT or legacy
+// scanner qualification.
+app.post('/api/internal/oanda/ppr-scan', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('PPR_SCAN', req.body);
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => scanPprMarket({
+        client,
+        pairs: req.body?.pairs || null,
+        now: new Date(),
+        log: (message) => console.log(
+          `[INTERNAL PPR_SCAN] accountId=${maskAccountId(client.accountId)} ${message}`,
+        ),
+      }),
+    );
+    console.log(
+      `[INTERNAL PPR_SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
+        `engine=ppr architecture=independent_ppr_raw_market_data ` +
+        `legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false ` +
+        `qualified=${result?.qualified?.length ?? 0} ` +
+        `watch=${result?.watchCandidates?.length ?? 0} ` +
+        `rejected=${result?.rejected?.length ?? 0}`,
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_PPR_SCAN] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });
@@ -2028,17 +2060,6 @@ app.post('/api/internal/oanda/ict', async (req, res) => {
       { accountId: client.accountId, environment: client.environment },
       () => analyzeICTPairs(req.body?.pairs || null, { client }),
     );
-    // DISPLAY-ONLY V3-vs-ICT comparison, merged outside the ICT engine and
-    // fail-safe (ICT analysis stands even if the comparison throws). Gated by
-    // ICT_V3_COMPARISON (default on).
-    if (String(process.env.ICT_V3_COMPARISON || 'on').toLowerCase() !== 'off') {
-      try {
-        const cmp = await computeV3Comparisons(result.analyses, { client });
-        for (const a of result.analyses) a.v3Comparison = cmp[a.pair] ?? null;
-      } catch (cmpErr) {
-        console.log(`[INTERNAL ICT] V3 comparison skipped: ${cmpErr?.message || cmpErr}`);
-      }
-    }
     console.log(
       `[INTERNAL ICT] complete accountId=${maskAccountId(client.accountId)} ` +
         `pairs=${result?.meta?.pairsAnalyzed ?? 0} signals=${result?.meta?.signals ?? 0}`,
@@ -2131,7 +2152,8 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
     return;
   }
   assertClientMatchesRequest(client, req.body);
-  const engine = String(req.body?.engine || 'ict').toLowerCase() === 'v3' ? 'v3' : 'ict';
+  const requestedEngine = String(req.body?.engine || 'ict').toLowerCase();
+  const engine = ['ict', 'v3', 'ppr'].includes(requestedEngine) ? requestedEngine : 'ict';
   const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
     ? String(req.body?.scanMode || 'full')
     : 'full';
@@ -2292,56 +2314,54 @@ app.post('/api/internal/oanda/calibration', async (req, res) => {
   }
 });
 
-// POST /api/internal/oanda/trade
-//   Body: { apiKey, accountId, baseUrl, environment, signal: ForexSignal }
-//   Auth: X-Internal-Auth shared secret.
-//   Builds a per-request OANDA client from the supplied credentials and calls
-//   executeTrade with the user's signal. The signal's `environment` is forced
-//   to match the resolved env so executeTrade's live-execution guard sees the
-//   correct value. The default env-based client is NEVER used on this path —
-//   missing apiKey/accountId/baseUrl returns 400 before any execution.
-app.post('/api/internal/oanda/trade', async (req, res) => {
+
+// POST /api/internal/oanda/v3-trade
+//   V3-only manual execution for a completed Recent Signals candidate.
+//   The exact pair is refreshed from raw OANDA data and must pass current native
+//   V3 Stage 1, Stage 2, direction-lock, and geometry checks before broker handoff.
+app.post('/api/internal/oanda/v3-trade', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
   if (!client) return;
   const signal = req.body?.signal;
   if (!signal || typeof signal !== 'object') {
-    res.status(400).json({ ok: false, error: 'Missing signal in body' });
+    res.status(400).json({ ok: false, error: 'Missing V3 signal in body' });
     return;
   }
   if (!signal.pair || typeof signal.pair !== 'string') {
-    res.status(400).json({ ok: false, error: 'Invalid signal.pair' });
+    res.status(400).json({ ok: false, error: 'Invalid V3 signal.pair' });
     return;
   }
   if (signal.direction !== 'long' && signal.direction !== 'short') {
-    res.status(400).json({ ok: false, error: 'Invalid signal.direction (must be long or short)' });
+    res.status(400).json({ ok: false, error: 'Invalid V3 signal.direction (must be long or short)' });
     return;
   }
   const env = String(req.body?.environment ?? '').toLowerCase();
   if (!isExecutableEnvironment(env)) {
     res.status(400).json({
       ok: false,
-      error: `Internal trade endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")`,
+      error: `V3 trade endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")`,
     });
     return;
   }
   assertClientMatchesRequest(client, req.body);
-  logInternalCall('TRADE', req.body);
-  console.log(
-    `[INTERNAL TRADE] pair=${signal.pair} direction=${signal.direction} env=${env} ` +
-      `confidence=${signal.confidence ?? '?'} score=${signal.score ?? '?'}`,
-  );
-  // Align the signal's environment with the resolved per-user environment so
-  // executeTrade's guard treats live as live and practice/paper as paper.
+  logInternalCall('V3_TRADE', req.body);
   signal.environment = env;
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => executeTrade(signal, { client }),
+      () => executeRecentQualifiedV3Signal({
+        signal,
+        client,
+        now: new Date(),
+        log: (message) => console.log(
+          `[INTERNAL V3 RECENT SIGNAL] accountId=${maskAccountId(client.accountId)} ${message}`,
+        ),
+      }),
     );
     res.json(result);
   } catch (err) {
-    console.error('[INTERNAL_TRADE] error:', err?.message || err);
+    console.error('[INTERNAL_V3_TRADE] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

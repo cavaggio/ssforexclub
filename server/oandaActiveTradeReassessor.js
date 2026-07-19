@@ -47,6 +47,7 @@ import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.
 import { closeBrokerTrade } from './oandaTrade.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
+import { reassessV3OpenTrade } from './v3ActiveTradeMonitor.js';
 
 const AUTO_CLOSE_ENABLED =
   String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
@@ -151,6 +152,11 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     ? parseFloat(oandaTrade.takeProfitOrder.price)
     : null;
 
+  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  if (isPureV3TradeRecord(historyRecord || {})) {
+    return reassessV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
+  }
+
   const pricing = (await getPricing([pair], { client }))[0];
   const currentPrice = pricing ? pricing.mid : entryPrice;
 
@@ -208,7 +214,6 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
   });
 
   // Pull entry-context from the trade history record (created at execution time)
-  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
   const entryContext = historyRecord ? {
     entryATR:                  historyRecord.entryATR,
     entryMarketState:          historyRecord.entryMarketState,
@@ -227,7 +232,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     entryQualityConfidence:    historyRecord.entryQualityConfidence,
     entryStrategy:             historyRecord.entryStrategy,
   } : {};
-  const pureV3Trade = isPureV3TradeRecord(historyRecord || entryContext);
+  const pureV3Trade = false; // V3 trades returned before foreign analysis
   const originalSL = entryContext.originalRecommendedSL ?? currentSL;
   const originalTP = entryContext.originalRecommendedTP ?? currentTP;
   const expectedHoldTimeMinutes = entryContext.entryExpectedHoldTimeMinutes ?? null;

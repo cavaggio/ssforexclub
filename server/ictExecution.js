@@ -36,7 +36,6 @@ import {
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
-import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';

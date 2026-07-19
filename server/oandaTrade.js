@@ -32,7 +32,6 @@ import {
 import { computeTradeLifecycle } from './oandaTradeLifecycle.js';
 import { getCandles } from './oandaMarketData.js';
 import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';
-import { evaluateTradeCandidate } from './tradeDecisionEngine.js';
 import {
   capPerTradeRiskPercent,
   checkMargin,
@@ -44,6 +43,7 @@ import {
 import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
+import { evaluatePprExecutionPolicy, isPprExecutionSignal, pprSetupFingerprint } from './pprExecutionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 
@@ -641,6 +641,8 @@ export async function executeTrade(signal, options = {}) {
     entry, stopLoss, takeProfit, spreadPips,
   } = signal;
   const pureV3Execution = isPureV3ExecutionSignal(signal);
+  const purePprExecution = isPprExecutionSignal(signal);
+  const independentStrategyExecution = pureV3Execution || purePprExecution;
   let executableEntry = Number(entry);
   let executableGeometry = null;
   const entryQualityConfidence = Number(
@@ -726,7 +728,7 @@ export async function executeTrade(signal, options = {}) {
   // ── Guard 3.5: Multi-timeframe trend alignment ────────────────────────────
   // Defensive check for legacy/waterfall signals only.
   // Pure V3 signals are gated by V3 structure/liquidity/session logic instead.
-  if (!pureV3Execution) {
+  if (!independentStrategyExecution) {
     const signalTrend     = signal.trend;
     const signalAlignment = signal.emaAlignment;
     const signalMtf       = signal.mtfAlignment;
@@ -745,7 +747,10 @@ export async function executeTrade(signal, options = {}) {
   }
 
   if (pureV3Execution) {
-    console.log(`[V3_PURE] ${pair} ${direction} — skipping legacy EMA/MTF gate; V3 liquidity/structure/session owns qualification.`);
+    console.log(`[V3_PURE] ${pair} ${direction} — skipping legacy EMA/MTF gate; V3 owns qualification.`);
+  }
+  if (purePprExecution) {
+    console.log(`[PPR_PURE] ${pair} ${direction} — skipping legacy/V3/ICT strategy gates; PPR owns qualification.`);
   }
 
   // ── Guard 3.6: Entry-quality gates (HYBRID, configurable to STRICT) ──────
@@ -777,7 +782,7 @@ export async function executeTrade(signal, options = {}) {
     }
 
     if (
-      !pureV3Execution &&
+      !independentStrategyExecution &&
       flow?.detected &&
       flow.direction !== 'neutral' &&
       flow.direction !== tradeSign
@@ -791,7 +796,7 @@ export async function executeTrade(signal, options = {}) {
       return blocked(reason);
     }
 
-    if (!pureV3Execution && ENTRY_TIMING_STRICT && timing?.status === 'too_early') {
+    if (!independentStrategyExecution && ENTRY_TIMING_STRICT && timing?.status === 'too_early') {
       const fibLabel = fib?.entryZone
         ? `${fib.entryZone.lower}–${fib.entryZone.upper}`
         : 'the 38.2–78.6% retracement band';
@@ -799,12 +804,12 @@ export async function executeTrade(signal, options = {}) {
         `Rejected: price has not retraced into H1/H4 Fibonacci entry zone (${fibLabel}). ${timing.reason}`
       );
     }
-    if (!pureV3Execution && ENTRY_TIMING_STRICT && timing?.status === 'wait_for_retest') {
+    if (!independentStrategyExecution && ENTRY_TIMING_STRICT && timing?.status === 'wait_for_retest') {
       return blocked(
         `Rejected: breakout occurred but retest not confirmed. ${timing.reason}`
       );
     }
-    if (!pureV3Execution && timing && timing.status !== 'valid_entry') {
+    if (!independentStrategyExecution && timing && timing.status !== 'valid_entry') {
       // Hybrid mode — log only, but flag prominently.
       console.warn(
         `[ENTRY_TIMING] ⚠ ${pair} ${direction.toUpperCase()} — status=${timing.status}: ${timing.reason}. ` +
@@ -813,8 +818,12 @@ export async function executeTrade(signal, options = {}) {
     }
   }
 
-  const universalPolicy = evaluateUniversalEntryPolicy(signal);
-  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+  const strategyEntryPolicy = purePprExecution
+    ? evaluatePprExecutionPolicy(signal, { minRR: MIN_EXECUTABLE_RR })
+    : evaluateUniversalEntryPolicy(signal);
+  if (!strategyEntryPolicy.allowed) {
+    return blocked(`${purePprExecution ? 'PPR' : 'Universal'} entry policy: ${strategyEntryPolicy.reasons.join('; ')}`);
+  }
 
   if (pureV3Execution) {
     const stage2 = signal.qualityConfirmation?.stage2;
@@ -1027,27 +1036,46 @@ export async function executeTrade(signal, options = {}) {
     tpPriceFromLifecycle = lifecycle.tp.takeProfitPrice;
   }
 
-  const scalpLifecycle = normalizeScalpLifecycle({
-    pair,
-    direction,
-    entryPrice: executableEntry,
-    atrPips: signal.atrPips ?? signal.momentum?.atrPips,
-    lifecycle: {
-      allowed: true,
-      sl: {
-        ...(signal.lifecycle?.sl || {}),
-        stopLossPips: slPips,
-        stopLossPrice: slPriceFromLifecycle,
-      },
-      tp: {
-        ...(signal.lifecycle?.tp || {}),
+  const scalpLifecycle = purePprExecution
+    ? {
         allowed: true,
-        takeProfitPips: tpPips,
-        takeProfitPrice: tpPriceFromLifecycle,
-      },
-      hold: signal.lifecycle?.hold || null,
-    },
-  });
+        lifecycle: {
+          ...signal.lifecycle,
+          allowed: true,
+          sl: {
+            ...(signal.lifecycle?.sl || {}),
+            stopLossPips: slPips,
+            stopLossPrice: slPriceFromLifecycle,
+          },
+          tp: {
+            ...(signal.lifecycle?.tp || {}),
+            allowed: true,
+            takeProfitPips: tpPips,
+            takeProfitPrice: tpPriceFromLifecycle,
+          },
+        },
+      }
+    : normalizeScalpLifecycle({
+        pair,
+        direction,
+        entryPrice: executableEntry,
+        atrPips: signal.atrPips ?? signal.momentum?.atrPips,
+        lifecycle: {
+          allowed: true,
+          sl: {
+            ...(signal.lifecycle?.sl || {}),
+            stopLossPips: slPips,
+            stopLossPrice: slPriceFromLifecycle,
+          },
+          tp: {
+            ...(signal.lifecycle?.tp || {}),
+            allowed: true,
+            takeProfitPips: tpPips,
+            takeProfitPrice: tpPriceFromLifecycle,
+          },
+          hold: signal.lifecycle?.hold || null,
+        },
+      });
 
   if (!scalpLifecycle.allowed) {
     return blocked(scalpLifecycle.reason);
@@ -1251,7 +1279,9 @@ export async function executeTrade(signal, options = {}) {
   // SL/TP cannot be missed even on partial slippage.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  const setupKey = setupFingerprint(signal, accountId);
+  const setupKey = purePprExecution
+    ? pprSetupFingerprint(signal, accountId)
+    : setupFingerprint(signal, accountId);
   const executionReservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
   if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
   const executionReservationHash = executionReservation.hash;

@@ -7,8 +7,10 @@ SCANNER_PATH = ROOT / 'server' / 'v3IndependentScanner.js'
 
 text = INDEX_PATH.read_text(encoding='utf-8')
 
+# The independent V3 endpoint is anchored only to engine-neutral routing. It must
+# not require the retired legacy scanner import or route to exist.
 import_line = "import { runV3DashboardScan } from './v3DashboardScan.js';"
-import_anchor = "import { scanForexPairs } from './oandaScanner.js';"
+import_anchor = "import { runAutoForUser } from './autoAiRouter.js';"
 if import_line not in text:
     if import_anchor not in text:
         raise RuntimeError('V3 dashboard scan import anchor not found in server/index.js')
@@ -16,36 +18,11 @@ if import_line not in text:
 
 route_marker = "app.post('/api/internal/oanda/v3-scan'"
 if route_marker not in text:
-    legacy_route = """// POST /api/internal/oanda/scan
-app.post('/api/internal/oanda/scan', async (req, res) => {
-  if (!requireInternalAuth(req, res)) return;
-  const client = buildClientFromBody(req.body, res);
-  if (!client) return;
-  assertClientMatchesRequest(client, req.body);
-  logInternalCall('SCAN', req.body);
-  try {
-    const result = await runUserScoped(
-      { accountId: client.accountId, environment: client.environment },
-      () => scanForexPairs(req.body?.pairs || null, { client }),
-    );
-    console.log(
-      `[INTERNAL SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
-        `qualified=${result?.qualified?.length ?? 0} rejected=${result?.rejected?.length ?? 0}`,
-    );
-    res.json(result);
-  } catch (err) {
-    console.error('[INTERNAL_SCAN] error:', err?.message || err);
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
-});
-"""
-
-    native_route = """
-
-// POST /api/internal/oanda/v3-scan
+    route_anchor = "// POST /api/internal/oanda/ict\n"
+    native_route = """// POST /api/internal/oanda/v3-scan
 // Dashboard-only native V3 analysis. This route reads raw user-scoped OANDA
-// pricing/candles and evaluates Stage 1 followed by Stage 2. It never consumes
-// legacy scanner candidates, confidence, direction, promotion, or confirmations.
+// pricing/candles and evaluates V3 Stage 1 followed by V3 Stage 2. It never
+// invokes or consumes ICT, PPR, or retired legacy strategy logic.
 app.post('/api/internal/oanda/v3-scan', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
@@ -66,7 +43,7 @@ app.post('/api/internal/oanda/v3-scan', async (req, res) => {
     );
     console.log(
       `[INTERNAL V3_SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
-        `scanner=v3_independent legacyScannerUsed=false legacyConfirmationsUsed=false ` +
+        `scanner=v3_independent foreignStrategyInputs=false ` +
         `qualified=${result?.qualified?.length ?? 0} ` +
         `near=${result?.nearQualified?.length ?? 0} ` +
         `hot=${result?.hotWatch?.length ?? 0} ` +
@@ -78,17 +55,17 @@ app.post('/api/internal/oanda/v3-scan', async (req, res) => {
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });
-"""
 
-    if legacy_route not in text:
-        raise RuntimeError('Legacy internal OANDA scan route anchor not found in server/index.js')
-    text = text.replace(legacy_route, legacy_route + native_route, 1)
+"""
+    if route_anchor not in text:
+        raise RuntimeError('V3 dashboard route anchor not found in server/index.js')
+    text = text.replace(route_anchor, native_route + route_anchor, 1)
 
 required = [
     import_line,
     "app.post('/api/internal/oanda/v3-scan'",
     'runV3DashboardScan({',
-    'scanner=v3_independent legacyScannerUsed=false legacyConfirmationsUsed=false',
+    'scanner=v3_independent foreignStrategyInputs=false',
 ]
 missing = [marker for marker in required if marker not in text]
 if missing:
@@ -131,4 +108,4 @@ for pair in ['GBP_USD', 'USD_JPY', 'GBP_JPY', 'EUR_JPY']:
         raise RuntimeError(f'Independent V3 watchlist missing {pair}')
 
 SCANNER_PATH.write_text(scanner, encoding='utf-8')
-print('Native V3 dashboard scan route and complete watchlist applied.')
+print('Native V3 dashboard route applied without legacy scanner anchors.')

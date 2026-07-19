@@ -3,12 +3,13 @@
  *
  * Engine selection + routing for Auto AI Trading. A user runs exactly one of:
  * ICT, independent raw-market V3, or independent raw-market PPR.
+ *
+ * Engine modules are loaded lazily only after selection. Selecting V3 therefore
+ * does not initialize ICT or PPR strategy code, and injected test runners do not
+ * load any production engine at all.
  */
 
-import { runAutoAiForUser } from './ictAutoTrade.js';
-import { runAutoV3ForUser } from './v3AutoTrade.js';
-import { runAutoPprForUser } from './pprAutoTrade.js';
-import { inAutoAiWindow } from './ictAutoScheduler.js';
+import { autoAiWindowReason, inAutoAiWindow } from './autoAiWindow.js';
 
 export function normalizeAutoEngine(value) {
   const engine = String(value || 'ict').toLowerCase();
@@ -28,17 +29,30 @@ function outsideWindowResult(engine) {
     scanned: 0,
     qualified: 0,
     executed: [],
-    skipped: [{ reason: 'outside_auto_ai_execution_window_02:00-10:00_ET_weekdays' }],
+    skipped: [{ reason: autoAiWindowReason() }],
     nearQualifiedPairs: [],
     hotPairs: [],
     lateEntryPairs: [],
   };
 }
 
-/**
- * Run exactly one engine for one user. Injected runners make engine isolation
- * directly testable and prevent accidental multi-engine execution.
- */
+async function resolveRunner(engine, injectedRunner) {
+  if (injectedRunner) return injectedRunner;
+
+  if (engine === 'v3') {
+    const module = await import('./v3AutoTrade.js');
+    return module.runAutoV3ForUser;
+  }
+  if (engine === 'ppr') {
+    const module = await import('./pprAutoTrade.js');
+    return module.runAutoPprForUser;
+  }
+
+  const module = await import('./ictAutoTrade.js');
+  return module.runAutoAiForUser;
+}
+
+/** Run exactly one selected engine for one user. */
 export async function runAutoForUser({
   client,
   engine,
@@ -52,17 +66,17 @@ export async function runAutoForUser({
 } = {}) {
   const selectedEngine = normalizeAutoEngine(engine);
 
-  // Final defense-in-depth gate: no Auto AI scan or execution may run outside
-  // 02:00–10:00 America/New_York, Monday through Friday.
   if (!inAutoAiWindow(now)) return outsideWindowResult(selectedEngine);
 
-  const ict = runIct || ((args) => runAutoAiForUser(args));
-  const v3 = runV3 || ((args) => runAutoV3ForUser(args));
-  const ppr = runPpr || ((args) => runAutoPprForUser(args));
   const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
   const args = { client, now, runId, scanMode, pairs: safePairs };
+  const injectedRunner = selectedEngine === 'v3'
+    ? runV3
+    : selectedEngine === 'ppr'
+      ? runPpr
+      : runIct;
+  const runner = await resolveRunner(selectedEngine, injectedRunner);
+  const result = await runner(args);
 
-  if (selectedEngine === 'v3') return { engine: 'v3', ...(await v3(args)) };
-  if (selectedEngine === 'ppr') return { engine: 'ppr', ...(await ppr(args)) };
-  return { engine: 'ict', ...(await ict(args)) };
+  return { engine: selectedEngine, ...result };
 }

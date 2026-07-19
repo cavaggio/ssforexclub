@@ -1,14 +1,13 @@
 import { scanV3IndependentMarket, refreshIndependentV3CandidateForExecution } from './v3IndependentScanner.js';
-import { executeTrade } from './oandaTrade.js';
+import { executeV3Trade } from './v3TradeExecution.js';
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
 
 /**
  * Autonomous V3 runner for one authenticated OANDA user.
  *
  * Architecture rule: V3 reads raw OANDA pricing/candles through
- * scanV3IndependentMarket(). It does not call oandaScanner, consume legacy
- * qualified/rejected arrays, inherit legacy direction, blend legacy confidence,
- * or read a shared legacy retrace-watch registry.
+ * scanV3IndependentMarket(). It consumes no foreign-engine scanner output,
+ * direction, confidence, qualification arrays, or watch registries.
  */
 
 function maskAccount(id) {
@@ -63,7 +62,7 @@ export async function runAutoV3ForUser({
   log(
     `independent scan started scanMode=${scanMode} ` +
     `pairs=${scanPairs?.length ? scanPairs.join(',') : 'V3_WATCHLIST'} ` +
-    'legacyScannerUsed=false sharedRetraceWatchUsed=false',
+    'foreignStrategyInputs=false',
   );
 
   const scan = await scanV3IndependentMarket({
@@ -84,9 +83,6 @@ export async function runAutoV3ForUser({
       scalpOnly: true,
       selectedLogicType: 'v3_pure',
       architecture: 'independent_v3_raw_market_data',
-      legacyScannerUsed: false,
-      legacyDirection: null,
-      sharedRetraceWatchUsed: false,
     }),
   );
 
@@ -98,13 +94,11 @@ export async function runAutoV3ForUser({
   if (!qualified.length) {
     log(
       `independent scan complete qualified=0 executed=0 skipped=0 ` +
-      `qualityWatch=${stageWatchCandidates.length} legacyScannerUsed=false`,
+      `qualityWatch=${stageWatchCandidates.length} foreignStrategyInputs=false`,
     );
     return {
       engine: 'v3',
       architecture: 'independent_v3_raw_market_data',
-      legacyScannerUsed: false,
-      sharedRetraceWatchUsed: false,
       scanned: scan?.meta?.pairsScanned ?? 0,
       qualified: 0,
       executed: [],
@@ -137,12 +131,9 @@ export async function runAutoV3ForUser({
       scalpOnly: true,
       selectedLogicType: 'v3_pure',
       architecture: 'independent_v3_raw_market_data',
-      legacyScannerUsed: false,
-      legacyDirection: null,
-      sharedRetraceWatchUsed: false,
     });
     signal.environment = client?.environment || signal.environment;
-    const result = await executeTrade(signal, { client, autoAi: true });
+    const result = await executeV3Trade(signal, { client });
 
     if (result?.success) {
       executed.push({
@@ -162,9 +153,7 @@ export async function runAutoV3ForUser({
         source: signal.source,
         strategy: 'V3',
         architecture: 'independent_v3_raw_market_data',
-        legacyScannerUsed: false,
-        sharedRetraceWatchUsed: false,
-        signal,
+            signal,
       });
       log(`trade executed pair=${signal.pair} dir=${signal.direction} id=${result.tradeId}`);
     } else {
@@ -176,14 +165,12 @@ export async function runAutoV3ForUser({
 
   log(
     `independent scan complete qualified=${qualified.length} executed=${executed.length} ` +
-    `skipped=${skipped.length} qualityWatch=${stageWatchCandidates.length} legacyScannerUsed=false`,
+    `skipped=${skipped.length} qualityWatch=${stageWatchCandidates.length} foreignStrategyInputs=false`,
   );
 
   return {
     engine: 'v3',
     architecture: 'independent_v3_raw_market_data',
-    legacyScannerUsed: false,
-    sharedRetraceWatchUsed: false,
     scanned: scan?.meta?.pairsScanned ?? qualified.length,
     qualified: qualified.length,
     executed,
@@ -196,55 +183,3 @@ export async function runAutoV3ForUser({
   };
 }
 
-// June 23 soft-filter scoring remains exported for compatibility with existing
-// tests and diagnostics. It is not used to source or qualify independent V3
-// candidates.
-export function applyJune23SoftFilterScoring(candidate = {}) {
-  let confidenceAdjustment = 0;
-  const softReasons = [];
-
-  if (candidate.regimeAligned === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Regime aligned: +1 confidence');
-  } else if (candidate.regimeAligned === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Regime not aligned: -1 confidence');
-  }
-
-  if (candidate.liquidityIntentStrong === true) {
-    confidenceAdjustment += 2;
-    softReasons.push('Strong liquidity intent: +2 confidence');
-  } else if (candidate.liquidityIntentStrong === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Weak liquidity intent: -1 confidence');
-  }
-
-  if (candidate.calibrationPositive === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Positive calibration: +1 confidence');
-  } else if (candidate.calibrationPositive === false) {
-    confidenceAdjustment -= 1;
-    softReasons.push('Negative calibration: -1 confidence');
-  }
-
-  if (candidate.smtDivergence === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('SMT divergence present: +1 confidence');
-  }
-
-  if (candidate.sessionNarrativeAligned === true) {
-    confidenceAdjustment += 1;
-    softReasons.push('Session narrative aligned: +1 confidence');
-  }
-
-  const baseConfidence = Number(candidate.confidence ?? 0);
-  const confidence = Math.max(0, Math.min(100, baseConfidence + confidenceAdjustment));
-
-  return {
-    ...candidate,
-    baseConfidence,
-    confidence,
-    confidenceAdjustment,
-    softReasons,
-  };
-}

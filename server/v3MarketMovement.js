@@ -31,6 +31,7 @@ function pipSizeFor(pair = '') {
 }
 
 function finite(value) {
+  if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -62,15 +63,16 @@ function eventAgeBars(event, referenceTime, barMinutes = 15) {
   return Math.max(0, (reference - eventTime) / (barMinutes * 60_000));
 }
 
-function triggerPrice(event = {}, fallback = null) {
+function triggerPrice(event = null, fallback = null) {
+  const source = event && typeof event === 'object' ? event : {};
   const values = [
-    event.triggerPrice,
-    event.reclaimClose,
-    event.retestPrice,
-    event.retestLevel,
-    event.brokenLevel,
-    event.close,
-    event.sweptPriceLevel,
+    source.triggerPrice,
+    source.reclaimClose,
+    source.retestPrice,
+    source.retestLevel,
+    source.brokenLevel,
+    source.close,
+    source.sweptPriceLevel,
     fallback,
   ];
   for (const value of values) {
