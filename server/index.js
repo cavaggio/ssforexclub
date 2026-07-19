@@ -2314,16 +2314,57 @@ app.post('/api/internal/oanda/calibration', async (req, res) => {
   }
 });
 
-// POST /api/internal/oanda/trade
-//   Body: { apiKey, accountId, baseUrl, environment, signal: ForexSignal }
-//   Auth: X-Internal-Auth shared secret.
-//   Builds a per-request OANDA client from the supplied credentials, verifies
-//   that the Recent Signals card contains completed native V3 Stage 1/Stage 2,
-//   refreshes the exact pair from current OANDA data, and only then calls the
-//   broker executor. The signal's `environment` is forced
-//   to match the resolved env so executeTrade's live-execution guard sees the
-//   correct value. The default env-based client is NEVER used on this path —
-//   missing apiKey/accountId/baseUrl returns 400 before any execution.
+
+// POST /api/internal/oanda/v3-trade
+//   V3-only manual execution for a completed Recent Signals candidate.
+//   The exact pair is refreshed from raw OANDA data and must pass current native
+//   V3 Stage 1, Stage 2, direction-lock, and geometry checks before broker handoff.
+app.post('/api/internal/oanda/v3-trade', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  const signal = req.body?.signal;
+  if (!signal || typeof signal !== 'object') {
+    res.status(400).json({ ok: false, error: 'Missing V3 signal in body' });
+    return;
+  }
+  if (!signal.pair || typeof signal.pair !== 'string') {
+    res.status(400).json({ ok: false, error: 'Invalid V3 signal.pair' });
+    return;
+  }
+  if (signal.direction !== 'long' && signal.direction !== 'short') {
+    res.status(400).json({ ok: false, error: 'Invalid V3 signal.direction (must be long or short)' });
+    return;
+  }
+  const env = String(req.body?.environment ?? '').toLowerCase();
+  if (!isExecutableEnvironment(env)) {
+    res.status(400).json({
+      ok: false,
+      error: `V3 trade endpoint requires environment=live|practice|paper (got "${env || '<empty>'}")`,
+    });
+    return;
+  }
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('V3_TRADE', req.body);
+  signal.environment = env;
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => executeRecentQualifiedV3Signal({
+        signal,
+        client,
+        now: new Date(),
+        log: (message) => console.log(
+          `[INTERNAL V3 RECENT SIGNAL] accountId=${maskAccountId(client.accountId)} ${message}`,
+        ),
+      }),
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_V3_TRADE] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 
