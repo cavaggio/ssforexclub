@@ -87,6 +87,86 @@ for line in [
 write('server/v3DashboardScan.js', dashboard)
 
 # ---------------------------------------------------------------------------
+# Open V3 positions dispatch to V3-native analysis before any foreign waterfall.
+# ---------------------------------------------------------------------------
+monitor = read('server/oandaActiveTradeMonitor.js')
+monitor_import = "import { analyzeV3OpenTrade } from './v3ActiveTradeMonitor.js';"
+monitor_anchor = "import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';"
+if monitor_import not in monitor:
+    if monitor_anchor not in monitor:
+        raise RuntimeError('V3 active monitor import anchor missing')
+    monitor = monitor.replace(monitor_anchor, monitor_anchor + '\n' + monitor_import, 1)
+monitor_early_marker = 'return analyzeV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });'
+if monitor_early_marker not in monitor:
+    old = """  const takeProfit = oandaTrade.takeProfitOrder
+    ? parseFloat(oandaTrade.takeProfitOrder.price)
+    : null;
+
+  // Live mid price for the instrument
+"""
+    new = """  const takeProfit = oandaTrade.takeProfitOrder
+    ? parseFloat(oandaTrade.takeProfitOrder.price)
+    : null;
+
+  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  if (isPureV3TradeRecord(historyRecord || {})) {
+    return analyzeV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
+  }
+
+  // Live mid price for the instrument
+"""
+    if old not in monitor:
+        raise RuntimeError('V3 active monitor early-dispatch anchor missing')
+    monitor = monitor.replace(old, new, 1)
+monitor = monitor.replace(
+    "  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));\n  const pureV3Trade = isPureV3TradeRecord(historyRecord || {});",
+    "  const pureV3Trade = false; // V3 trades returned before foreign analysis",
+    1,
+)
+write('server/oandaActiveTradeMonitor.js', monitor)
+
+reassessor = read('server/oandaActiveTradeReassessor.js')
+reassess_import = "import { reassessV3OpenTrade } from './v3ActiveTradeMonitor.js';"
+reassess_anchor = "import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';"
+if reassess_import not in reassessor:
+    if reassess_anchor not in reassessor:
+        raise RuntimeError('V3 active reassessor import anchor missing')
+    reassessor = reassessor.replace(reassess_anchor, reassess_anchor + '\n' + reassess_import, 1)
+reassess_early_marker = 'return reassessV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });'
+if reassess_early_marker not in reassessor:
+    old = """  const currentTP = oandaTrade.takeProfitOrder
+    ? parseFloat(oandaTrade.takeProfitOrder.price)
+    : null;
+
+  const pricing = (await getPricing([pair], { client }))[0];
+"""
+    new = """  const currentTP = oandaTrade.takeProfitOrder
+    ? parseFloat(oandaTrade.takeProfitOrder.price)
+    : null;
+
+  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  if (isPureV3TradeRecord(historyRecord || {})) {
+    return reassessV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
+  }
+
+  const pricing = (await getPricing([pair], { client }))[0];
+"""
+    if old not in reassessor:
+        raise RuntimeError('V3 active reassessor early-dispatch anchor missing')
+    reassessor = reassessor.replace(old, new, 1)
+reassessor = reassessor.replace(
+    "  const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));\n  const entryContext = historyRecord ? {",
+    "  const entryContext = historyRecord ? {",
+    1,
+)
+reassessor = reassessor.replace(
+    "  const pureV3Trade = isPureV3TradeRecord(historyRecord || entryContext);",
+    "  const pureV3Trade = false; // V3 trades returned before foreign analysis",
+    1,
+)
+write('server/oandaActiveTradeReassessor.js', reassessor)
+
+# ---------------------------------------------------------------------------
 # Remove the retired legacy scanner surface and V3/ICT comparison bridge.
 # ---------------------------------------------------------------------------
 index = read('server/index.js')
@@ -135,6 +215,7 @@ v3_files = [
     'server/v3QualityConfirmation.js',
     'server/v3ExecutionModel.js',
     'server/v3TradeExecution.js',
+    'server/v3ActiveTradeMonitor.js',
 ]
 forbidden_v3 = [
     "from './ict",
@@ -187,6 +268,13 @@ if "from './v3TradeExecution.js'" not in auto or 'executeV3Trade(signal' not in 
     failures.append('server/v3AutoTrade.js: V3 does not use its dedicated execution boundary')
 if "from './oandaTrade.js'" in auto or 'executeTrade(signal' in auto:
     failures.append('server/v3AutoTrade.js: direct shared executor access remains')
+
+monitor = read('server/oandaActiveTradeMonitor.js')
+if monitor.find('return analyzeV3OpenTrade(') > monitor.find('analyzeMacro('):
+    failures.append('server/oandaActiveTradeMonitor.js: V3 dispatch occurs after foreign waterfall')
+reassessor = read('server/oandaActiveTradeReassessor.js')
+if reassessor.find('return reassessV3OpenTrade(') > reassessor.find('analyzeMacro('):
+    failures.append('server/oandaActiveTradeReassessor.js: V3 dispatch occurs after foreign waterfall')
 
 trade = read('server/oandaTrade.js')
 if 'tradeDecisionEngine' in trade or 'evaluateTradeCandidate' in trade:
