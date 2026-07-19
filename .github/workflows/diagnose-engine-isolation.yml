@@ -27,7 +27,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - name: Capture generator and V3 tests
+      - name: Capture generator and isolation tests
         shell: bash
         run: |
           set +e
@@ -39,8 +39,14 @@ jobs:
             server/v3EntryContract.integration.test.js \
             server/v3EngineIsolation.test.js > v3-tests.log 2>&1
           printf '%s\n' "$?" > v3-tests-exit.txt
+          node --test \
+            server/ictExecution.test.js \
+            server/ictExecutionPaper.test.js \
+            server/ictIndependence.test.js > ict-tests.log 2>&1
+          printf '%s\n' "$?" > ict-tests-exit.txt
           tail -n 300 generation.log > generation-tail.log
           tail -n 300 v3-tests.log > v3-tests-tail.log
+          tail -n 300 ict-tests.log > ict-tests-tail.log
           git diff --binary > reapplied.patch
           exit 0
       - uses: actions/upload-artifact@v4
@@ -54,4 +60,7 @@ jobs:
             v3-tests.log
             v3-tests-tail.log
             v3-tests-exit.txt
+            ict-tests.log
+            ict-tests-tail.log
+            ict-tests-exit.txt
             reapplied.patch
