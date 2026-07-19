@@ -112,14 +112,14 @@ const newDerived = `  const scan = state?.scan;
     ? (scan as any).watchCandidates
     : [];
 
-  // The executable R:R display guard applies to the legacy-shaped V3 cards.
-  // Native PPR cards must retain below-floor rejection diagnostics.
-  const qualified = selectedEngine === 'ppr'
-    ? qualifiedRaw
-    : qualifiedRaw.filter((sig: any) => !isSubMinRrDisplay(sig));
-  const rejected = selectedEngine === 'ppr'
-    ? rejectedRaw
-    : rejectedRaw.filter((sig: any) => !isSubMinRrDisplay(sig));
+  // The 1.5R visibility guard belongs only to V3 executable cards. ICT and PPR
+  // must retain every native result, including below-floor rejection diagnostics.
+  const qualified = selectedEngine === 'v3'
+    ? qualifiedRaw.filter((sig: any) => !isSubMinRrDisplay(sig))
+    : qualifiedRaw;
+  const rejected = selectedEngine === 'v3'
+    ? rejectedRaw.filter((sig: any) => !isSubMinRrDisplay(sig))
+    : rejectedRaw;
   // Trade execution is only offered when the scanner response confirms live
   // mode AND the call succeeded (state.ok). Anything less surfaces an inline
   // blocker on each signal card so the user knows what to fix.
@@ -260,6 +260,8 @@ for (const marker of [
   "NativeEngineScanPanel",
   "selectedEngine: 'ict' | 'v3' | 'ppr'",
   'Active scanner',
+  "const qualified = selectedEngine === 'v3'",
+  "const rejected = selectedEngine === 'v3'",
   "engine={selectedEngine === 'ppr' ? 'ppr' : 'ict'}",
   'signal-stack-engine-changed',
 ]) {
