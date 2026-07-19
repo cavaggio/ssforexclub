@@ -20,11 +20,15 @@ test('generated server source registers a read-only native PPR scan endpoint', (
   assert.doesNotMatch(routeSection, /runAutoPprForUser|executePprTrade|runV3DashboardScan|scanForexPairs|analyzeICTPairs/);
 });
 
-test('root generation always reapplies PPR after every V3 generator', () => {
+test('root generation reapplies PPR once before the final isolation pass', () => {
   const pkg = JSON.parse(read('package.json'));
   const command = pkg.scripts['apply:v3-entry'];
-  assert.match(command, /scripts\/apply_ppr_engine\.py$/);
+  const pprIndex = command.indexOf('scripts/apply_ppr_engine.py');
+  const isolationIndex = command.indexOf('scripts/enforce_engine_isolation.py');
+  assert.ok(pprIndex >= 0);
+  assert.ok(isolationIndex > pprIndex);
   assert.equal((command.match(/apply_ppr_engine\.py/g) || []).length, 1);
+  assert.equal((command.match(/enforce_engine_isolation\.py/g) || []).length, 1);
 });
 
 test('dashboard route takes engine from server settings, not request body', () => {
