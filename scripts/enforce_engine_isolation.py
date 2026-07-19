@@ -47,6 +47,10 @@ scanner = scanner.replace('    legacyDirection: null,\n', '')
 write('server/v3IndependentScanner.js', scanner)
 
 auto = read('server/v3AutoTrade.js')
+auto = auto.replace("import { executeTrade } from './oandaTrade.js';",
+                    "import { executeV3Trade } from './v3TradeExecution.js';")
+auto = auto.replace('const result = await executeTrade(signal, { client, autoAi: true });',
+                    'const result = await executeV3Trade(signal, { client });')
 auto = auto.replace('       legacyScannerUsed=false sharedRetraceWatchUsed=false',
                     '       foreignStrategyInputs=false')
 auto = auto.replace(' legacyScannerUsed=false', ' foreignStrategyInputs=false')
@@ -102,9 +106,8 @@ comparison = re.compile(
 )
 index = comparison.sub('\n    console.log(', index, count=1)
 
-# Retire the unauthenticated generic execution route. Engine-specific manual and
-# autonomous endpoints remain: ICT has its own executor; V3/PPR use their native
-# runners through /api/internal/oanda/auto.
+# Retire the generic strategy-agnostic signal endpoint. Engine-specific manual
+# and autonomous endpoints remain; no request can submit a legacy candidate.
 index = remove_route(index, 'post', '/api/internal/oanda/trade')
 write('server/index.js', index)
 
@@ -131,6 +134,7 @@ v3_files = [
     'server/v3DashboardScan.js',
     'server/v3QualityConfirmation.js',
     'server/v3ExecutionModel.js',
+    'server/v3TradeExecution.js',
 ]
 forbidden_v3 = [
     "from './ict",
@@ -177,6 +181,12 @@ if "from './ictAutoScheduler.js'" in router:
     failures.append('server/autoAiRouter.js: V3 routing still depends on ICT scheduler')
 if "from './autoAiWindow.js'" not in router:
     failures.append('server/autoAiRouter.js: missing engine-neutral execution window')
+
+auto = read('server/v3AutoTrade.js')
+if "from './v3TradeExecution.js'" not in auto or 'executeV3Trade(signal' not in auto:
+    failures.append('server/v3AutoTrade.js: V3 does not use its dedicated execution boundary')
+if "from './oandaTrade.js'" in auto or 'executeTrade(signal' in auto:
+    failures.append('server/v3AutoTrade.js: direct shared executor access remains')
 
 trade = read('server/oandaTrade.js')
 if 'tradeDecisionEngine' in trade or 'evaluateTradeCandidate' in trade:
