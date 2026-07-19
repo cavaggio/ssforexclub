@@ -10,6 +10,7 @@
  */
 
 import { autoAiWindowReason, inAutoAiWindow } from './autoAiWindow.js';
+import { configuredIctWatchlist } from './ictWatchlist.js';
 
 export function normalizeAutoEngine(value) {
   const engine = String(value || 'ict').toLowerCase();
@@ -68,7 +69,8 @@ export async function runAutoForUser({
 
   if (!inAutoAiWindow(now)) return outsideWindowResult(selectedEngine);
 
-  const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  const requestedPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
+  const safePairs = requestedPairs || (selectedEngine === 'ict' ? configuredIctWatchlist() : null);
   const args = { client, now, runId, scanMode, pairs: safePairs };
   const injectedRunner = selectedEngine === 'v3'
     ? runV3
