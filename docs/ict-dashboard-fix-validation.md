@@ -1,0 +1,1 @@
+Validation target: an ICT response containing 12 analyses must render 12 dashboard cards. Native `buy` and `sell` signals map to qualified long and short rows, while `none` signals remain visible as rejected diagnostics regardless of their risk/reward value.
