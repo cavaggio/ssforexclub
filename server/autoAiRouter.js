@@ -3,12 +3,15 @@
  *
  * Engine selection + routing for Auto AI Trading. A user runs exactly one of:
  * ICT, independent raw-market V3, or independent raw-market PPR.
+ *
+ * This router may know that the engines exist, but no engine is allowed to call
+ * or fall through to another engine. Scheduling policy is engine-neutral.
  */
 
 import { runAutoAiForUser } from './ictAutoTrade.js';
 import { runAutoV3ForUser } from './v3AutoTrade.js';
 import { runAutoPprForUser } from './pprAutoTrade.js';
-import { inAutoAiWindow } from './ictAutoScheduler.js';
+import { autoAiWindowReason, inAutoAiWindow } from './autoAiWindow.js';
 
 export function normalizeAutoEngine(value) {
   const engine = String(value || 'ict').toLowerCase();
@@ -28,7 +31,7 @@ function outsideWindowResult(engine) {
     scanned: 0,
     qualified: 0,
     executed: [],
-    skipped: [{ reason: 'outside_auto_ai_execution_window_02:00-10:00_ET_weekdays' }],
+    skipped: [{ reason: autoAiWindowReason() }],
     nearQualifiedPairs: [],
     hotPairs: [],
     lateEntryPairs: [],
@@ -52,17 +55,20 @@ export async function runAutoForUser({
 } = {}) {
   const selectedEngine = normalizeAutoEngine(engine);
 
-  // Final defense-in-depth gate: no Auto AI scan or execution may run outside
-  // 02:00–10:00 America/New_York, Monday through Friday.
   if (!inAutoAiWindow(now)) return outsideWindowResult(selectedEngine);
 
-  const ict = runIct || ((args) => runAutoAiForUser(args));
-  const v3 = runV3 || ((args) => runAutoV3ForUser(args));
-  const ppr = runPpr || ((args) => runAutoPprForUser(args));
   const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
   const args = { client, now, runId, scanMode, pairs: safePairs };
 
-  if (selectedEngine === 'v3') return { engine: 'v3', ...(await v3(args)) };
-  if (selectedEngine === 'ppr') return { engine: 'ppr', ...(await ppr(args)) };
-  return { engine: 'ict', ...(await ict(args)) };
+  if (selectedEngine === 'v3') {
+    const runner = runV3 || runAutoV3ForUser;
+    return { engine: 'v3', ...(await runner(args)) };
+  }
+  if (selectedEngine === 'ppr') {
+    const runner = runPpr || runAutoPprForUser;
+    return { engine: 'ppr', ...(await runner(args)) };
+  }
+
+  const runner = runIct || runAutoAiForUser;
+  return { engine: 'ict', ...(await runner(args)) };
 }
