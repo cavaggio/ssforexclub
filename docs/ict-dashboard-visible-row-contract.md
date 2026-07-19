@@ -1,0 +1,1 @@
+Every pair returned in ICT analyses must appear in either the qualified or rejected dashboard collection. Qualified native signals are buy/sell mapped to long/short; rejected diagnostics remain visible below the execution RR floor.

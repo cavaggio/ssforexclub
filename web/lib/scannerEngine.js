@@ -134,14 +134,19 @@ export function normalizePprScan(rawValue) {
 function normalizeIctItem(value) {
   const item = object(value);
   const signal = text(item.signal, 'none').toLowerCase();
-  const qualified = signal === 'long' || signal === 'short';
+  const qualified = signal === 'buy' || signal === 'sell' || signal === 'long' || signal === 'short';
+  const direction = signal === 'buy' || signal === 'long'
+    ? 'long'
+    : signal === 'sell' || signal === 'short'
+      ? 'short'
+      : null;
   return {
     ...item,
     v3Comparison: undefined,
     engine: 'ict',
     architecture: 'independent_ict_raw_market_data',
     status: qualified ? 'qualified' : 'rejected',
-    direction: qualified ? signal : null,
+    direction,
     reason: text(item.ictNarrative) || (Array.isArray(item.rejectionReasons) ? item.rejectionReasons.join('; ') : ''),
     rejectionReasons: Array.isArray(item.rejectionReasons) ? item.rejectionReasons.map((reason) => text(reason)).filter(Boolean) : [],
   };

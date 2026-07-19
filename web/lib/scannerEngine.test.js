@@ -1,9 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   normalizeSelectedScan,
   scanEndpointForEngine,
 } from './scannerEngine.js';
+
+const ICT_12_PAIRS = [
+  'EUR_USD',
+  'GBP_USD',
+  'USD_JPY',
+  'USD_CAD',
+  'USD_CHF',
+  'AUD_USD',
+  'NZD_USD',
+  'EUR_GBP',
+  'EUR_CHF',
+  'AUD_CAD',
+  'GBP_JPY',
+  'EUR_JPY',
+];
 
 test('each selected engine maps to exactly one internal scanner endpoint', () => {
   assert.deepEqual(scanEndpointForEngine('ppr'), {
@@ -52,15 +68,36 @@ test('PPR normalization strips foreign engine fields and outside-watchlist pairs
   assert.equal(scan.qualified[0].architecture, 'independent_ppr_raw_market_data');
 });
 
-test('ICT normalization removes display-only comparison data', () => {
+test('ICT normalization maps native buy/sell signals and preserves all 12 scanned rows', () => {
+  const analyses = ICT_12_PAIRS.map((pair, index) => ({
+    pair,
+    signal: index === 0 ? 'buy' : index === 1 ? 'sell' : 'none',
+    confidence: index < 2 ? 90 : 40,
+    rr: index === 0 ? 1.8 : index === 1 ? 1.6 : 1.1,
+    ictNarrative: index < 2 ? 'qualified ICT setup' : 'no qualifying ICT setup',
+    rejectionReasons: index < 2 ? [] : ['no 5M entry-timing trigger'],
+    v3Comparison: { score: 99 },
+  }));
+
   const scan = normalizeSelectedScan('ict', {
-    analyses: [
-      { pair: 'EUR_USD', signal: 'long', confidence: 90, v3Comparison: { score: 99 } },
-      { pair: 'USD_CAD', signal: 'none', rejectionReasons: ['no sweep'] },
-    ],
-    meta: { pairsAnalyzed: 2 },
+    analyses,
+    meta: { pairsAnalyzed: ICT_12_PAIRS.length },
   });
-  assert.equal(scan.qualified.length, 1);
-  assert.equal(scan.rejected.length, 1);
+
+  assert.equal(scan.qualified.length, 2);
+  assert.equal(scan.rejected.length, 10);
+  assert.equal(scan.analyses.length, 12);
+  assert.deepEqual(scan.qualified.map((item) => item.direction), ['long', 'short']);
+  assert.deepEqual(
+    scan.analyses.map((item) => item.pair),
+    ICT_12_PAIRS,
+  );
   assert.equal(JSON.stringify(scan).includes('v3Comparison'), false);
+});
+
+test('authoritative dashboard generator limits the 1.5R visibility filter to V3 only', () => {
+  const source = readFileSync(new URL('../scripts/apply-ppr-scanner-ui.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const qualified = selectedEngine === 'v3'/);
+  assert.match(source, /const rejected = selectedEngine === 'v3'/);
+  assert.match(source, /ICT and PPR\n  \/\/ must retain every native result/);
 });
