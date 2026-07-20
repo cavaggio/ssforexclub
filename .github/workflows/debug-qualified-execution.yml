@@ -40,19 +40,24 @@ jobs:
           status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Save concise test diagnostics
+      - name: Save exact failure diagnostics
         if: always()
         shell: bash
         run: |
-          tail -n 400 /tmp/full-test.log > /tmp/full-test-tail.log
+          {
+            echo "===== FAILURE CONTEXT ====="
+            grep -n -B 30 -A 60 '^not ok ' /tmp/full-test.log || true
+            echo "===== SUMMARY ====="
+            tail -n 30 /tmp/full-test.log
+          } > /tmp/full-test-failure.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: qualified-execution-test-log
-          path: /tmp/full-test-tail.log
+          path: /tmp/full-test-failure.log
           if-no-files-found: error
       - name: Fail when full suite failed
         if: steps.full_suite.outputs.status != '0'
         run: |
-          cat /tmp/full-test-tail.log
+          cat /tmp/full-test-failure.log
           exit 1
