@@ -48,6 +48,36 @@ function addPairs(target: Set<string>, value: unknown) {
   for (const pair of value) if (String(pair || '').trim()) target.add(String(pair).trim());
 }
 
+function count(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function scanAccounting(payload: Record<string, any>) {
+  const qualified = count(payload.qualified);
+  const watching = count(
+    payload.watching ??
+    payload.watchCount ??
+    payload.qualityWatch ??
+    (Array.isArray(payload.watchCandidates) ? payload.watchCandidates.length : undefined),
+  );
+  const scanned = count(payload.scanned, qualified + watching);
+  const rejected = count(
+    payload.rejectedCount ??
+    (Array.isArray(payload.rejected) ? payload.rejected.length : undefined),
+    Math.max(0, scanned - qualified - watching),
+  );
+  const accountedFor = qualified + watching + rejected;
+  return {
+    scanned,
+    qualified,
+    watching,
+    rejected,
+    accountedFor,
+    countInvariantOk: payload.countInvariantOk !== false && scanned === accountedFor,
+  };
+}
+
 export async function POST(req: Request) {
   const secret = process.env.AUTO_AI_CRON_SECRET;
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
@@ -75,15 +105,26 @@ export async function POST(req: Request) {
   const hot = new Set<string>();
   const late = new Set<string>();
   const results: Record<string, unknown>[] = [];
+  let scanned = 0;
   let qualified = 0;
+  let watching = 0;
+  let rejected = 0;
   let executed = 0;
   let skipped = 0;
+  let countMismatches = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     try {
       const resolved = await resolveActiveBrokerForUser(row.user_id);
       if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
-        results.push({ user: row.user_id, skipped: resolved.brokerCredentialStatus });
+        results.push({
+          user: row.user_id,
+          skipped: resolved.brokerCredentialStatus,
+          activeEnvironment: resolved.activeEnvironment,
+          platformLiveTradingEnabled: resolved.platformLiveTradingEnabled,
+          liveTradingAcknowledged: resolved.liveTradingAcknowledged,
+          reason: resolved.reason,
+        });
         continue;
       }
       const credentials = await resolved.getCredentials();
@@ -115,13 +156,27 @@ export async function POST(req: Request) {
           }
 
           const payload = (result.data ?? {}) as Record<string, any>;
+          const accounting = scanAccounting(payload);
           const executedList = Array.isArray(payload.executed) ? payload.executed : [];
-          qualified += Number(payload.qualified ?? 0);
+          scanned += accounting.scanned;
+          qualified += accounting.qualified;
+          watching += accounting.watching;
+          rejected += accounting.rejected;
+          if (!accounting.countInvariantOk) countMismatches += 1;
           executed += executedList.length;
           skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
           addPairs(near, payload.nearQualifiedPairs);
           addPairs(hot, payload.hotPairs);
           addPairs(late, payload.lateEntryPairs);
+
+          console.log(
+            `[AUTO_AI][${engine.toUpperCase()}][runId=${runId}] ` +
+            `environment=${resolved.activeEnvironment} scanned=${accounting.scanned} ` +
+            `qualified=${accounting.qualified} watching=${accounting.watching} ` +
+            `rejected=${accounting.rejected} accounted=${accounting.accountedFor} ` +
+            `countInvariantOk=${accounting.countInvariantOk} executed=${executedList.length} ` +
+            `skipped=${Array.isArray(payload.skipped) ? payload.skipped.length : 0}`,
+          );
 
           for (const item of executedList) {
             const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
@@ -145,12 +200,12 @@ export async function POST(req: Request) {
               confidence: typeof item?.confidence === 'number' ? item.confidence : null,
               recommendation: typeof item?.expectedRR === 'number' ? `RR ${item.expectedRR}` : `${engine.toUpperCase()}_AUTO`,
               reason: `Auto AI ${engine.toUpperCase()} opened trade during all-engine run ${runId}`,
-              rawPayload: { runId, scanMode, engine, executionMode: 'all_engines_sequential', item },
+              rawPayload: { runId, scanMode, engine, executionMode: 'all_engines_sequential', accounting, item },
               edge: edgeSnapshotFromSignal(signal),
             });
           }
 
-          engineResults.push({ engine, result: payload });
+          engineResults.push({ engine, accounting, executionReadiness: payload.executionReadiness ?? null, result: payload });
         } catch (engineError) {
           engineResults.push({
             engine,
@@ -162,6 +217,10 @@ export async function POST(req: Request) {
       results.push({
         user: row.user_id,
         preferredEngine,
+        activeEnvironment: resolved.activeEnvironment,
+        isLiveTrading: resolved.isLiveTrading,
+        platformLiveTradingEnabled: resolved.platformLiveTradingEnabled,
+        liveTradingAcknowledged: resolved.liveTradingAcknowledged,
         executionMode: 'all_engines_sequential',
         engines: engineResults,
       });
@@ -170,13 +229,25 @@ export async function POST(req: Request) {
     }
   }
 
+  console.log(
+    `[AUTO_AI][SUMMARY][runId=${runId}] users=${results.length} scanned=${scanned} ` +
+    `qualified=${qualified} watching=${watching} rejected=${rejected} ` +
+    `accounted=${qualified + watching + rejected} countMismatches=${countMismatches} ` +
+    `executed=${executed} skipped=${skipped}`,
+  );
+
   return NextResponse.json({
     ok: true,
     runId,
     scanMode,
     pairs,
     users: results.length,
+    scanned,
     qualified,
+    watching,
+    rejected,
+    accountedFor: qualified + watching + rejected,
+    countMismatches,
     executed,
     skipped,
     executionMode: 'all_engines_sequential',
