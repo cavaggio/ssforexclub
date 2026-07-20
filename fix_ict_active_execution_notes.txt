@@ -1,0 +1,1 @@
+ICT execute button blocker fixed by aligning ICT_ENGINE_MODE=active with the native execution gate. Practice/paper execution remains exempt from live-only acknowledgement; shadow remains analysis-only; legacy live remains accepted.
