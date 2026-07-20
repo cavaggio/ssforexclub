@@ -1,0 +1,42 @@
+name: Debug qualified execution
+
+on:
+  push:
+    branches:
+      - fix/execute-every-qualified-trade
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run apply:v3-entry
+      - name: Run focused contract
+        run: node --test server/qualifiedExecutionContract.test.js
+      - name: Run full suite with concise failure tail
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/full-test.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "===== FULL TEST FAILURE TAIL ====="
+            tail -n 300 /tmp/full-test.log
+            exit "$status"
+          fi
+          tail -n 60 /tmp/full-test.log
