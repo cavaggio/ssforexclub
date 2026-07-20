@@ -28,17 +28,31 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run apply:v3-entry
-      - name: Commit generated server source
+      - name: Generate dashboard source and capture diagnostics
         shell: bash
         run: |
-          git add server/pprEngine.js server/oandaTrade.js server/pprAutoTrade.js
+          mkdir -p debug
+          set +e
+          (
+            cd web
+            npm ci
+            npm run apply:ppr
+            npm run apply:ppr
+          ) > debug/web-apply.log 2>&1
+          status=$?
+          echo "web_apply_status=$status" >> debug/web-apply.log
+          exit 0
+      - name: Commit generated source
+        shell: bash
+        run: |
+          git add server/pprEngine.js server/oandaTrade.js server/pprAutoTrade.js web debug/web-apply.log
           if git diff --cached --quiet; then
             echo "Generated source is already committed."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Commit generated PPR live execution source"
+          git commit -m "Commit generated PPR server and dashboard source"
           git push origin HEAD:fix/ppr-80-live-counts
       - uses: actions/upload-artifact@v4
         with:
@@ -47,4 +61,7 @@ jobs:
             server/pprEngine.js
             server/oandaTrade.js
             server/pprAutoTrade.js
+            web/lib/scannerEngine.js
+            web/components/scanner-status-card.tsx
+            debug/web-apply.log
           if-no-files-found: error
