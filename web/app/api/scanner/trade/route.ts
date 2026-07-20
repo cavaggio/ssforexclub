@@ -75,7 +75,7 @@ export async function POST(req: Request) {
   }
 
   return callScannerForCurrentUser({
-    internalPath: '/api/internal/oanda/trade',
+    internalPath: '/api/internal/oanda/v3-trade',
     logTag: 'V3_RECENT_SIGNAL_TRADE',
     payloadKey: 'trade',
     // Practice/paper execution remains available. Live execution still requires
