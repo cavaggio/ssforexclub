@@ -12,7 +12,7 @@ delete process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT;
 const { executeIctTrade } = await import('./ictExecution.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
-const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 85, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
+const ACTIVE_CFG = { mode: 'active', autoTradeEnabled: true, minConfidence: 80, minRR: 1.5, maxRiskPercent: 1, signalTtlSec: 300 };
 const freshId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 30_000}`;
 
 const validParams = (over = {}) => ({
@@ -21,8 +21,6 @@ const validParams = (over = {}) => ({
   ...over,
 });
 
-// Confidence ≥ 85 so the central auto-execution floor passes; tests that need a
-// rejection override it explicitly.
 const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 92, rr: 2.5, signalId: freshId(), ...over });
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });
 
@@ -40,13 +38,13 @@ function paperClient() {
 }
 
 const baseDeps = (over = {}) => ({
-  client: paperClient(), now: NOW, cfg: LIVE_CFG,
+  client: paperClient(), now: NOW, cfg: ACTIVE_CFG,
   getAnalysis: goodAnalysis(), getAccount: goodAccount,
   reconcile: async () => false, getOpen: async () => [], autoAi: true,
   ...over,
 });
 
-test('paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION', async () => {
+test('ICT active mode executes a practice trade without FOREX_ALLOW_LIVE_EXECUTION', async () => {
   const client = paperClient();
   const r = await executeIctTrade(validParams(), baseDeps({ client }));
   assert.equal(r.success, true, r.reason);
@@ -54,10 +52,28 @@ test('paper Auto AI trade executes WITHOUT FOREX_ALLOW_LIVE_EXECUTION', async ()
   assert.equal(client.calls.length, 1);
 });
 
-test('auto execution rejects confidence below the 85 threshold', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 84 }) }));
+test('legacy ICT live mode remains executable on a practice account', async () => {
+  const client = paperClient();
+  const r = await executeIctTrade(validParams(), baseDeps({
+    client,
+    cfg: { ...ACTIVE_CFG, mode: 'live' },
+  }));
+  assert.equal(r.success, true, r.reason);
+  assert.equal(client.calls.length, 1);
+});
+
+test('ICT shadow mode remains blocked', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({
+    cfg: { ...ACTIVE_CFG, mode: 'shadow' },
+  }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /84 < 85/);
+  assert.match(r.reason, /ICT execution disabled/);
+});
+
+test('auto execution rejects confidence below the 80 threshold', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /79 < 80/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {
@@ -68,9 +84,6 @@ test('insufficient margin blocks the paper trade with the exact message', async 
 });
 
 test('open stop risk exhausts the stricter daily-loss budget before the portfolio cap', async () => {
-  // Existing open trade: 250,000 EUR_USD, entry 1.10, stop 1.08 → $5,000 risk
-  // on a $10,000 account. The 2.5% projected daily-loss budget must fail first,
-  // before the redundant 4.5% total-open-risk cap is evaluated.
   const heavyOpen = async () => [
     { instrument: 'EUR_USD', currentUnits: '250000', price: '1.10', stopLossOrder: { price: '1.08' } },
   ];
