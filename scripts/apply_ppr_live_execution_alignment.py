@@ -28,6 +28,37 @@ engine = engine.replace(
     "minConfidence: Math.max(80, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 80))),",
 )
 
+previous_readiness_helper = """
+export function pprExecutionReadiness({ client = null, config = pprConfig() } = {}) {
+  const environment = String(client?.environment || 'practice').toLowerCase();
+  const autoTradeEnabled = String(process.env.FOREX_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true';
+  const liveExecutionAllowed = String(process.env.FOREX_ALLOW_LIVE_EXECUTION || 'false').toLowerCase() === 'true';
+  const blockers = [];
+  if (!autoTradeEnabled) blockers.push('FOREX_AUTO_TRADE_ENABLED is not true on Railway');
+  if (environment !== 'live') blockers.push(`active broker environment is ${environment}, not live`);
+  if (environment === 'live' && !liveExecutionAllowed) blockers.push('FOREX_ALLOW_LIVE_EXECUTION is not true on Railway');
+  return {
+    environment,
+    autoTradeEnabled,
+    liveExecutionAllowed,
+    orderSubmissionReady: autoTradeEnabled && (environment !== 'live' || liveExecutionAllowed),
+    liveReady: environment === 'live' && autoTradeEnabled && liveExecutionAllowed,
+    minConfidence: config.minConfidence,
+    minRR: config.minRR,
+    blockers,
+  };
+}
+
+export function pprScanCounts({ qualified = [], watchCandidates = [], rejected = [] } = {}) {
+  const qualifiedCount = Array.isArray(qualified) ? qualified.length : 0;
+  const watchCount = Array.isArray(watchCandidates) ? watchCandidates.length : 0;
+  const rejectedCount = Array.isArray(rejected) ? rejected.length : 0;
+  const accountedFor = qualifiedCount + watchCount + rejectedCount;
+  return { qualifiedCount, watchCount, rejectedCount, accountedFor };
+}
+
+"""
+
 readiness_helper = """
 export function pprExecutionReadiness({ client = null, config = pprConfig() } = {}) {
   const environment = String(client?.environment || 'practice').toLowerCase();
@@ -65,14 +96,18 @@ export function pprScanCounts({ qualified = [], watchCandidates = [], rejected =
 }
 
 """
-engine = replace_once(
-    engine,
-    "export function getPprWatchlist() {",
-    readiness_helper + "export function getPprWatchlist() {",
-    "PPR readiness/count helpers",
-)
 
-old_return = """  return {
+if previous_readiness_helper in engine:
+    engine = engine.replace(previous_readiness_helper, readiness_helper, 1)
+else:
+    engine = replace_once(
+        engine,
+        "export function getPprWatchlist() {",
+        readiness_helper + "export function getPprWatchlist() {",
+        "PPR readiness/count helpers",
+    )
+
+base_return = """  return {
     engine: 'ppr',
     architecture: 'independent_ppr_raw_market_data',
     watchlist: allowedWatchlist,
@@ -81,6 +116,40 @@ old_return = """  return {
     rejected,
     meta: {
       pairsScanned: requested.length,
+      generatedAt: new Date().toISOString(),
+      managementCutoffEt: '10:00',
+      afterCutoff: 'manual_only',
+      newsPolicy: 'not_configured',
+    },
+  };"""
+previous_generated_return = """  const counts = pprScanCounts({ qualified, watchCandidates, rejected });
+  const config = pprConfig();
+  const executionReadiness = pprExecutionReadiness({ client, config });
+  const countInvariantOk = requested.length === counts.accountedFor;
+  log(
+    `scan complete scanned=${requested.length} qualified=${counts.qualifiedCount} ` +
+    `watching=${counts.watchCount} rejected=${counts.rejectedCount} ` +
+    `accounted=${counts.accountedFor} countInvariantOk=${countInvariantOk} ` +
+    `liveReady=${executionReadiness.liveReady}`,
+  );
+
+  return {
+    engine: 'ppr',
+    architecture: 'independent_ppr_raw_market_data',
+    watchlist: allowedWatchlist,
+    qualified,
+    watchCandidates,
+    rejected,
+    meta: {
+      pairsScanned: requested.length,
+      qualifiedCount: counts.qualifiedCount,
+      watchCount: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk,
+      minConfidence: config.minConfidence,
+      minRR: config.minRR,
+      executionReadiness,
       generatedAt: new Date().toISOString(),
       managementCutoffEt: '10:00',
       afterCutoff: 'manual_only',
@@ -121,7 +190,11 @@ new_return = """  const counts = pprScanCounts({ qualified, watchCandidates, rej
       newsPolicy: 'not_configured',
     },
   };"""
-engine = replace_once(engine, old_return, new_return, "PPR scan count/readiness metadata")
+
+if previous_generated_return in engine:
+    engine = engine.replace(previous_generated_return, new_return, 1)
+else:
+    engine = replace_once(engine, base_return, new_return, "PPR scan count/readiness metadata")
 
 for marker in [
     "PPR_MIN_CONFIDENCE', 80",
@@ -131,7 +204,7 @@ for marker in [
     "export function pprScanCounts",
     "qualifiedCount: counts.qualifiedCount",
     "countInvariantOk",
-    "executionReadiness",
+    "executionMode=${executionReadiness.executionMode}",
 ]:
     if marker not in engine:
         raise RuntimeError(f"PPR engine execution alignment incomplete: missing {marker}")
