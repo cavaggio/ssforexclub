@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   CI: true
@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: fix/ppr-80-live-counts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,6 +28,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run apply:v3-entry
+      - name: Commit generated server source
+        shell: bash
+        run: |
+          git add server/pprEngine.js server/oandaTrade.js server/pprAutoTrade.js
+          if git diff --cached --quiet; then
+            echo "Generated source is already committed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Commit generated PPR live execution source"
+          git push origin HEAD:fix/ppr-80-live-counts
       - uses: actions/upload-artifact@v4
         with:
           name: ppr-generated-source
