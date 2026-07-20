@@ -11,11 +11,19 @@ test('ICT dashboard contract keeps one visible normalized row per scanned pair',
   const analyses = PAIRS.map((pair, index) => ({
     pair,
     signal: index === 0 ? 'buy' : index === 1 ? 'sell' : 'none',
+    confidence: index < 2 ? 90 : 40,
     rr: index < 2 ? 1.5 : 0.8,
     rejectionReasons: index < 2 ? [] : ['below current setup threshold'],
   }));
 
-  const scan = normalizeSelectedScan('ict', { analyses, meta: { pairsAnalyzed: 12 } });
+  const scan = normalizeSelectedScan('ict', {
+    analyses,
+    meta: {
+      pairsAnalyzed: 12,
+      executionMinConfidence: 80,
+      executionMinRR: 1.5,
+    },
+  });
   const visible = [...scan.qualified, ...scan.rejected];
 
   assert.equal(visible.length, 12);
