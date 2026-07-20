@@ -19,11 +19,25 @@ test('PPR normalization reports exact scanned, qualified, watching, and rejected
   assert.equal(scan.meta.minConfidence, 80);
 });
 
-test('generated dashboard shows PPR watching, count verification, and Auto AI readiness', () => {
-  const source = readFileSync(new URL('../components/scanner-status-card.tsx', import.meta.url), 'utf8');
-  assert.match(source, /label="Watching"/);
-  assert.match(source, /label="Count check"/);
-  assert.match(source, /label="Auto AI"/);
-  assert.match(source, /LIVE READY/);
-  assert.match(source, /PRACTICE READY/);
+test('PPR hot candidates keep missing confidence as null instead of converting it to 0%', () => {
+  const scan = normalizePprScan({
+    qualified: [],
+    watchCandidates: [{ pair: 'EUR_GBP', status: 'hot', confidence: null, reason: 'waiting for volume' }],
+    rejected: [],
+    meta: { pairsScanned: 1 },
+  });
+  assert.equal(scan.watchCandidates[0].confidence, null);
+  assert.equal(scan.watchCandidates[0].entryQualityConfidence, null);
+});
+
+test('generated dashboard shows PPR watching, practice readiness, and pending confidence', () => {
+  const scannerSource = readFileSync(new URL('../components/scanner-status-card.tsx', import.meta.url), 'utf8');
+  const panelSource = readFileSync(new URL('../components/native-engine-scan-panel.tsx', import.meta.url), 'utf8');
+  assert.match(scannerSource, /label="Watching"/);
+  assert.match(scannerSource, /label="Count check"/);
+  assert.match(scannerSource, /label="Auto AI"/);
+  assert.match(scannerSource, /LIVE READY/);
+  assert.match(scannerSource, /PRACTICE READY/);
+  assert.match(panelSource, /PENDING/);
+  assert.match(panelSource, /confidenceLabel/);
 });
