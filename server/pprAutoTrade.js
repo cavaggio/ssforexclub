@@ -37,6 +37,23 @@ function buildPprWatchState(scan) {
   };
 }
 
+function scanSummary(scan) {
+  const qualifiedCount = Array.isArray(scan?.qualified) ? scan.qualified.length : 0;
+  const watchCount = Array.isArray(scan?.watchCandidates) ? scan.watchCandidates.length : 0;
+  const rejectedCount = Array.isArray(scan?.rejected) ? scan.rejected.length : 0;
+  const accountedFor = qualifiedCount + watchCount + rejectedCount;
+  const scanned = Number(scan?.meta?.pairsScanned ?? accountedFor);
+  return {
+    scanned,
+    qualifiedCount,
+    watchCount,
+    rejectedCount,
+    accountedFor,
+    countInvariantOk: scanned === accountedFor,
+    executionReadiness: scan?.meta?.executionReadiness ?? null,
+  };
+}
+
 export async function runAutoPprForUser({
   client,
   now = new Date(),
@@ -60,17 +77,27 @@ export async function runAutoPprForUser({
   const scan = await scanPprMarket({ pairs: scanPairs, client, now, log });
   const qualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
   const watchState = buildPprWatchState(scan);
+  const counts = scanSummary(scan);
 
   if (!qualified.length) {
-    log(`scan complete qualified=0 executed=0 skipped=0 watch=${scan?.watchCandidates?.length || 0}`);
+    log(
+      `scan complete scanned=${counts.scanned} qualified=0 watching=${counts.watchCount} ` +
+      `rejected=${counts.rejectedCount} accounted=${counts.accountedFor} ` +
+      `countInvariantOk=${counts.countInvariantOk} executed=0 skipped=0`,
+    );
     return {
       engine: 'ppr',
       architecture: 'independent_ppr_raw_market_data',
       legacyScannerUsed: false,
       v3LogicUsed: false,
       ictLogicUsed: false,
-      scanned: scan?.meta?.pairsScanned ?? 0,
+      scanned: counts.scanned,
       qualified: 0,
+      watching: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk: counts.countInvariantOk,
+      executionReadiness: counts.executionReadiness,
       executed: [],
       skipped: [],
       watchCandidates: scan?.watchCandidates || [],
@@ -107,15 +134,24 @@ export async function runAutoPprForUser({
     }
   }
 
-  log(`scan complete qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
+  log(
+    `scan complete scanned=${counts.scanned} qualified=${qualified.length} watching=${counts.watchCount} ` +
+    `rejected=${counts.rejectedCount} accounted=${counts.accountedFor} ` +
+    `countInvariantOk=${counts.countInvariantOk} executed=${executed.length} skipped=${skipped.length}`,
+  );
   return {
     engine: 'ppr',
     architecture: 'independent_ppr_raw_market_data',
     legacyScannerUsed: false,
     v3LogicUsed: false,
     ictLogicUsed: false,
-    scanned: scan?.meta?.pairsScanned ?? qualified.length,
+    scanned: counts.scanned,
     qualified: qualified.length,
+    watching: counts.watchCount,
+    rejectedCount: counts.rejectedCount,
+    accountedFor: counts.accountedFor,
+    countInvariantOk: counts.countInvariantOk,
+    executionReadiness: counts.executionReadiness,
     executed,
     skipped,
     watchCandidates: scan?.watchCandidates || [],
