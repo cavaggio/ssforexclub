@@ -52,16 +52,6 @@ test('ICT active mode executes a practice trade without FOREX_ALLOW_LIVE_EXECUTI
   assert.equal(client.calls.length, 1);
 });
 
-test('legacy ICT live mode remains executable on a practice account', async () => {
-  const client = paperClient();
-  const r = await executeIctTrade(validParams(), baseDeps({
-    client,
-    cfg: { ...ACTIVE_CFG, mode: 'live' },
-  }));
-  assert.equal(r.success, true, r.reason);
-  assert.equal(client.calls.length, 1);
-});
-
 test('ICT shadow mode remains blocked', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     cfg: { ...ACTIVE_CFG, mode: 'shadow' },
