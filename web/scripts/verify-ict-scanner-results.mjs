@@ -10,8 +10,12 @@ const scannerCard = fs.readFileSync(path.join(webRoot, 'components', 'scanner-st
 
 assert.match(scannerEngine, /signal === 'buy' \|\| signal === 'sell'/);
 assert.match(scannerEngine, /signal === 'buy' \|\| signal === 'long'/);
+assert.match(scannerEngine, /confidence >= minConfidence/);
+assert.match(scannerEngine, /rr >= minRR/);
+assert.match(scannerEngine, /executionMinConfidence/);
+assert.match(scannerEngine, /executionMinRR/);
 assert.match(scannerCard, /const qualified = selectedEngine === 'v3'/);
 assert.match(scannerCard, /const rejected = selectedEngine === 'v3'/);
 assert.doesNotMatch(scannerCard, /const qualified = selectedEngine === 'ppr'/);
 
-console.log('ICT dashboard result mapping verified.');
+console.log('ICT dashboard result mapping and execution-threshold alignment verified.');
