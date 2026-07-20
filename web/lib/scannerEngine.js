@@ -131,15 +131,35 @@ export function normalizePprScan(rawValue) {
   };
 }
 
-function normalizeIctItem(value) {
+function normalizeIctItem(value, thresholds) {
   const item = object(value);
   const signal = text(item.signal, 'none').toLowerCase();
-  const qualified = signal === 'buy' || signal === 'sell' || signal === 'long' || signal === 'short';
+  const directional = signal === 'buy' || signal === 'sell' || signal === 'long' || signal === 'short';
   const direction = signal === 'buy' || signal === 'long'
     ? 'long'
     : signal === 'sell' || signal === 'short'
       ? 'short'
       : null;
+  const confidence = numberOrNull(item.confidence);
+  const rr = numberOrNull(item.rr ?? item.riskReward ?? item.expectedRR);
+  const minConfidence = numberOrNull(thresholds?.minConfidence) ?? 85;
+  const minRR = numberOrNull(thresholds?.minRR) ?? 1.5;
+  const rejectionReasons = Array.isArray(item.rejectionReasons)
+    ? item.rejectionReasons.map((reason) => text(reason)).filter(Boolean)
+    : [];
+
+  if (directional && !(confidence != null && confidence >= minConfidence)) {
+    rejectionReasons.push(`ICT confidence below execution threshold (${confidence ?? 'n/a'} < ${minConfidence}).`);
+  }
+  if (directional && !(rr != null && rr >= minRR)) {
+    rejectionReasons.push(`ICT risk/reward below execution threshold (${rr ?? 'n/a'} < ${minRR}).`);
+  }
+
+  const qualified = directional &&
+    confidence != null && confidence >= minConfidence &&
+    rr != null && rr >= minRR;
+  const narrative = text(item.ictNarrative);
+
   return {
     ...item,
     v3Comparison: undefined,
@@ -147,14 +167,24 @@ function normalizeIctItem(value) {
     architecture: 'independent_ict_raw_market_data',
     status: qualified ? 'qualified' : 'rejected',
     direction,
-    reason: text(item.ictNarrative) || (Array.isArray(item.rejectionReasons) ? item.rejectionReasons.join('; ') : ''),
-    rejectionReasons: Array.isArray(item.rejectionReasons) ? item.rejectionReasons.map((reason) => text(reason)).filter(Boolean) : [],
+    confidence,
+    rr,
+    reason: qualified ? narrative : rejectionReasons.join('; ') || narrative,
+    rejectionReasons,
+    executionThresholds: { minConfidence, minRR },
   };
 }
 
 export function normalizeIctScan(rawValue) {
   const raw = object(rawValue);
-  const analyses = Array.isArray(raw.analyses) ? raw.analyses.map(normalizeIctItem) : [];
+  const meta = object(raw.meta);
+  const executionThresholds = {
+    minConfidence: numberOrNull(meta.executionMinConfidence ?? meta.minConfidence) ?? 85,
+    minRR: numberOrNull(meta.executionMinRR ?? meta.minRR) ?? 1.5,
+  };
+  const analyses = Array.isArray(raw.analyses)
+    ? raw.analyses.map((item) => normalizeIctItem(item, executionThresholds))
+    : [];
   return {
     engine: 'ict',
     architecture: 'independent_ict_raw_market_data',
@@ -165,7 +195,9 @@ export function normalizeIctScan(rawValue) {
     rejected: analyses.filter((item) => item.status !== 'qualified'),
     analyses,
     meta: {
-      ...object(raw.meta),
+      ...meta,
+      executionMinConfidence: executionThresholds.minConfidence,
+      executionMinRR: executionThresholds.minRR,
       scanner: 'ict_independent',
       calculationSource: 'independent_ict_raw_market_data',
     },
