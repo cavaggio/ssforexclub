@@ -13,7 +13,7 @@
     "lint": "next lint",
     "pretypecheck": "npm run apply:ppr",
     "typecheck": "tsc --noEmit",
-    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js && node scripts/verify-ict-scanner-results.mjs"
+    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js lib/autoAiAllEngines.contract.test.js && node scripts/verify-ict-scanner-results.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
