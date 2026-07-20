@@ -1,5 +1,6 @@
 import { scanPprMarket } from './pprEngine.js';
 import { executePprTrade } from './pprExecution.js';
+import { pprRuntimeConfig } from './pprEnv.js';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
@@ -54,6 +55,32 @@ function scanSummary(scan) {
   };
 }
 
+function disabledResult({ runtime, reason }) {
+  return {
+    engine: 'ppr',
+    architecture: 'independent_ppr_raw_market_data',
+    legacyScannerUsed: false,
+    v3LogicUsed: false,
+    ictLogicUsed: false,
+    scanned: 0,
+    qualified: 0,
+    watching: 0,
+    rejectedCount: 0,
+    accountedFor: 0,
+    countInvariantOk: true,
+    executionReadiness: null,
+    executed: [],
+    skipped: [{ reason }],
+    watchCandidates: [],
+    rejected: [],
+    hotPairs: [],
+    nearQualifiedPairs: [],
+    lateEntryPairs: [],
+    pprRuntime: runtime,
+    autoManageEnabled: runtime.aiAutoManageEnabled,
+  };
+}
+
 export async function runAutoPprForUser({
   client,
   now = new Date(),
@@ -64,6 +91,19 @@ export async function runAutoPprForUser({
   const tag = `[AUTO_AI][PPR][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (message) => console.log(`${tag} account=${account} engine=ppr ${message}`);
+  const runtime = pprRuntimeConfig();
+
+  log(
+    `runtime engineMode=${runtime.engineMode} active=${runtime.engineActive} ` +
+    `autoExecution=${runtime.aiAutoExecutionEnabled} autoManage=${runtime.aiAutoManageEnabled}`,
+  );
+
+  if (!runtime.engineActive) {
+    const reason = `PPR engine inactive (PPR_ENGINE_MODE=${runtime.engineMode})`;
+    log(`skipped reason="${reason}"`);
+    return disabledResult({ runtime, reason });
+  }
+
   const scanPairs = Array.isArray(pairs) && pairs.length
     ? [...new Set(pairs.map((pair) => String(pair).trim().toUpperCase()).filter(Boolean))]
     : null;
@@ -102,6 +142,42 @@ export async function runAutoPprForUser({
       skipped: [],
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
+      pprRuntime: runtime,
+      autoManageEnabled: runtime.aiAutoManageEnabled,
+      ...watchState,
+    };
+  }
+
+  if (!runtime.aiAutoExecutionEnabled) {
+    const skipped = qualified.map((candidate) => ({
+      pair: candidate.pair,
+      direction: candidate.direction,
+      reason: 'PPR AI auto execution disabled (PPR_AI_AUTO_EXECUTION_ENABLED=false)',
+    }));
+    log(
+      `scan complete scanned=${counts.scanned} qualified=${qualified.length} watching=${counts.watchCount} ` +
+      `rejected=${counts.rejectedCount} accounted=${counts.accountedFor} ` +
+      `countInvariantOk=${counts.countInvariantOk} executed=0 skipped=${skipped.length}`,
+    );
+    return {
+      engine: 'ppr',
+      architecture: 'independent_ppr_raw_market_data',
+      legacyScannerUsed: false,
+      v3LogicUsed: false,
+      ictLogicUsed: false,
+      scanned: counts.scanned,
+      qualified: qualified.length,
+      watching: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk: counts.countInvariantOk,
+      executionReadiness: counts.executionReadiness,
+      executed: [],
+      skipped,
+      watchCandidates: scan?.watchCandidates || [],
+      rejected: scan?.rejected || [],
+      pprRuntime: runtime,
+      autoManageEnabled: runtime.aiAutoManageEnabled,
       ...watchState,
     };
   }
@@ -156,6 +232,8 @@ export async function runAutoPprForUser({
     skipped,
     watchCandidates: scan?.watchCandidates || [],
     rejected: scan?.rejected || [],
+    pprRuntime: runtime,
+    autoManageEnabled: runtime.aiAutoManageEnabled,
     ...watchState,
   };
 }
