@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { QualifiedExecuteButton } from '@/components/qualified-execute-button';
 
 type Engine = 'ict' | 'ppr';
 
@@ -135,6 +136,8 @@ function PprCard({ item }: { item: any }) {
           : ''}
       </div>
 
+      {status === 'qualified' && <QualifiedExecuteButton engine="ppr" signal={item} />}
+
       <div style={{ marginTop: 10, color: '#ffcc66', fontSize: 12, lineHeight: 1.5 }}>
         Automated PPR scanning, entry, and management stop at 10:00 AM ET. After 10:00 AM ET, open PPR positions use broker-attached stop loss and take profit and are manual-management only.
       </div>
@@ -163,6 +166,7 @@ function IctCard({ item }: { item: any }) {
       {Array.isArray(item?.rejectionReasons) && item.rejectionReasons.length > 0 && (
         <div style={{ marginTop: 10, color: '#ff8888', fontSize: 12 }}>{item.rejectionReasons.join(' · ')}</div>
       )}
+      {status === 'qualified' && <QualifiedExecuteButton engine="ict" signal={item} />}
     </article>
   );
 }
@@ -174,7 +178,10 @@ export function NativeEngineScanPanel({ engine, qualified, watchCandidates, reje
         ...watchCandidates,
         ...rejected,
       ]
-    : [...qualified, ...rejected];
+    : [
+        ...qualified.map((item) => ({ ...item, status: item?.status || 'qualified' })),
+        ...rejected,
+      ];
 
   return (
     <section style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 20 }}>
