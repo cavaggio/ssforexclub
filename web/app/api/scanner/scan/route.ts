@@ -3,6 +3,9 @@
  *
  * The persisted Clerk-scoped Scanner / Auto AI engine is authoritative. The
  * browser may scope pairs, but it cannot choose or override the engine.
+ *
+ * When Auto AI is enabled and PPR is selected, the scanner is instructed to
+ * execute every signal classified as qualified in the same user-scoped scan.
  */
 
 import { NextResponse } from 'next/server';
@@ -44,9 +47,11 @@ async function handle(req: Request) {
   }
 
   let selectedEngine: 'ict' | 'v3' | 'ppr';
+  let autoAiTradingEnabled = false;
   try {
     const settings = await getUserTradingSettings(userId);
     selectedEngine = normalizeScanEngine(settings.autoAiEngine) as 'ict' | 'v3' | 'ppr';
+    autoAiTradingEnabled = settings.autoAiTradingEnabled;
   } catch (err) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : String(err) },
@@ -55,11 +60,15 @@ async function handle(req: Request) {
   }
 
   const route = scanEndpointForEngine(selectedEngine);
+  const autoExecute = autoAiTradingEnabled && selectedEngine === 'ppr';
   const response = await callScannerForCurrentUser({
     internalPath: route.internalPath,
     logTag: route.logTag,
     payloadKey: 'scan',
-    extraBody: { pairs: normalizePairs(body.pairs) },
+    extraBody: {
+      pairs: normalizePairs(body.pairs),
+      autoExecute,
+    },
   });
 
   let envelope: Record<string, any> = {};
@@ -75,6 +84,7 @@ async function handle(req: Request) {
         ...envelope,
         ok: false,
         selectedEngine,
+        autoExecute,
         scan: {
           engine: selectedEngine,
           qualified: [],
@@ -88,19 +98,30 @@ async function handle(req: Request) {
   }
 
   try {
-    const scan = normalizeSelectedScan(selectedEngine, envelope.scan);
+    const rawScan = (envelope.scan ?? {}) as Record<string, any>;
+    const scan = normalizeSelectedScan(selectedEngine, rawScan);
+    const execution = rawScan.execution ?? rawScan.meta?.execution ?? null;
+    if (execution) {
+      (scan as any).execution = execution;
+      (scan.meta as any).execution = execution;
+    }
+
     console.log(
       `[DASHBOARD_SCAN] selectedEngine=${selectedEngine} endpoint=${route.internalPath} ` +
       `qualified=${scan.qualified?.length ?? 0} watch=${scan.watchCandidates?.length ?? 0} ` +
-      `rejected=${scan.rejected?.length ?? 0}`,
+      `rejected=${scan.rejected?.length ?? 0} autoExecute=${autoExecute} ` +
+      `attempted=${execution?.attempted ?? 0} executed=${execution?.executedCount ?? 0} ` +
+      `skipped=${execution?.skippedCount ?? 0}`,
     );
 
     return NextResponse.json({
       ...envelope,
       ok: true,
       selectedEngine,
+      autoExecute,
       scanner: scan.scanner,
       architecture: scan.architecture,
+      execution,
       scan,
     });
   } catch (err) {
@@ -112,6 +133,7 @@ async function handle(req: Request) {
       {
         ok: false,
         selectedEngine,
+        autoExecute,
         error: `${selectedEngine.toUpperCase()} scanner response could not be rendered safely. Please run the scan again.`,
         scan: {
           engine: selectedEngine,
