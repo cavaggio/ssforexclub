@@ -39,6 +39,7 @@ import {
   checkDailyRiskLock,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
+  riskConfig,
 } from './riskManager.js';
 import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
 
@@ -71,6 +72,12 @@ export function isDailyTradeCapReached(count) {
 }
 const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS       || '5.0');
 const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');
+
+export function pprExecutionConfidenceFloor() {
+  const configured = Number(process.env.PPR_MIN_CONFIDENCE || 80);
+  return Math.max(80, Math.min(100, Number.isFinite(configured) ? configured : 80));
+}
+
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
 const FIXED_LOT_SIZE        = parseFloat(process.env.FOREX_FIXED_LOT_SIZE        || '0.01');
 const MIN_FREE_MARGIN_PCT        = parseFloat(process.env.FOREX_MIN_FREE_MARGIN_PCT   || '25');
@@ -712,7 +719,7 @@ export async function executeTrade(signal, options = {}) {
   }
 
   // ── Guard 3: Entry execution probability ─────────────────────────────────
-  const executionConfidenceFloor = MIN_CONFIDENCE;
+  const executionConfidenceFloor = purePprExecution ? pprExecutionConfidenceFloor() : MIN_CONFIDENCE;
   if (!Number.isFinite(confidence) || confidence < executionConfidenceFloor) {
     return blocked(`Entry-quality confidence ${Number.isFinite(confidence) ? confidence : 'n/a'}% < minimum ${executionConfidenceFloor}%`);
   }
@@ -721,7 +728,12 @@ export async function executeTrade(signal, options = {}) {
   }
   // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
   if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(confidence);
+    const confCheck = purePprExecution
+      ? checkAutoExecutionConfidence(confidence, {
+          ...riskConfig(),
+          autoExecutionMinConfidence: executionConfidenceFloor,
+        })
+      : checkAutoExecutionConfidence(confidence);
     if (!confCheck.passed) return blocked(confCheck.reason);
   }
 
@@ -949,7 +961,7 @@ export async function executeTrade(signal, options = {}) {
     accountBalanceUSD: balanceUSD,
     confidence: signal.confidence,
     score: signal.score,
-    minConfidence: MIN_CONFIDENCE,
+    minConfidence: executionConfidenceFloor,
     spreadPips: signal.spreadPips,
     maxSpreadPips: maxSpread,
     volatilityState: signal.volatilityState,

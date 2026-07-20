@@ -29,7 +29,7 @@ export function pprConfig() {
   return {
     dailyEma: Math.max(2, Math.floor(numberEnv('PPR_DAILY_EMA', 9))),
     h1Ema: Math.max(2, Math.floor(numberEnv('PPR_H1_EMA', 9))),
-    minConfidence: Math.max(0, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 85))),
+    minConfidence: Math.max(80, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 80))),
     minRR: Math.max(1.5, numberEnv('PPR_MIN_RR', 1.5)),
     volumeLookback: Math.max(5, Math.floor(numberEnv('PPR_VOLUME_LOOKBACK', 20))),
     volumeSpikeMultiplier: Math.max(1, numberEnv('PPR_VOLUME_SPIKE_MULTIPLIER', 1.5)),
@@ -39,6 +39,35 @@ export function pprConfig() {
     poolClusterTolerancePips: Math.max(0.5, numberEnv('PPR_POOL_CLUSTER_TOLERANCE_PIPS', 2)),
     maxSpreadPips: Math.max(0.1, numberEnv('PPR_MAX_SPREAD_PIPS', numberEnv('FOREX_MAX_SPREAD_PIPS', 5))),
   };
+}
+
+
+export function pprExecutionReadiness({ client = null, config = pprConfig() } = {}) {
+  const environment = String(client?.environment || 'practice').toLowerCase();
+  const autoTradeEnabled = String(process.env.FOREX_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true';
+  const liveExecutionAllowed = String(process.env.FOREX_ALLOW_LIVE_EXECUTION || 'false').toLowerCase() === 'true';
+  const blockers = [];
+  if (!autoTradeEnabled) blockers.push('FOREX_AUTO_TRADE_ENABLED is not true on Railway');
+  if (environment !== 'live') blockers.push(`active broker environment is ${environment}, not live`);
+  if (environment === 'live' && !liveExecutionAllowed) blockers.push('FOREX_ALLOW_LIVE_EXECUTION is not true on Railway');
+  return {
+    environment,
+    autoTradeEnabled,
+    liveExecutionAllowed,
+    orderSubmissionReady: autoTradeEnabled && (environment !== 'live' || liveExecutionAllowed),
+    liveReady: environment === 'live' && autoTradeEnabled && liveExecutionAllowed,
+    minConfidence: config.minConfidence,
+    minRR: config.minRR,
+    blockers,
+  };
+}
+
+export function pprScanCounts({ qualified = [], watchCandidates = [], rejected = [] } = {}) {
+  const qualifiedCount = Array.isArray(qualified) ? qualified.length : 0;
+  const watchCount = Array.isArray(watchCandidates) ? watchCandidates.length : 0;
+  const rejectedCount = Array.isArray(rejected) ? rejected.length : 0;
+  const accountedFor = qualifiedCount + watchCount + rejectedCount;
+  return { qualifiedCount, watchCount, rejectedCount, accountedFor };
 }
 
 export function getPprWatchlist() {
@@ -1087,6 +1116,17 @@ export async function scanPprMarket({ pairs = null, client, now = new Date(), lo
     }
   }
 
+  const counts = pprScanCounts({ qualified, watchCandidates, rejected });
+  const config = pprConfig();
+  const executionReadiness = pprExecutionReadiness({ client, config });
+  const countInvariantOk = requested.length === counts.accountedFor;
+  log(
+    `scan complete scanned=${requested.length} qualified=${counts.qualifiedCount} ` +
+    `watching=${counts.watchCount} rejected=${counts.rejectedCount} ` +
+    `accounted=${counts.accountedFor} countInvariantOk=${countInvariantOk} ` +
+    `liveReady=${executionReadiness.liveReady}`,
+  );
+
   return {
     engine: 'ppr',
     architecture: 'independent_ppr_raw_market_data',
@@ -1096,6 +1136,14 @@ export async function scanPprMarket({ pairs = null, client, now = new Date(), lo
     rejected,
     meta: {
       pairsScanned: requested.length,
+      qualifiedCount: counts.qualifiedCount,
+      watchCount: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk,
+      minConfidence: config.minConfidence,
+      minRR: config.minRR,
+      executionReadiness,
       generatedAt: new Date().toISOString(),
       managementCutoffEt: '10:00',
       afterCutoff: 'manual_only',
