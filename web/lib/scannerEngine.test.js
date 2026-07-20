@@ -68,7 +68,7 @@ test('PPR normalization strips foreign engine fields and outside-watchlist pairs
   assert.equal(scan.qualified[0].architecture, 'independent_ppr_raw_market_data');
 });
 
-test('ICT normalization maps native buy/sell signals and preserves all 12 scanned rows', () => {
+test('ICT normalization maps execution-eligible native buy/sell signals and preserves all 12 scanned rows', () => {
   const analyses = ICT_12_PAIRS.map((pair, index) => ({
     pair,
     signal: index === 0 ? 'buy' : index === 1 ? 'sell' : 'none',
@@ -81,7 +81,11 @@ test('ICT normalization maps native buy/sell signals and preserves all 12 scanne
 
   const scan = normalizeSelectedScan('ict', {
     analyses,
-    meta: { pairsAnalyzed: ICT_12_PAIRS.length },
+    meta: {
+      pairsAnalyzed: ICT_12_PAIRS.length,
+      executionMinConfidence: 85,
+      executionMinRR: 1.5,
+    },
   });
 
   assert.equal(scan.qualified.length, 2);
@@ -93,6 +97,21 @@ test('ICT normalization maps native buy/sell signals and preserves all 12 scanne
     ICT_12_PAIRS,
   );
   assert.equal(JSON.stringify(scan).includes('v3Comparison'), false);
+});
+
+test('ICT directional rows below execution floors are rejected instead of advertised as qualified', () => {
+  const scan = normalizeSelectedScan('ict', {
+    analyses: [
+      { pair: 'USD_CAD', signal: 'sell', confidence: 96, rr: 0.55, rejectionReasons: [] },
+      { pair: 'EUR_JPY', signal: 'buy', confidence: 84, rr: 2.0, rejectionReasons: [] },
+    ],
+    meta: { executionMinConfidence: 85, executionMinRR: 1.5 },
+  });
+
+  assert.equal(scan.qualified.length, 0);
+  assert.equal(scan.rejected.length, 2);
+  assert.match(scan.rejected[0].reason, /risk\/reward below execution threshold/i);
+  assert.match(scan.rejected[1].reason, /confidence below execution threshold/i);
 });
 
 test('authoritative dashboard generator limits the 1.5R visibility filter to V3 only', () => {
