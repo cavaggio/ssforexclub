@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Align ICT scanner qualification with the autonomous execution contract.
+"""Align ICT scanner qualification and execution with the active-mode contract.
 
-The dashboard and Auto AI runner must use the same confidence and R:R floors.
-This patch is idempotent because repository pretest/prebuild/prestart workflows
-regenerate and enforce source before every validation and deployment.
+The dashboard and Auto AI runner must use the same confidence/R:R floors, and
+ICT_ENGINE_MODE=active must authorize execution on the selected practice/paper
+account when ICT_AUTO_TRADE_ENABLED=true. Live-only acknowledgement remains
+required only when the selected broker environment is live.
 """
 
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "server" / "ictEngine.js"
 AUTO = ROOT / "server" / "ictAutoTrade.js"
+EXECUTION = ROOT / "server" / "ictExecution.js"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -34,6 +36,14 @@ engine = engine.replace(
     "const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '2.0');",
     "const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '1.5');",
 )
+engine = engine.replace(
+    "export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'live'; }",
+    "export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'active' || ICT_MODE === 'live'; }",
+)
+engine = engine.replace(
+    "  return c.mode === 'live' && c.autoTradeEnabled === true;",
+    "  return (c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true;",
+)
 engine = replace_once(
     engine,
     "  return {\n    analyses,\n    meta: {\n      ictEngineMode: ICT_MODE,\n      executionEnabled: isIctExecutionEnabled(),",
@@ -48,6 +58,8 @@ engine = replace_once(
 for marker in [
     "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
     "parseFloat(process.env.ICT_MIN_RR || '1.5')",
+    "ICT_MODE === 'active'",
+    "(c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true",
     "executionMinConfidence: executionConfig.minConfidence",
     "executionMinRR: executionConfig.minRR",
 ]:
@@ -89,4 +101,29 @@ for marker in [
         raise RuntimeError(f"ICT Auto AI alignment incomplete: missing {marker}")
 
 AUTO.write_text(auto, encoding="utf-8")
-print("ICT execution alignment enforced: confidence/RR-qualified rows match Auto AI attempts")
+
+
+execution = EXECUTION.read_text(encoding="utf-8")
+execution = execution.replace(
+    "requires ICT_ENGINE_MODE=live AND ICT_AUTO_TRADE_ENABLED=true,",
+    "requires ICT_ENGINE_MODE=active (or legacy live) AND ICT_AUTO_TRADE_ENABLED=true,",
+)
+execution = execution.replace(
+    "// ── 1. Execution enabled (mode=live AND auto-trade) — the default-off gate ──",
+    "// ── 1. Execution enabled (mode=active/live AND auto-trade) ────────────────",
+)
+execution = execution.replace(
+    "  if (!(config.mode === 'live' && config.autoTradeEnabled === true)) {",
+    "  if (!((config.mode === 'active' || config.mode === 'live') && config.autoTradeEnabled === true)) {",
+)
+
+for marker in [
+    "requires ICT_ENGINE_MODE=active (or legacy live)",
+    "config.mode === 'active' || config.mode === 'live'",
+    "ICT execution disabled (ICT_ENGINE_MODE=${config.mode}",
+]:
+    if marker not in execution:
+        raise RuntimeError(f"ICT executor active-mode alignment incomplete: missing {marker}")
+
+EXECUTION.write_text(execution, encoding="utf-8")
+print("ICT execution aligned: active mode executes qualified practice/paper trades; live safeguards remain live-only")
