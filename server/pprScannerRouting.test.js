@@ -8,34 +8,45 @@ import { runAutoForUser } from './autoAiRouter.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 
-test('generated server source registers a read-only native PPR scan endpoint', () => {
+test('generated server source scans natively and conditionally executes every qualified PPR signal', () => {
   const index = read('server/index.js');
   assert.match(index, /app\.post\('\/api\/internal\/oanda\/ppr-scan'/);
   assert.match(index, /import \{ scanPprMarket \} from '\.\/pprEngine\.js'/);
+  assert.match(index, /import \{ executePprTrade \} from '\.\/pprExecution\.js'/);
   const routeSection = index
     .split("app.post('/api/internal/oanda/ppr-scan'")[1]
-    .split("// POST /api/internal/oanda/ict")[0];
+    .split('// POST /api/internal/oanda/ict')[0];
   assert.match(routeSection, /scanPprMarket\(\{/);
+  assert.match(routeSection, /const autoExecute = req\.body\?\.autoExecute === true/);
+  assert.match(routeSection, /for \(const signal of qualified\)/);
+  assert.match(routeSection, /executePprTrade\(signal/);
+  assert.match(routeSection, /allQualifiedAttempted/);
   assert.match(routeSection, /legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false/);
-  assert.doesNotMatch(routeSection, /runAutoPprForUser|executePprTrade|runV3DashboardScan|scanForexPairs|analyzeICTPairs/);
+  assert.doesNotMatch(routeSection, /runAutoPprForUser|runV3DashboardScan|scanForexPairs|analyzeICTPairs/);
 });
 
-test('root generation reapplies PPR once before the final isolation pass', () => {
+test('root generation reapplies PPR execution patch before the final isolation pass', () => {
   const pkg = JSON.parse(read('package.json'));
   const command = pkg.scripts['apply:v3-entry'];
   const pprIndex = command.indexOf('scripts/apply_ppr_engine.py');
+  const qualifiedExecutionIndex = command.indexOf('scripts/apply_qualified_scan_execution.py');
   const isolationIndex = command.indexOf('scripts/enforce_engine_isolation.py');
   assert.ok(pprIndex >= 0);
-  assert.ok(isolationIndex > pprIndex);
+  assert.ok(qualifiedExecutionIndex > pprIndex);
+  assert.ok(isolationIndex > qualifiedExecutionIndex);
   assert.equal((command.match(/apply_ppr_engine\.py/g) || []).length, 1);
+  assert.equal((command.match(/apply_qualified_scan_execution\.py/g) || []).length, 1);
   assert.equal((command.match(/enforce_engine_isolation\.py/g) || []).length, 1);
 });
 
-test('dashboard route takes engine from server settings, not request body', () => {
+test('dashboard route takes engine from server settings and auto-executes only enabled PPR', () => {
   const route = read('web/app/api/scanner/scan/route.ts');
   assert.match(route, /getUserTradingSettings\(userId\)/);
   assert.match(route, /settings\.autoAiEngine/);
+  assert.match(route, /settings\.autoAiTradingEnabled/);
   assert.match(route, /scanEndpointForEngine\(selectedEngine\)/);
+  assert.match(route, /autoAiTradingEnabled && selectedEngine === 'ppr'/);
+  assert.match(route, /autoExecute,/);
   assert.doesNotMatch(route, /body\.engine|req\.body\?\.engine/);
 });
 
