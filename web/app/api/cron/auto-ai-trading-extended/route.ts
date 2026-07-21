@@ -10,12 +10,21 @@ export const runtime = 'nodejs';
 
 type ScanMode = 'full' | 'near_recheck' | 'hot_watch';
 type AutoAiEngine = 'ict' | 'v3' | 'ppr';
+type EngineWatchState = {
+  nearQualifiedPairs: Set<string>;
+  hotPairs: Set<string>;
+  lateEntryPairs: Set<string>;
+};
 
 const AUTO_AI_ENGINES: readonly AutoAiEngine[] = ['ict', 'v3', 'ppr'];
 
-function inWindow(now = new Date()) {
+function inScanWindow(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit',
+    timeZone: 'America/New_York',
+    hour12: false,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
   }).formatToParts(now);
   const read = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
   const weekday = read('weekday');
@@ -30,27 +39,28 @@ function normalizeMode(value: unknown): ScanMode {
 }
 
 function normalizeEngine(value: unknown): AutoAiEngine {
-  if (value === 'v3' || value === 'ppr') return value;
+  const engine = String(value || 'ict').toLowerCase();
+  if (engine === 'v3' || engine === 'ppr') return engine;
   return 'ict';
 }
 
-function executionOrder(preferredValue: unknown): AutoAiEngine[] {
-  const preferred = normalizeEngine(preferredValue);
-  return [preferred, ...AUTO_AI_ENGINES.filter((engine) => engine !== preferred)];
+function requestedEngine(value: unknown): AutoAiEngine | null {
+  if (value == null || String(value).trim() === '') return null;
+  const normalized = String(value).toLowerCase();
+  return AUTO_AI_ENGINES.includes(normalized as AutoAiEngine)
+    ? normalized as AutoAiEngine
+    : null;
 }
 
 function normalizePairs(value: unknown): string[] {
-  return Array.isArray(value) ? [...new Set(value.map((v) => String(v || '').trim()).filter(Boolean))] : [];
-}
-
-function addPairs(target: Set<string>, value: unknown) {
-  if (!Array.isArray(value)) return;
-  for (const pair of value) if (String(pair || '').trim()) target.add(String(pair).trim());
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))]
+    : [];
 }
 
 function count(value: unknown, fallback = 0): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 function scanAccounting(payload: Record<string, any>) {
@@ -78,20 +88,59 @@ function scanAccounting(payload: Record<string, any>) {
   };
 }
 
+function newWatchState(): EngineWatchState {
+  return {
+    nearQualifiedPairs: new Set<string>(),
+    hotPairs: new Set<string>(),
+    lateEntryPairs: new Set<string>(),
+  };
+}
+
+function addPairs(target: Set<string>, value: unknown) {
+  if (!Array.isArray(value)) return;
+  for (const raw of value) {
+    const pair = String(raw || '').trim().toUpperCase();
+    if (pair) target.add(pair);
+  }
+}
+
+function serializeWatchStates(states: Record<AutoAiEngine, EngineWatchState>) {
+  return Object.fromEntries(
+    AUTO_AI_ENGINES.map((engine) => [engine, {
+      nearQualifiedPairs: [...states[engine].nearQualifiedPairs],
+      hotPairs: [...states[engine].hotPairs],
+      lateEntryPairs: [...states[engine].lateEntryPairs],
+    }]),
+  );
+}
+
 export async function POST(req: Request) {
   const secret = process.env.AUTO_AI_CRON_SECRET;
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
-  if (!inWindow()) return NextResponse.json({ ok: true, skipped: 'outside_ny_entry_window' });
+  if (!inScanWindow()) {
+    return NextResponse.json({ ok: true, skipped: 'outside_ny_scan_window_02:00-10:00' });
+  }
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch {}
-  const runId = typeof body.runId === 'string' ? body.runId : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const runId = typeof body.runId === 'string'
+    ? body.runId
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const scanMode = normalizeMode(body.scanMode);
   const pairs = normalizePairs(body.pairs);
+  const engineFilter = requestedEngine(body.engine);
+
+  if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && !engineFilter) {
+    return NextResponse.json({
+      ok: false,
+      error: 'Targeted near/hot rechecks require an engine so watchlists cannot cross engine boundaries.',
+    }, { status: 400 });
+  }
   if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && pairs.length === 0) {
-    return NextResponse.json({ ok: true, runId, scanMode, skipped: 'no_pairs' });
+    return NextResponse.json({ ok: true, runId, scanMode, engine: engineFilter, skipped: 'no_pairs' });
   }
 
   const supabase = getServerSupabase();
@@ -101,10 +150,13 @@ export async function POST(req: Request) {
     .eq('auto_ai_trading_enabled', true);
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-  const near = new Set<string>();
-  const hot = new Set<string>();
-  const late = new Set<string>();
+  const watchStates: Record<AutoAiEngine, EngineWatchState> = {
+    ict: newWatchState(),
+    v3: newWatchState(),
+    ppr: newWatchState(),
+  };
   const results: Record<string, unknown>[] = [];
+  const enabledEngines = new Set<AutoAiEngine>();
   let scanned = 0;
   let qualified = 0;
   let watching = 0;
@@ -114,132 +166,144 @@ export async function POST(req: Request) {
   let countMismatches = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
+    const selectedEngine = normalizeEngine(row.auto_ai_engine);
+    if (engineFilter && selectedEngine !== engineFilter) continue;
+    enabledEngines.add(selectedEngine);
+
     try {
       const resolved = await resolveActiveBrokerForUser(row.user_id);
       if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
         results.push({
           user: row.user_id,
+          engine: selectedEngine,
           skipped: resolved.brokerCredentialStatus,
           activeEnvironment: resolved.activeEnvironment,
-          platformLiveTradingEnabled: resolved.platformLiveTradingEnabled,
-          liveTradingAcknowledged: resolved.liveTradingAcknowledged,
           reason: resolved.reason,
         });
         continue;
       }
+
       const credentials = await resolved.getCredentials();
       if (!credentials) {
-        results.push({ user: row.user_id, skipped: 'decrypt_failed' });
+        results.push({ user: row.user_id, engine: selectedEngine, skipped: 'decrypt_failed' });
         continue;
       }
 
-      const preferredEngine = normalizeEngine(row.auto_ai_engine);
-      const engineResults: Record<string, unknown>[] = [];
+      const result = await callInternalEndpoint('/api/internal/oanda/auto', {
+        apiKey: credentials.token,
+        accountId: credentials.accountId,
+        baseUrl: resolved.baseUrl,
+        environment: resolved.activeEnvironment,
+        runId: `${runId}-${selectedEngine}`,
+        scanMode,
+        pairs: engineFilter ? pairs : [],
+        engine: selectedEngine,
+      });
 
-      // Run engines sequentially so shared duplicate locks, open-risk limits, daily
-      // loss budgets, and trade caps are re-evaluated after every successful order.
-      for (const engine of executionOrder(preferredEngine)) {
-        try {
-          const result = await callInternalEndpoint('/api/internal/oanda/auto', {
-            apiKey: credentials.token,
-            accountId: credentials.accountId,
-            baseUrl: resolved.baseUrl,
-            environment: resolved.activeEnvironment,
-            runId: `${runId}-${engine}`,
+      if (!result.ok) {
+        results.push({ user: row.user_id, engine: selectedEngine, error: result.error, status: result.status });
+        continue;
+      }
+
+      const payload = (result.data ?? {}) as Record<string, any>;
+      const accounting = scanAccounting(payload);
+      const executedList = Array.isArray(payload.executed) ? payload.executed : [];
+      const state = watchStates[selectedEngine];
+
+      scanned += accounting.scanned;
+      qualified += accounting.qualified;
+      watching += accounting.watching;
+      rejected += accounting.rejected;
+      executed += executedList.length;
+      skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
+      if (!accounting.countInvariantOk) countMismatches += 1;
+
+      addPairs(state.nearQualifiedPairs, payload.nearQualifiedPairs);
+      addPairs(state.hotPairs, payload.hotPairs);
+      addPairs(state.lateEntryPairs, payload.lateEntryPairs);
+      for (const pair of state.lateEntryPairs) {
+        state.nearQualifiedPairs.delete(pair);
+        state.hotPairs.delete(pair);
+      }
+
+      console.log(
+        `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] selectedEngineOnly=true ` +
+        `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
+        `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
+        `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length}`,
+      );
+
+      for (const item of executedList) {
+        const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
+        await logTradeEvent({
+          userId: row.user_id,
+          broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+          brokerAccountId: credentials.accountId,
+          environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+          eventType: 'opened',
+          engine: selectedEngine,
+          strategy: typeof item?.strategy === 'string' ? item.strategy : selectedEngine.toUpperCase(),
+          brokerTradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+          instrument: typeof item?.pair === 'string' ? item.pair : null,
+          tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+          brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+          side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
+          units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
+          entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
+          sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
+          tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
+          confidence: typeof item?.confidence === 'number' ? item.confidence : null,
+          recommendation: typeof item?.expectedRR === 'number'
+            ? `RR ${item.expectedRR}`
+            : `${selectedEngine.toUpperCase()}_AUTO`,
+          reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during selected-engine run ${runId}`,
+          rawPayload: {
+            runId,
             scanMode,
-            pairs,
-            engine,
-          });
-          if (!result.ok) {
-            engineResults.push({ engine, error: result.error, status: result.status });
-            continue;
-          }
-
-          const payload = (result.data ?? {}) as Record<string, any>;
-          const accounting = scanAccounting(payload);
-          const executedList = Array.isArray(payload.executed) ? payload.executed : [];
-          scanned += accounting.scanned;
-          qualified += accounting.qualified;
-          watching += accounting.watching;
-          rejected += accounting.rejected;
-          if (!accounting.countInvariantOk) countMismatches += 1;
-          executed += executedList.length;
-          skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
-          addPairs(near, payload.nearQualifiedPairs);
-          addPairs(hot, payload.hotPairs);
-          addPairs(late, payload.lateEntryPairs);
-
-          console.log(
-            `[AUTO_AI][${engine.toUpperCase()}][runId=${runId}] ` +
-            `environment=${resolved.activeEnvironment} scanned=${accounting.scanned} ` +
-            `qualified=${accounting.qualified} watching=${accounting.watching} ` +
-            `rejected=${accounting.rejected} accounted=${accounting.accountedFor} ` +
-            `countInvariantOk=${accounting.countInvariantOk} executed=${executedList.length} ` +
-            `skipped=${Array.isArray(payload.skipped) ? payload.skipped.length : 0}`,
-          );
-
-          for (const item of executedList) {
-            const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
-            await logTradeEvent({
-              userId: row.user_id,
-              broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
-              brokerAccountId: credentials.accountId,
-              environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
-              eventType: 'opened',
-              engine,
-              strategy: typeof item?.strategy === 'string' ? item.strategy : engine.toUpperCase(),
-              brokerTradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-              instrument: typeof item?.pair === 'string' ? item.pair : null,
-              tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-              brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-              side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
-              units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
-              entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
-              sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
-              tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
-              confidence: typeof item?.confidence === 'number' ? item.confidence : null,
-              recommendation: typeof item?.expectedRR === 'number' ? `RR ${item.expectedRR}` : `${engine.toUpperCase()}_AUTO`,
-              reason: `Auto AI ${engine.toUpperCase()} opened trade during all-engine run ${runId}`,
-              rawPayload: { runId, scanMode, engine, executionMode: 'all_engines_sequential', accounting, item },
-              edge: edgeSnapshotFromSignal(signal),
-            });
-          }
-
-          engineResults.push({ engine, accounting, executionReadiness: payload.executionReadiness ?? null, result: payload });
-        } catch (engineError) {
-          engineResults.push({
-            engine,
-            error: engineError instanceof Error ? engineError.message : String(engineError),
-          });
-        }
+            engine: selectedEngine,
+            executionMode: 'selected_engine_only',
+            accounting,
+            item,
+          },
+          edge: edgeSnapshotFromSignal(signal),
+        });
       }
 
       results.push({
         user: row.user_id,
-        preferredEngine,
+        selectedEngine,
         activeEnvironment: resolved.activeEnvironment,
-        isLiveTrading: resolved.isLiveTrading,
-        platformLiveTradingEnabled: resolved.platformLiveTradingEnabled,
-        liveTradingAcknowledged: resolved.liveTradingAcknowledged,
-        executionMode: 'all_engines_sequential',
-        engines: engineResults,
+        executionMode: 'selected_engine_only',
+        accounting,
+        executionAllowed: payload.executionAllowed === true,
+        result: payload,
       });
     } catch (err) {
-      results.push({ user: row.user_id, error: err instanceof Error ? err.message : String(err) });
+      results.push({
+        user: row.user_id,
+        engine: selectedEngine,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
+  const engineWatchStates = serializeWatchStates(watchStates);
+  const selectedStates = engineFilter ? [watchStates[engineFilter]] : AUTO_AI_ENGINES.map((engine) => watchStates[engine]);
+  const aggregateNear = [...new Set(selectedStates.flatMap((state) => [...state.nearQualifiedPairs]))];
+  const aggregateHot = [...new Set(selectedStates.flatMap((state) => [...state.hotPairs]))];
+  const aggregateLate = [...new Set(selectedStates.flatMap((state) => [...state.lateEntryPairs]))];
+
   console.log(
-    `[AUTO_AI][SUMMARY][runId=${runId}] users=${results.length} scanned=${scanned} ` +
-    `qualified=${qualified} watching=${watching} rejected=${rejected} ` +
-    `accounted=${qualified + watching + rejected} countMismatches=${countMismatches} ` +
-    `executed=${executed} skipped=${skipped}`,
+    `[AUTO_AI][SUMMARY][runId=${runId}] selectedEngineOnly=true engineFilter=${engineFilter ?? 'none'} ` +
+    `users=${results.length} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
+    `rejected=${rejected} executed=${executed} skipped=${skipped}`,
   );
 
   return NextResponse.json({
     ok: true,
     runId,
     scanMode,
+    engine: engineFilter,
     pairs,
     users: results.length,
     scanned,
@@ -250,12 +314,14 @@ export async function POST(req: Request) {
     countMismatches,
     executed,
     skipped,
-    executionMode: 'all_engines_sequential',
-    enabledEngines: AUTO_AI_ENGINES,
-    nearQualifiedPairs: [...near],
-    hotPairs: [...hot],
-    lateEntryPairs: [...late],
-    entryWindow: '02:00-10:00 America/New_York, Monday-Friday',
+    executionMode: 'selected_engine_only',
+    enabledEngines: [...enabledEngines],
+    engineWatchStates,
+    nearQualifiedPairs: aggregateNear,
+    hotPairs: aggregateHot,
+    lateEntryPairs: aggregateLate,
+    scanWindow: '02:00-10:00 America/New_York, Monday-Friday',
+    executionWindow: '02:15-10:00 America/New_York, Monday-Friday',
     results,
   });
 }
