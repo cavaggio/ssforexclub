@@ -26,6 +26,7 @@ type CloseEvent = {
   unitsClosed: number | null;
   realizedPL: number | null;
   side: 'long' | 'short' | null;
+  fullyClosed: boolean;
   raw: OandaTransaction;
 };
 
@@ -164,6 +165,58 @@ async function saveLastSyncedId(
   }
 }
 
+async function updateExecutionReservationAfterClose({
+  tradeId,
+  closeReason,
+  fullyClosed,
+}: {
+  tradeId: string | null;
+  closeReason: string;
+  fullyClosed: boolean;
+}): Promise<'released' | 'loss_locked' | null> {
+  if (!fullyClosed || !tradeId) return null;
+
+  try {
+    const supabase = getServerSupabase();
+    const now = new Date();
+
+    if (closeReason === 'SL_HIT') {
+      const lockedUntil = new Date(
+        now.getTime() + Number(process.env.POST_LOSS_REENTRY_LOCK_HOURS || 24) * 3600000,
+      ).toISOString();
+      const { error } = await supabase
+        .from('execution_reservations')
+        .update({
+          status: 'loss_locked',
+          locked_until: lockedUntil,
+          expires_at: lockedUntil,
+          updated_at: now.toISOString(),
+        })
+        .eq('trade_id', String(tradeId));
+      if (error) throw error;
+      return 'loss_locked';
+    }
+
+    const { error } = await supabase
+      .from('execution_reservations')
+      .update({
+        status: 'released',
+        expires_at: now.toISOString(),
+        locked_until: null,
+        updated_at: now.toISOString(),
+      })
+      .eq('trade_id', String(tradeId))
+      .in('status', ['reserved', 'open']);
+    if (error) throw error;
+    return 'released';
+  } catch (err) {
+    console.warn(
+      `[OANDA_TX_SYNC] reservation close-state update failed tradeId=${tradeId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
 async function fetchTransactions(args: SyncArgs, sinceId: string | null): Promise<{
   transactions: OandaTransaction[];
   lastTransactionId: string | null;
@@ -238,6 +291,7 @@ function closeEventsFromTransaction(tx: OandaTransaction): CloseEvent[] {
       unitsClosed: numeric(closed?.units) == null ? null : Math.abs(Number(closed.units)),
       realizedPL: numeric(closed?.realizedPL ?? closed?.pl ?? tx.pl),
       side,
+      fullyClosed: true,
       raw: tx,
     });
   }
@@ -255,6 +309,7 @@ function closeEventsFromTransaction(tx: OandaTransaction): CloseEvent[] {
       unitsClosed: numeric(reduced?.units) == null ? null : Math.abs(Number(reduced.units)),
       realizedPL: numeric(reduced?.realizedPL ?? reduced?.pl ?? tx.pl),
       side,
+      fullyClosed: false,
       raw: tx,
     });
   }
@@ -271,6 +326,8 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
   closeEvents: number;
   logged: number;
   failed: number;
+  reservationsReleased: number;
+  reservationsLossLocked: number;
   lastTransactionId: string | null;
   error?: string;
 }> {
@@ -288,6 +345,8 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
     let logged = 0;
     let failed = 0;
     let closeEvents = 0;
+    let reservationsReleased = 0;
+    let reservationsLossLocked = 0;
 
     for (const tx of transactions) {
       const events = closeEventsFromTransaction(tx);
@@ -302,7 +361,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
           broker: 'oanda',
           brokerAccountId: args.brokerAccountId,
           environment: args.environment,
-          eventType: 'closed',
+          eventType: event.fullyClosed ? 'closed' : 'partial_closed',
           instrument: event.instrument,
           tradeId: event.tradeId,
           brokerOrderId: event.transactionId,
@@ -316,6 +375,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
             source: 'oanda_transaction_sync',
             transactionId: event.transactionId,
             reason: event.reason,
+            fullyClosed: event.fullyClosed,
             transaction: event.raw,
           },
           edge: {
@@ -330,10 +390,14 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
         if (result.ok) logged += 1;
         else failed += 1;
 
-        if (result.ok && closeReason === 'SL_HIT' && event.tradeId) {
-          const supabase = getServerSupabase();
-          const lockedUntil = new Date(Date.now() + Number(process.env.POST_LOSS_REENTRY_LOCK_HOURS || 24) * 3600000).toISOString();
-          await supabase.from('execution_reservations').update({ status: 'loss_locked', locked_until: lockedUntil, updated_at: new Date().toISOString() }).eq('trade_id', String(event.tradeId));
+        if (result.ok && event.fullyClosed && event.tradeId) {
+          const reservationState = await updateExecutionReservationAfterClose({
+            tradeId: event.tradeId,
+            closeReason,
+            fullyClosed: event.fullyClosed,
+          });
+          if (reservationState === 'released') reservationsReleased += 1;
+          if (reservationState === 'loss_locked') reservationsLossLocked += 1;
         }
       }
     }
@@ -345,7 +409,8 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
     }
 
     console.log(
-      `${tag} fetched=${transactions.length} closeEvents=${closeEvents} logged=${logged} failed=${failed} last=${nextLast ?? 'none'}`,
+      `${tag} fetched=${transactions.length} closeEvents=${closeEvents} logged=${logged} failed=${failed} ` +
+      `reservationsReleased=${reservationsReleased} reservationsLossLocked=${reservationsLossLocked} last=${nextLast ?? 'none'}`,
     );
 
     return {
@@ -356,6 +421,8 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
       closeEvents,
       logged,
       failed,
+      reservationsReleased,
+      reservationsLossLocked,
       lastTransactionId: nextLast ?? null,
     };
   } catch (err) {
@@ -370,6 +437,8 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
       closeEvents: 0,
       logged: 0,
       failed: 0,
+      reservationsReleased: 0,
+      reservationsLossLocked: 0,
       lastTransactionId: null,
       error: message,
     };
