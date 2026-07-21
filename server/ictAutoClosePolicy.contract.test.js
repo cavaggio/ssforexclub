@@ -9,10 +9,10 @@ const routeSource = readFileSync(
   'utf8',
 );
 
-test('ICT close-capable management runs on a 30-minute cadence without startup close review', () => {
+test('ICT close-capable management has a hard 30-minute cadence without startup close review', () => {
   assert.match(
     schedulerSource,
-    /ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = interval\('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000\)/,
+    /ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math\.max\(1800000, interval\('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000\)\)/,
   );
   assert.match(
     schedulerSource,
@@ -25,6 +25,10 @@ test('ICT close-capable management runs on a 30-minute cadence without startup c
 });
 
 test('generic reassessor cannot directly close broker trades', () => {
+  assert.match(
+    reassessorSource,
+    /REASSESSMENT_INTERVAL_MS = Math\.max\(30 \* 60 \* 1000, Number\(process\.env\.ACTIVE_TRADE_REASSESS_INTERVAL_MS/,
+  );
   assert.match(reassessorSource, /const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false/);
   assert.match(
     reassessorSource,
