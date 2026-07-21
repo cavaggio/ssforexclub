@@ -70,6 +70,7 @@ test('broker-clear reconciliation releases stale open reservations by account, p
     accountId: 'account-2',
     pair: 'EUR/USD',
     direction: 'short',
+    statuses: ['open'],
   });
   assert.equal(cleanup.released, 1);
 
@@ -80,6 +81,35 @@ test('broker-clear reconciliation releases stale open reservations by account, p
     direction: 'short',
   });
   assert.equal(retry.allowed, true);
+});
+
+test('broker-clear reconciliation does not erase a concurrent in-flight reservation', async () => {
+  reset();
+  const fingerprint = 'account-4:USD_CAD:long:setup-d';
+  const first = await reservations.reserveExecution({
+    fingerprint,
+    accountId: 'account-4',
+    pair: 'USD_CAD',
+    direction: 'long',
+  });
+  assert.equal(first.allowed, true);
+
+  const cleanup = await reservations.releaseExecutionsForPairDirection({
+    accountId: 'account-4',
+    pair: 'USD_CAD',
+    direction: 'long',
+    statuses: ['open'],
+  });
+  assert.equal(cleanup.released, 0);
+
+  const blocked = await reservations.reserveExecution({
+    fingerprint,
+    accountId: 'account-4',
+    pair: 'USD_CAD',
+    direction: 'long',
+  });
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason, /setup already reserved/);
 });
 
 test('broker-clear cleanup does not erase a post-stop-loss reentry lock', async () => {
@@ -98,6 +128,7 @@ test('broker-clear cleanup does not erase a post-stop-loss reentry lock', async 
     accountId: 'account-3',
     pair: 'GBP_USD',
     direction: 'long',
+    statuses: ['open'],
   });
   assert.equal(cleanup.released, 0);
 
@@ -120,6 +151,7 @@ test('all broker close and reconciliation paths carry reservation cleanup contra
   );
 
   assert.match(tradeSource, /releaseExecutionsForPairDirection/);
+  assert.match(tradeSource, /statuses: \['open'\]/);
   assert.match(tradeSource, /\[STALE RESERVATION RELEASED\]/);
   assert.match(tradeSource, /releaseExecutionByTradeId\(tradeId, 'released'\)/);
   assert.match(tradeSource, /releaseExecution\(executionReservationHash, 'no_fill'\)/);

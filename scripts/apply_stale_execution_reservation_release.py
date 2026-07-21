@@ -4,8 +4,8 @@
 The reservation layer is intentionally separate from the in-memory pair lock. A
 broker-side TP/SL/manual close could clear the pair lock while leaving the setup
 reservation marked `open` for the remainder of its TTL. This patch makes broker
-truth authoritative and releases stale reservations on reconciliation and every
-full-close path.
+truth authoritative and releases stale open reservations on reconciliation and
+all terminal execution paths without touching a concurrent in-flight reservation.
 """
 
 from pathlib import Path
@@ -52,15 +52,17 @@ trade = replace_once(
     "  } else {\n"
     "    console.log(`[BROKER POSITION CLEAR] ${key} — no broker position exists`);\n"
     "  }\n\n"
-    "  // Broker truth also releases any setup reservation left `open` by an\n"
-    "  // earlier TP, SL, manual close, or process handoff. Loss locks are excluded\n"
-    "  // by the reservation helper and remain enforceable.\n"
+    "  // Broker truth releases only an old `open` reservation. A `reserved` row\n"
+    "  // may belong to another execution request that is currently between its\n"
+    "  // atomic reservation and broker fill, so reconciliation must not erase it.\n"
+    "  // Loss locks are also excluded and remain enforceable.\n"
     "  try {\n"
     "    const cleanup = await releaseExecutionsForPairDirection({\n"
     "      accountId: client?.accountId,\n"
     "      pair,\n"
     "      direction,\n"
     "      status: 'released',\n"
+    "      statuses: ['open'],\n"
     "    });\n"
     "    if (cleanup.released > 0) {\n"
     "      console.warn(`[STALE RESERVATION RELEASED] ${key} — released ${cleanup.released} local reservation(s)`);\n"
@@ -80,8 +82,8 @@ trade = replace_once(
     "    activeTrades.delete(`${instrument}_long`);\n"
     "    activeTrades.delete(`${instrument}_short`);\n"
     "    await Promise.all([\n"
-    "      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'long' }),\n"
-    "      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'short' }),\n"
+    "      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'long', statuses: ['open'] }),\n"
+    "      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'short', statuses: ['open'] }),\n"
     "    ]);\n"
     "    console.log(`[TRADE] ✓ Position closed: ${instrument}`);",
     "legacy position close reservation cleanup",
@@ -140,6 +142,7 @@ trade = replace_once(
 for marker in [
     "releaseExecutionByTradeId",
     "releaseExecutionsForPairDirection",
+    "statuses: ['open']",
     "[STALE RESERVATION RELEASED]",
     "await releaseExecution(executionReservationHash, 'no_fill')",
     "await releaseExecutionByTradeId(tradeId, 'released')",
@@ -165,4 +168,4 @@ if "await releaseExecution(params.__reservationHash, 'no_fill')" not in ict:
     raise RuntimeError("stale reservation ICT patch incomplete")
 
 ICT.write_text(ict, encoding="utf-8")
-print("Stale execution reservations now release from broker reconciliation and full-close paths")
+print("Stale open execution reservations release without clearing in-flight reserved orders")
