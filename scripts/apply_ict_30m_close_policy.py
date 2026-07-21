@@ -29,8 +29,8 @@ scheduler = SCHEDULER.read_text(encoding="utf-8")
 scheduler = replace_once(
     scheduler,
     "export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 300000);",
-    "export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000);",
-    "30-minute management cadence",
+    "export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math.max(1800000, interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000));",
+    "hard 30-minute management cadence",
 )
 scheduler = replace_once(
     scheduler,
@@ -41,7 +41,7 @@ scheduler = replace_once(
     "remove startup auto-close review",
 )
 for marker in [
-    "ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000",
+    "Math.max(1800000, interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000))",
     "The first close-capable review must occur on the 30-minute scheduler cadence",
 ]:
     if marker not in scheduler:
@@ -53,8 +53,8 @@ reassessor = REASSESSOR.read_text(encoding="utf-8")
 reassessor = replace_once(
     reassessor,
     "const REASSESSMENT_INTERVAL_MS = Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 15 * 60 * 1000); // 15 min — active management cadence",
-    "const REASSESSMENT_INTERVAL_MS = Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 30 * 60 * 1000); // 30 min — active management cadence",
-    "reassessor 30-minute cadence",
+    "const REASSESSMENT_INTERVAL_MS = Math.max(30 * 60 * 1000, Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 30 * 60 * 1000)); // 30 min — hard minimum cadence",
+    "reassessor hard 30-minute cadence",
 )
 reassessor = replace_once(
     reassessor,
@@ -98,7 +98,7 @@ reassessor = reassessor.replace(
 )
 
 for marker in [
-    "30 * 60 * 1000); // 30 min — active management cadence",
+    "Math.max(30 * 60 * 1000, Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS",
     "const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false;",
     "DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED && AUTO_CLOSE_ENABLED",
     "initialRiskPips: originalSlPips",
@@ -128,4 +128,4 @@ if "export function shouldCloseIctTrade" in route:
     raise RuntimeError("ICT active-management route exports an unsupported Next.js helper")
 ACTIVE_MANAGEMENT_ROUTE.write_text(route, encoding="utf-8")
 
-print("ICT close policy enforced: 30m cadence, no generic direct closes, stop proximity exposed")
+print("ICT close policy enforced: hard 30m cadence, no generic direct closes, stop proximity exposed")
