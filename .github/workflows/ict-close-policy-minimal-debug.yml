@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/ict-30m-near-sl-close-policy
+  pull_request:
+    branches:
+      - main
 
 jobs:
   diagnose:
