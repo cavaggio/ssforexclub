@@ -1,0 +1,34 @@
+name: Fixed Risk Policy
+
+on:
+  push:
+    branches:
+      - agent/enforce-1-25-risk-20-pip-sl
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'scripts/enforce_fixed_risk_20pip.py'
+      - 'package.json'
+      - '.github/workflows/fixed-risk-policy.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Apply generated source policies
+        run: npm run apply:v3-entry
+      - name: Run risk and execution regression tests
+        run: >-
+          node --test
+          server/riskManager.test.js
+          server/fixedTradeRiskPolicy.test.js
+          server/ictExecution.test.js
+          server/ictExecutionPaper.test.js
+          server/oandaTradeCap.test.js
