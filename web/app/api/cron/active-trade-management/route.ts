@@ -10,10 +10,25 @@ export const runtime = 'nodejs';
 const mask = (id: string) => id && id.length > 6 ? `${id.slice(0, 4)}…${id.slice(-2)}` : '***';
 
 type AutoAiEngine = 'ict' | 'v3' | 'ppr';
+type CloseDecision = {
+  close: boolean;
+  reason: string | null;
+  policy: string;
+  details?: Record<string, unknown>;
+};
+
+const ICT_MIN_REASSESSMENT_AGE_MINUTES = 30;
+const ICT_NEAR_SL_RISK_FRACTION = 0.25;
+const ICT_NEAR_SL_MIN_PIPS = 2;
 
 function normalizeEngine(value: unknown): AutoAiEngine {
   if (value === 'v3' || value === 'ppr') return value;
   return 'ict';
+}
+
+function finiteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function nyContext(now = new Date()) {
@@ -37,7 +52,98 @@ function nyContext(now = new Date()) {
   };
 }
 
-function shouldClose(plan: Record<string, any>, afterVolatilityCutoff: boolean) {
+/**
+ * ICT positions are intentionally protected from scanner/requalification exits.
+ * An ICT broker close is permitted only when ALL of these are true:
+ *   1. The position has been open for at least 30 minutes.
+ *   2. The active-trade reassessment reports HIGH reversal/invalidation risk.
+ *   3. The reassessment explicitly recommends CLOSE/EXIT, not merely REVIEW.
+ *   4. Price is within the final 25% of the original stop distance (minimum 2 pips).
+ */
+function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
+  const minutesElapsed = finiteNumber(plan.minutesElapsed) ?? 0;
+  const reassessmentDue = minutesElapsed >= ICT_MIN_REASSESSMENT_AGE_MINUTES;
+
+  const reversalRisk = String(
+    plan.reversalRisk ??
+    plan.detail?.invalidation?.reversalRisk ??
+    '',
+  ).toLowerCase();
+  const invalidationSeverity = String(plan.invalidationSeverity ?? '').toLowerCase();
+  const trendWeakeningSeverity = String(plan.trendWeakeningSeverity ?? '').toLowerCase();
+  const momentum = String(plan.momentumStatus ?? '').toLowerCase();
+  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toUpperCase();
+  const lifecycleUrgency = String(plan.lifecycleRecommendation?.urgency ?? '').toLowerCase();
+  const lifecycleSource = String(plan.lifecycleRecommendation?.source ?? '').toLowerCase();
+  const recommendedAction = String(plan.recommendedAction ?? '').toUpperCase();
+
+  const explicitHighReversal =
+    reversalRisk === 'high' ||
+    (plan.invalidationDetected === true && invalidationSeverity === 'high') ||
+    (
+      lifecycleUrgency === 'high' &&
+      (lifecycleSource === 'thesis_invalidation' || lifecycleSource === 'institutional_reversal')
+    ) ||
+    (
+      plan.trendWeakeningDetected === true &&
+      trendWeakeningSeverity === 'high' &&
+      plan.institutionalFlow?.opposes === true &&
+      (momentum.includes('reversal') || momentum.includes('reversed'))
+    );
+
+  const explicitCloseRecommendation =
+    plan.invalidationDetected === true ||
+    recommendedAction === 'EXIT_INVALIDATED' ||
+    lifecycleAction === 'CLOSE' ||
+    lifecycleAction === 'EXIT' ||
+    lifecycleAction === 'EXIT_NOW';
+
+  const distanceToSL = finiteNumber(plan.distanceToSL);
+  const initialRiskPips = finiteNumber(
+    plan.initialRiskPips ??
+    plan.originalRiskPips ??
+    plan.detail?.lifecycle?.originalSlPips,
+  );
+  const nearSlThresholdPips = initialRiskPips != null && initialRiskPips > 0
+    ? Math.max(ICT_NEAR_SL_MIN_PIPS, initialRiskPips * ICT_NEAR_SL_RISK_FRACTION)
+    : null;
+  const closeToStop =
+    distanceToSL != null &&
+    distanceToSL >= 0 &&
+    nearSlThresholdPips != null &&
+    distanceToSL <= nearSlThresholdPips;
+
+  const close = Boolean(
+    reassessmentDue &&
+    explicitHighReversal &&
+    explicitCloseRecommendation &&
+    closeToStop,
+  );
+
+  return {
+    close,
+    reason: close ? 'ict_30m_high_reversal_near_sl' : null,
+    policy: 'ict_30m_high_reversal_near_sl_only',
+    details: {
+      minutesElapsed,
+      reassessmentDue,
+      explicitHighReversal,
+      explicitCloseRecommendation,
+      closeToStop,
+      distanceToSL,
+      initialRiskPips,
+      nearSlThresholdPips,
+      reversalRisk: reversalRisk || null,
+      invalidationSeverity: invalidationSeverity || null,
+      lifecycleAction: lifecycleAction || null,
+      lifecycleUrgency: lifecycleUrgency || null,
+      lifecycleSource: lifecycleSource || null,
+    },
+  };
+}
+
+// Preserve the existing V3 management policy. ICT never uses this function.
+function shouldCloseV3Trade(plan: Record<string, any>, afterVolatilityCutoff: boolean): CloseDecision {
   const reversalRisk = String(
     plan.reversalRisk ??
     plan.detail?.invalidation?.reversalRisk ??
@@ -68,6 +174,7 @@ function shouldClose(plan: Record<string, any>, afterVolatilityCutoff: boolean) 
       : slowedByFive
         ? '5pm_et_volatility_or_momentum_slowdown'
         : null,
+    policy: 'v3_existing_active_management',
   };
 }
 
@@ -98,7 +205,7 @@ function eventTradeId(row: Record<string, unknown>): string {
   );
 }
 
-async function openPprTradeIds(userId: string): Promise<Set<string>> {
+async function openTradeStrategies(userId: string): Promise<Map<string, AutoAiEngine>> {
   const fallback = { rows: [] as unknown[] };
   const { rows } = await listTradeLogsForUser(userId, { limit: 200 }).catch(() => fallback);
   const latestByTrade = new Map<string, Record<string, unknown>>();
@@ -112,11 +219,15 @@ async function openPprTradeIds(userId: string): Promise<Set<string>> {
     if (!current || timestamp > currentTimestamp) latestByTrade.set(tradeId, rawRow);
   }
 
-  const ids = new Set<string>();
+  const strategies = new Map<string, AutoAiEngine>();
   for (const [tradeId, row] of latestByTrade) {
-    if (row.event_type === 'opened' && eventStrategy(row) === 'ppr') ids.add(tradeId);
+    if (row.event_type !== 'opened') continue;
+    const strategy = eventStrategy(row);
+    if (strategy === 'ict' || strategy === 'v3' || strategy === 'ppr') {
+      strategies.set(tradeId, strategy);
+    }
   }
-  return ids;
+  return strategies;
 }
 
 export async function POST(req: Request) {
@@ -144,16 +255,15 @@ export async function POST(req: Request) {
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const userId = row.user_id;
-    const engine = normalizeEngine(row.auto_ai_engine);
+    const selectedEngine = normalizeEngine(row.auto_ai_engine);
 
     try {
-      const pprTradeIds = await openPprTradeIds(userId);
+      const tradeStrategies = await openTradeStrategies(userId);
 
-      if (engine === 'ppr') {
+      if (selectedEngine === 'ppr') {
         results.push({
           user: mask(userId),
-          engine,
-          protectedPprTradeIds: [...pprTradeIds],
+          engine: selectedEngine,
           skipped: 'ppr_native_management_not_configured_sl_tp_only',
         });
         continue;
@@ -161,12 +271,12 @@ export async function POST(req: Request) {
 
       const resolved = await resolveActiveBrokerForUser(userId);
       if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
-        results.push({ user: mask(userId), engine, skipped: resolved.brokerCredentialStatus });
+        results.push({ user: mask(userId), engine: selectedEngine, skipped: resolved.brokerCredentialStatus });
         continue;
       }
       const credentials = await resolved.getCredentials();
       if (!credentials) {
-        results.push({ user: mask(userId), engine, skipped: 'decrypt_failed' });
+        results.push({ user: mask(userId), engine: selectedEngine, skipped: 'decrypt_failed' });
         continue;
       }
       const credentialBody = {
@@ -177,17 +287,44 @@ export async function POST(req: Request) {
       };
       const reassess = await callInternalEndpoint('/api/internal/oanda/active-trades/reassess', credentialBody);
       if (!reassess.ok) {
-        results.push({ user: mask(userId), engine, reassessError: reassess.error });
+        results.push({ user: mask(userId), engine: selectedEngine, reassessError: reassess.error });
         continue;
       }
       const allPlans = ((reassess.data as any)?.trades ?? []) as Array<Record<string, any>>;
-      const protectedPlans = allPlans.filter((plan) => pprTradeIds.has(String(plan.tradeId ?? '')));
-      const trades = allPlans.filter((plan) => !pprTradeIds.has(String(plan.tradeId ?? '')));
       const userResults: Record<string, unknown>[] = [];
-      reviewed += trades.length;
+      const evaluations: Record<string, unknown>[] = [];
+      reviewed += allPlans.length;
 
-      for (const plan of trades) {
-        const decision = shouldClose(plan, ny.afterVolatilityCutoff);
+      for (const plan of allPlans) {
+        const tradeId = String(plan.tradeId ?? '');
+        const tradeEngine = tradeStrategies.get(tradeId) ?? selectedEngine;
+
+        if (tradeEngine === 'ppr') {
+          evaluations.push({ tradeId, instrument: plan.instrument, engine: tradeEngine, skipped: 'ppr_sl_tp_only' });
+          continue;
+        }
+
+        const decision = tradeEngine === 'ict'
+          ? shouldCloseIctTrade(plan)
+          : shouldCloseV3Trade(plan, ny.afterVolatilityCutoff);
+
+        evaluations.push({
+          tradeId,
+          instrument: plan.instrument,
+          engine: tradeEngine,
+          close: decision.close,
+          policy: decision.policy,
+          reason: decision.reason,
+          details: decision.details,
+        });
+
+        if (tradeEngine === 'ict') {
+          console.log(
+            `[ACTIVE_TRADE_MANAGEMENT][ICT] tradeId=${tradeId} pair=${plan.instrument} ` +
+            `close=${decision.close} ${JSON.stringify(decision.details ?? {})}`,
+          );
+        }
+
         if (!decision.close) continue;
         const closeResult = await callInternalEndpoint('/api/internal/oanda/close', {
           ...credentialBody,
@@ -200,6 +337,8 @@ export async function POST(req: Request) {
         userResults.push({
           tradeId: plan.tradeId,
           instrument: plan.instrument,
+          engine: tradeEngine,
+          policy: decision.policy,
           reason: decision.reason,
           ok: closeResult.ok,
           result: closeResult.ok ? closeResult.data : closeResult.error,
@@ -207,15 +346,23 @@ export async function POST(req: Request) {
       }
       results.push({
         user: mask(userId),
-        engine,
-        reviewed: trades.length,
-        protectedPprTrades: protectedPlans.map((plan) => ({ tradeId: plan.tradeId, instrument: plan.instrument })),
+        engine: selectedEngine,
+        reviewed: allPlans.length,
         actions: userResults,
+        evaluations,
       });
     } catch (err) {
-      results.push({ user: mask(userId), engine, error: err instanceof Error ? err.message : String(err) });
+      results.push({ user: mask(userId), engine: selectedEngine, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  return NextResponse.json({ ok: true, ny, users: results.length, reviewed, closed, results });
+  return NextResponse.json({
+    ok: true,
+    ny,
+    users: results.length,
+    reviewed,
+    closed,
+    ictClosePolicy: '30m_high_reversal_near_sl_only',
+    results,
+  });
 }
