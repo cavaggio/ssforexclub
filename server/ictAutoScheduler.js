@@ -1,8 +1,11 @@
 import { getRetraceWatchPairs } from './retraceWatchMode.js';
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // 02:00–10:00 ET, Monday–Friday
-export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET, Monday–Friday
+export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
+export const AUTO_AI_EXECUTION_WINDOW = { startMin: 135, endMin: 600 }; // entries: 02:15–10:00 ET
+export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET
+
+const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
 
 function interval(name, fallback) {
   const value = Number.parseInt(process.env[name] || '', 10);
@@ -15,19 +18,54 @@ export const AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS = interval('AUTO_AI_HOT_TRIGG
 export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 300000);
 export const OANDA_TRANSACTION_SYNC_INTERVAL_MS = interval('OANDA_TRANSACTION_SYNC_INTERVAL_MS', 1800000);
 
-const nearQualifiedPairs = new Set();
-const hotPairs = new Set();
+const engineWatchStates = Object.fromEntries(
+  AUTO_ENGINES.map((engine) => [engine, { nearQualifiedPairs: new Set(), hotPairs: new Set() }]),
+);
 let timers = [];
 
 function inWindow(date, window) {
   const et = etParts(date);
   return Boolean(et && !et.isWeekend && et.minutesFromMidnight >= window.startMin && et.minutesFromMidnight < window.endMin);
 }
+
 export function inAutoAiWindow(date = new Date()) { return inWindow(date, AUTO_AI_WINDOW); }
+export function inAutoAiExecutionWindow(date = new Date()) { return inWindow(date, AUTO_AI_EXECUTION_WINDOW); }
 export function inActiveTradeManagementWindow(date = new Date()) { return inWindow(date, ACTIVE_TRADE_MANAGEMENT_WINDOW); }
 export function makeRunId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
+
+function normalize(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))]
+    : [];
+}
+
+function clearEngineWatchState(engine) {
+  const state = engineWatchStates[engine];
+  if (!state) return;
+  state.nearQualifiedPairs.clear();
+  state.hotPairs.clear();
+}
+
+function serializedEngineWatchStates() {
+  return Object.fromEntries(AUTO_ENGINES.map((engine) => [engine, {
+    nearQualifiedPairs: [...engineWatchStates[engine].nearQualifiedPairs],
+    hotPairs: [...engineWatchStates[engine].hotPairs],
+  }]));
+}
+
 export function getAutoAiWatchState() {
-  return { nearQualifiedPairs: [...nearQualifiedPairs], hotPairs: [...hotPairs], runningTimers: timers.length };
+  const nearQualifiedPairs = [...new Set(
+    AUTO_ENGINES.flatMap((engine) => [...engineWatchStates[engine].nearQualifiedPairs]),
+  )];
+  const hotPairs = [...new Set(
+    AUTO_ENGINES.flatMap((engine) => [...engineWatchStates[engine].hotPairs]),
+  )];
+  return {
+    nearQualifiedPairs,
+    hotPairs,
+    engineWatchStates: serializedEngineWatchStates(),
+    runningTimers: timers.length,
+  };
 }
 
 function addTimer(timer) {
@@ -63,33 +101,54 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] entries=02:00–10:00_ET weekdays_only full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
-    `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms management=10:00–17:30_ET weekdays_only/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
+    `[AUTO_AI] scans=02:00–10:00_ET entries=02:15–10:00_ET weekdays_only ` +
+    `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
+    `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
+    `management=10:00–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
   );
 
-  addTimer(setInterval(() => void tick(nextUrl, secret, { scanMode: 'full', pairs: [], logTag: '[AUTO_AI][FULL]' }), full));
-  addTimer(setInterval(() => void tick(nextUrl, secret, { scanMode: 'near_recheck', pairs: [...nearQualifiedPairs], logTag: '[AUTO_AI][NEAR]' }), AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS));
-  addTimer(setInterval(() => void tick(nextUrl, secret, { scanMode: 'hot_watch', pairs: [...hotPairs], logTag: '[AUTO_AI][HOT]' }), AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS));
+  addTimer(setInterval(() => void tick(nextUrl, secret, {
+    scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][FULL]',
+  }), full));
+  addTimer(setInterval(() => void tickAllEngineWatches(nextUrl, secret, 'near_recheck'), AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS));
+  addTimer(setInterval(() => void tickAllEngineWatches(nextUrl, secret, 'hot_watch'), AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS));
   addTimer(setInterval(() => void activeTradeManagementTick(nextUrl, secret), ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS));
   addTimer(setInterval(() => void transactionSyncTick(nextUrl, secret), OANDA_TRANSACTION_SYNC_INTERVAL_MS));
 
-  void tick(nextUrl, secret, { scanMode: 'full', pairs: [], logTag: '[AUTO_AI][STARTUP]' });
+  void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
   void activeTradeManagementTick(nextUrl, secret);
   void transactionSyncTick(nextUrl, secret);
-  return { started: true, fullScanMs: full, nearRecheckMs: 60000, hotWatchMs: 30000, managementMs: ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS };
+  return {
+    started: true,
+    fullScanMs: full,
+    nearRecheckMs: AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
+    hotWatchMs: AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
+    managementMs: ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS,
+  };
+}
+
+async function tickAllEngineWatches(nextUrl, secret, scanMode) {
+  const watchKey = scanMode === 'hot_watch' ? 'hotPairs' : 'nearQualifiedPairs';
+  const results = [];
+  for (const engine of AUTO_ENGINES) {
+    const pairs = [...engineWatchStates[engine][watchKey]];
+    const logTag = `[AUTO_AI][${scanMode === 'hot_watch' ? 'HOT' : 'NEAR'}][${engine.toUpperCase()}]`;
+    results.push(await tick(nextUrl, secret, { scanMode, pairs, engine, logTag }));
+  }
+  return results;
 }
 
 export async function tick(nextUrl, secret, options = {}) {
-  const { scanMode = 'full', pairs = [], logTag = '[AUTO_AI]' } = options;
-  if (!inAutoAiWindow()) return { ok: true, skipped: true, reason: 'outside_entry_window' };
-  if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && !pairs.length) {
-    return { ok: true, skipped: true, reason: 'no_pairs' };
+  const { scanMode = 'full', pairs = [], engine = null, logTag = '[AUTO_AI]' } = options;
+  if (!inAutoAiWindow()) return { ok: true, skipped: true, reason: 'outside_scan_window' };
+  if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && (!engine || !pairs.length)) {
+    return { ok: true, skipped: true, reason: !engine ? 'engine_required' : 'no_pairs' };
   }
   const runId = makeRunId();
   const result = await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {
-    source: 'railway-scheduler', runId, scanMode, pairs,
+    source: 'railway-scheduler', runId, scanMode, pairs, engine,
   }, `${logTag}[runId=${runId}]`);
-  if (result.ok) updateWatchStateFromCronResponse(result.body, logTag, scanMode, pairs);
+  if (result.ok) updateWatchStateFromCronResponse(result.body, logTag, scanMode, pairs, engine);
   return result;
 }
 
@@ -104,44 +163,67 @@ async function transactionSyncTick(nextUrl, secret) {
   return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');
 }
 
-function normalize(value) {
-  return Array.isArray(value) ? [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))] : [];
+function applyReturnedWatchState(engine, returned, scanMode, scannedPairs) {
+  const state = engineWatchStates[engine];
+  if (!state) return;
+  const near = normalize(returned?.nearQualifiedPairs);
+  const hot = normalize(returned?.hotPairs);
+  const late = normalize(returned?.lateEntryPairs);
+
+  if (scanMode === 'full') {
+    clearEngineWatchState(engine);
+  } else {
+    for (const pair of normalize(scannedPairs)) {
+      state.nearQualifiedPairs.delete(pair);
+      state.hotPairs.delete(pair);
+    }
+  }
+  for (const pair of near) state.nearQualifiedPairs.add(pair);
+  for (const pair of hot) state.hotPairs.add(pair);
+  for (const pair of late) {
+    state.nearQualifiedPairs.delete(pair);
+    state.hotPairs.delete(pair);
+  }
 }
-export function updateWatchStateFromCronResponse(text, tag, scanMode = 'full', scannedPairs = []) {
+
+export function updateWatchStateFromCronResponse(text, tag, scanMode = 'full', scannedPairs = [], engine = null) {
   let data;
   try { data = JSON.parse(text); } catch { return; }
-  const near = normalize(data.nearQualifiedPairs);
-  const hot = normalize(data.hotPairs);
-  if (scanMode === 'full') {
-    nearQualifiedPairs.clear(); hotPairs.clear();
+
+  if (engine) {
+    const returned = data?.engineWatchStates?.[engine] || data;
+    applyReturnedWatchState(engine, returned, scanMode, scannedPairs);
+  } else if (data?.engineWatchStates && typeof data.engineWatchStates === 'object') {
+    for (const currentEngine of AUTO_ENGINES) {
+      applyReturnedWatchState(currentEngine, data.engineWatchStates[currentEngine] || {}, scanMode, []);
+    }
   } else {
-    for (const pair of normalize(scannedPairs)) { nearQualifiedPairs.delete(pair); hotPairs.delete(pair); }
+    // Backward-compatible fallback for an old aggregate response. Keep it scoped
+    // to ICT rather than contaminating every engine watchlist.
+    applyReturnedWatchState('ict', data, scanMode, scannedPairs);
   }
-  for (const pair of near) nearQualifiedPairs.add(pair);
-  for (const pair of hot) hotPairs.add(pair);
-  for (const pair of normalize(data.lateEntryPairs)) { nearQualifiedPairs.delete(pair); hotPairs.delete(pair); }
-  console.log(`${tag} near=${[...nearQualifiedPairs].join(',') || 'none'} hot=${[...hotPairs].join(',') || 'none'}`);
+
+  console.log(`${tag} engineWatchStates=${JSON.stringify(serializedEngineWatchStates())}`);
 }
 
 export function stopAutoAiScheduler() {
   const stopped = timers.length > 0;
   for (const timer of timers) clearInterval(timer);
   timers = [];
-  nearQualifiedPairs.clear();
-  hotPairs.clear();
+  for (const engine of AUTO_ENGINES) clearEngineWatchState(engine);
   return stopped ? { stopped: true } : { stopped: false, reason: 'not_running' };
 }
 
 export function getNewYorkMinutes(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(date);
   const get = (type) => Number(parts.find((part) => part.type === type)?.value ?? 0);
   const hour = get('hour') === 24 ? 0 : get('hour');
   return hour * 60 + get('minute');
 }
 export function getNewYorkHour(date = new Date()) { return Math.floor(getNewYorkMinutes(date) / 60); }
-export function isPrimaryTradeWindow(date = new Date()) {
-  return inAutoAiWindow(date);
-}
+export function isPrimaryTradeWindow(date = new Date()) { return inAutoAiWindow(date); }
 export function isTrueHardReject(reason = '') {
   const r = String(reason).toLowerCase();
   return (r.includes('rr') && r.includes('1.5')) || (r.includes('risk reward') && r.includes('below')) ||
