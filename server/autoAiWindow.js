@@ -1,19 +1,31 @@
 /**
- * Engine-neutral Auto AI execution window.
+ * Engine-neutral Auto AI scan and execution windows.
  *
- * This module contains scheduling policy only. It imports no engine, scanner,
- * strategy evaluator, or engine-owned time helper.
+ * Scanning begins at 02:00 ET so every selected engine can build its own watch
+ * state before entries are allowed. New orders are blocked until 02:15 ET.
+ * This module contains scheduling policy only and imports no strategy code.
  */
-export const AUTO_AI_WINDOW = Object.freeze({
+export const AUTO_AI_SCAN_WINDOW = Object.freeze({
   startMin: 120,
   endMin: 600,
   timeZone: 'America/New_York',
   weekdaysOnly: true,
 });
 
-function easternParts(date = new Date()) {
+export const AUTO_AI_EXECUTION_WINDOW = Object.freeze({
+  startMin: 135,
+  endMin: 600,
+  timeZone: 'America/New_York',
+  weekdaysOnly: true,
+});
+
+// Backward-compatible alias. Existing callers that only need to know whether
+// Auto AI should be active should use the broader scan window.
+export const AUTO_AI_WINDOW = AUTO_AI_SCAN_WINDOW;
+
+function easternParts(date = new Date(), timeZone = AUTO_AI_SCAN_WINDOW.timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: AUTO_AI_WINDOW.timeZone,
+    timeZone,
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
@@ -30,15 +42,32 @@ function easternParts(date = new Date()) {
   };
 }
 
-export function inAutoAiWindow(date = new Date()) {
-  const et = easternParts(date);
+function inWindow(date, window) {
+  const et = easternParts(date, window.timeZone);
   return Boolean(
     !et.isWeekend &&
-    et.minutesFromMidnight >= AUTO_AI_WINDOW.startMin &&
-    et.minutesFromMidnight < AUTO_AI_WINDOW.endMin
+    et.minutesFromMidnight >= window.startMin &&
+    et.minutesFromMidnight < window.endMin
   );
 }
 
+export function inAutoAiScanWindow(date = new Date()) {
+  return inWindow(date, AUTO_AI_SCAN_WINDOW);
+}
+
+export function inAutoAiExecutionWindow(date = new Date()) {
+  return inWindow(date, AUTO_AI_EXECUTION_WINDOW);
+}
+
+// Backward-compatible alias: Auto AI is considered active while scanning.
+export function inAutoAiWindow(date = new Date()) {
+  return inAutoAiScanWindow(date);
+}
+
 export function autoAiWindowReason() {
-  return 'outside_auto_ai_execution_window_02:00-10:00_ET_weekdays';
+  return 'outside_auto_ai_scan_window_02:00-10:00_ET_weekdays';
+}
+
+export function autoAiExecutionWindowReason() {
+  return 'scan_only_until_02:15_ET_no_new_orders';
 }
