@@ -9,7 +9,12 @@
  * load any production engine at all.
  */
 
-import { autoAiWindowReason, inAutoAiWindow } from './autoAiWindow.js';
+import {
+  autoAiExecutionWindowReason,
+  autoAiWindowReason,
+  inAutoAiExecutionWindow,
+  inAutoAiScanWindow,
+} from './autoAiWindow.js';
 
 export function normalizeAutoEngine(value) {
   const engine = String(value || 'ict').toLowerCase();
@@ -33,6 +38,7 @@ function outsideWindowResult(engine) {
     nearQualifiedPairs: [],
     hotPairs: [],
     lateEntryPairs: [],
+    executionAllowed: false,
   };
 }
 
@@ -66,10 +72,19 @@ export async function runAutoForUser({
 } = {}) {
   const selectedEngine = normalizeAutoEngine(engine);
 
-  if (!inAutoAiWindow(now)) return outsideWindowResult(selectedEngine);
+  if (!inAutoAiScanWindow(now)) return outsideWindowResult(selectedEngine);
 
   const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
-  const args = { client, now, runId, scanMode, pairs: safePairs };
+  const executionAllowed = inAutoAiExecutionWindow(now);
+  const args = {
+    client,
+    now,
+    runId,
+    scanMode,
+    pairs: safePairs,
+    executionAllowed,
+    executionBlockedReason: executionAllowed ? null : autoAiExecutionWindowReason(),
+  };
   const injectedRunner = selectedEngine === 'v3'
     ? runV3
     : selectedEngine === 'ppr'
@@ -78,5 +93,5 @@ export async function runAutoForUser({
   const runner = await resolveRunner(selectedEngine, injectedRunner);
   const result = await runner(args);
 
-  return { engine: selectedEngine, ...result };
+  return { engine: selectedEngine, executionAllowed, ...result };
 }
