@@ -1,6 +1,15 @@
 name: Selected Engine Verification
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - 'web/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
   push:
     branches:
       - fix/selected-engine-0215-entry-gate
