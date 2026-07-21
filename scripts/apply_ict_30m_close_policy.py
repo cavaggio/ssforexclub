@@ -35,8 +35,7 @@ scheduler = replace_once(
 scheduler = replace_once(
     scheduler,
     "  void activeTradeManagementTick(nextUrl, secret);\n  void transactionSyncTick(nextUrl, secret);",
-    "  // Do not run active management immediately on process startup. The first\n"
-    "  // close-capable review must occur on the 30-minute scheduler cadence.\n"
+    "  // Do not run active management immediately on process startup. The first close-capable review must occur on the 30-minute scheduler cadence.\n"
     "  void transactionSyncTick(nextUrl, secret);",
     "remove startup auto-close review",
 )
