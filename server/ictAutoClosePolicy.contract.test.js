@@ -41,9 +41,10 @@ test('ICT route requires 30m age, HIGH reversal, explicit exit, and near-SL prox
   assert.match(routeSource, /lifecycleSource === 'thesis_invalidation'/);
   assert.match(routeSource, /lifecycleSource === 'institutional_reversal'/);
   assert.match(routeSource, /recommendedAction === 'EXIT_INVALIDATED'/);
+  assert.doesNotMatch(routeSource, /export function shouldCloseIctTrade/);
   assert.doesNotMatch(
     routeSource.slice(
-      routeSource.indexOf('export function shouldCloseIctTrade'),
+      routeSource.indexOf('function shouldCloseIctTrade'),
       routeSource.indexOf('// Preserve the existing V3 management policy'),
     ),
     /EXIT_REVIEW|confidence_breakdown|mediumOrHigherReversal|volatilityCollapsed/,
