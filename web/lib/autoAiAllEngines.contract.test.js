@@ -2,19 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-test('extended Auto AI cron runs ICT, V3, and PPR sequentially for every enabled account', () => {
+test('Auto AI cron runs exactly the engine selected for each enabled account', () => {
   const source = readFileSync(
     new URL('../app/api/cron/auto-ai-trading-extended/route.ts', import.meta.url),
     'utf8',
   );
 
-  assert.match(source, /const AUTO_AI_ENGINES: readonly AutoAiEngine\[\] = \['ict', 'v3', 'ppr'\]/);
-  assert.match(source, /function executionOrder\(preferredValue: unknown\): AutoAiEngine\[\]/);
-  assert.match(source, /for \(const engine of executionOrder\(preferredEngine\)\)/);
-  assert.match(source, /executionMode: 'all_engines_sequential'/);
-  assert.match(source, /runId: `\$\{runId\}-\$\{engine\}`/);
-  assert.doesNotMatch(
-    source,
-    /const engine = normalizeEngine\(row\.auto_ai_engine\);\s*const result = await callInternalEndpoint/s,
-  );
+  assert.match(source, /const selectedEngine = normalizeEngine\(row\.auto_ai_engine\)/);
+  assert.match(source, /engine: selectedEngine/);
+  assert.match(source, /executionMode: 'selected_engine_only'/);
+  assert.match(source, /engineWatchStates/);
+  assert.match(source, /Targeted near\/hot rechecks require an engine/);
+  assert.doesNotMatch(source, /function executionOrder/);
+  assert.doesNotMatch(source, /for \(const engine of executionOrder/);
+  assert.doesNotMatch(source, /executionMode: 'all_engines_sequential'/);
 });
