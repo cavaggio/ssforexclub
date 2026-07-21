@@ -60,7 +60,7 @@ function nyContext(now = new Date()) {
  *   3. The reassessment explicitly recommends CLOSE/EXIT, not merely REVIEW.
  *   4. Price is within the final 25% of the original stop distance (minimum 2 pips).
  */
-export function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
+function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
   const minutesElapsed = finiteNumber(plan.minutesElapsed) ?? 0;
   const reassessmentDue = minutesElapsed >= ICT_MIN_REASSESSMENT_AGE_MINUTES;
 
