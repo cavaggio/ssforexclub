@@ -1,0 +1,29 @@
+name: ICT Close Policy Verification
+
+on:
+  push:
+    branches:
+      - fix/ict-30m-near-sl-close-policy
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Run tests with concise failure tail
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/ict-close-policy-tests.log 2>&1
+          status=$?
+          tail -n 140 /tmp/ict-close-policy-tests.log
+          exit $status
