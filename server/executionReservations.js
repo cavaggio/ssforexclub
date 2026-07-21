@@ -26,6 +26,11 @@ function normalizeDirection(direction) {
   return value === 'long' || value === 'short' ? value : '';
 }
 
+function normalizeReleaseStatuses(statuses) {
+  const values = Array.isArray(statuses) && statuses.length ? statuses : ['reserved', 'open'];
+  return [...new Set(values.map((value) => String(value || '').toLowerCase()).filter((value) => ACTIVE_STATUSES.has(value)))];
+}
+
 function dateMs(value) {
   const ms = value ? new Date(value).getTime() : NaN;
   return Number.isFinite(ms) ? ms : 0;
@@ -185,11 +190,21 @@ export async function releaseExecutionByTradeId(tradeId, status = 'released') {
   return { released: hashes.length, hashes };
 }
 
-export async function releaseExecutionsForPairDirection({ accountId, pair, direction, status = 'released' }) {
+export async function releaseExecutionsForPairDirection({
+  accountId,
+  pair,
+  direction,
+  status = 'released',
+  statuses = ['reserved', 'open'],
+}) {
   const account = String(accountId || '');
   const normalizedPair = normalizePair(pair);
   const normalizedDirection = normalizeDirection(direction);
-  if (!normalizedPair || !normalizedDirection) return { released: 0, hashes: [] };
+  const releaseStatuses = normalizeReleaseStatuses(statuses);
+  const releaseStatusSet = new Set(releaseStatuses);
+  if (!normalizedPair || !normalizedDirection || releaseStatuses.length === 0) {
+    return { released: 0, hashes: [] };
+  }
 
   const hashes = releaseMemoryWhere((row) => {
     const sameAccount = !account || String(row?.accountId || '') === account;
@@ -197,7 +212,7 @@ export async function releaseExecutionsForPairDirection({ accountId, pair, direc
       sameAccount &&
       normalizePair(row?.pair) === normalizedPair &&
       normalizeDirection(row?.direction) === normalizedDirection &&
-      ACTIVE_STATUSES.has(row?.status)
+      releaseStatusSet.has(row?.status)
     );
   }, status);
 
@@ -209,7 +224,7 @@ export async function releaseExecutionsForPairDirection({ accountId, pair, direc
       .update({ status, expires_at: now, locked_until: null, updated_at: now })
       .eq('pair', normalizedPair)
       .eq('direction', normalizedDirection)
-      .in('status', ['reserved', 'open']);
+      .in('status', releaseStatuses);
     if (account) query = query.eq('account_id', account);
     const { error } = await query;
     if (error) throw new Error(`reservation release by pair/direction failed: ${error.message}`);
