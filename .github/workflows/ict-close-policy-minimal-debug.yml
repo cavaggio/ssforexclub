@@ -1,0 +1,30 @@
+name: ICT Close Policy Minimal Diagnostics
+
+on:
+  push:
+    branches:
+      - fix/ict-30m-near-sl-close-policy
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch branch and print only test failure summary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+          npm ci --silent
+          set +e
+          npm test > /tmp/test.log 2>&1
+          status=$?
+          grep -E "^(not ok|# fail|# tests|# pass|# duration|Error|AssertionError|RuntimeError|.*ERR_|.*failed|.*missing)" /tmp/test.log | tail -n 100 || true
+          echo "--- FINAL 80 LINES ---"
+          tail -n 80 /tmp/test.log
+          exit $status
