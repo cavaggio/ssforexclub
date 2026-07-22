@@ -1,0 +1,49 @@
+name: ICT test diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'server/ictPolicy.js'
+      - 'server/ictClaudeAdvisor.js'
+      - 'server/ictPolicy.test.js'
+      - 'scripts/apply_ict_entry_policy.mjs'
+      - 'scripts/apply_ict_lifecycle_alignment.mjs'
+      - 'scripts/apply_ict_execution_alignment.py'
+      - 'scripts/apply_ict_rr_floor.py'
+      - 'package.json'
+      - '.github/workflows/ict-test-diagnostic.yml'
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone and run ICT tests individually
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          git clone --quiet --depth 1 --branch "$HEAD_BRANCH" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          npm ci --ignore-scripts >/dev/null
+          npm run apply:v3-entry >/dev/null
+          tests=(
+            server/ictPolicy.test.js
+            server/ictIndependence.test.js
+            server/ictActiveModeExecution.contract.test.js
+            server/ictExecution.test.js
+            server/ictExecutionPaper.test.js
+            server/ictRiskRewardFloor.test.js
+            server/ictEngine.test.js
+            server/ictLifecycleEngine.test.js
+            server/ictAutoTradeQualification.test.js
+            server/ictAutoClosePolicy.contract.test.js
+          )
+          for test_file in "${tests[@]}"; do
+            echo "RUNNING: $test_file"
+            if ! node --test "$test_file" >/tmp/ict-test.log 2>&1; then
+              echo "FAILED: $test_file"
+              cat /tmp/ict-test.log
+              exit 1
+            fi
+          done
+          echo 'ALL FOCUSED ICT TESTS PASSED'
