@@ -15,6 +15,26 @@ function finiteNumber(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
+async function fetchTrustedRiskPreflight(): Promise<{ targetRiskUSD: number; riskPercent: number }> {
+  const response = await fetch('/api/risk/status', {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  const json = await response.json().catch(() => ({}));
+  const targetRiskUSD = finiteNumber(json?.risk?.riskAmountUSD);
+  const riskPercent = finiteNumber(json?.risk?.riskPerTradePercent);
+
+  if (!response.ok || !json?.ok || targetRiskUSD == null || targetRiskUSD <= 0) {
+    throw new Error(json?.error || 'Could not calculate target risk from the active broker account.');
+  }
+  if (riskPercent == null || riskPercent <= 0 || riskPercent > 1.25 + 1e-9) {
+    throw new Error(`Risk preflight returned an invalid per-trade percentage (${riskPercent ?? 'unknown'}%).`);
+  }
+
+  return { targetRiskUSD, riskPercent };
+}
+
 export function QualifiedExecuteButton({
   engine,
   signal,
@@ -27,10 +47,25 @@ export function QualifiedExecuteButton({
   const execute = useCallback(async () => {
     setOutcome({ state: 'pending' });
     try {
+      // Resolve risk from the authenticated account immediately before execution.
+      // The engine/server still validates and caps the amount; the displayed card
+      // cannot silently submit a missing or stale targetRiskUSD field.
+      const risk = await fetchTrustedRiskPreflight();
+      const executionSignal = {
+        ...signal,
+        targetRiskUSD: risk.targetRiskUSD,
+        riskPercent: risk.riskPercent,
+      };
+
       const response = await fetch('/api/scanner/execute-qualified', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine, signal }),
+        body: JSON.stringify({
+          engine,
+          signal: executionSignal,
+          targetRiskUSD: risk.targetRiskUSD,
+          riskPercent: risk.riskPercent,
+        }),
       });
       const json = await response.json().catch(() => ({}));
       if (!response.ok || !json?.ok) {
