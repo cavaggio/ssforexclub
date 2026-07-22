@@ -8,7 +8,7 @@ process.env.FOREX_ALLOW_LIVE_EXECUTION = 'true';
 const { executeIctTrade } = await import('./ictExecution.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
-const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 80, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
+const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 93, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
 const freshId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 30_000}`;   // 30s old → fresh
 const staleId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 600_000}`;  // 600s old → stale
 
@@ -17,7 +17,12 @@ const validParams = () => ({
   entry: 1.1000, stopLoss: 1.0980, targetProfit: 1.1040, ictSignalId: freshId(),
 });
 
-const goodAnalysis = (over = {}) => async () => ({ signal: 'buy', confidence: 85, rr: 2.5, signalId: freshId(), ...over });
+const goodAnalysis = (over = {}) => async () => ({
+  signal: 'buy', confidence: 95, rr: 2.5, signalId: freshId(),
+  entry: 1.1000, stopLoss: 1.0980, target1: 1.1040,
+  atrPips: 10, setupType: 'ICT 2022 Model', conceptsDetected: [], concepts: {},
+  ...over,
+});
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });
 
 function mockClient() {
@@ -59,9 +64,18 @@ test('stale signal is rejected', async () => {
 });
 
 test('low confidence is rejected', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 70 }) }));
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 92 }) }));
   assert.equal(r.blocked, true);
   assert.match(r.reason, /confidence/i);
+});
+
+test('an injected lower threshold cannot bypass the hard 93% ICT floor', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({
+    cfg: { ...LIVE_CFG, minConfidence: 80 },
+    getAnalysis: goodAnalysis({ confidence: 92 }),
+  }));
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /92 < 93/);
 });
 
 test('low RR is rejected', async () => {
@@ -95,6 +109,7 @@ test('valid trade submits through the existing OANDA client', async () => {
   assert.equal(r.success, true, r.reason);
   assert.equal(r.executionState, 'FILLED');
   assert.equal(r.tradeId, 'T123');
+  assert.equal(r.entryConfidence, 95);
   // It went through the existing per-request OANDA client order POST.
   assert.equal(client.calls.length, 1);
   assert.match(client.calls[0].path, /\/v3\/accounts\/ACC-001\/orders$/);

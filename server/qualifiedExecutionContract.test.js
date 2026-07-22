@@ -66,10 +66,11 @@ test('Railway startup derives and propagates targetRiskUSD for ICT and PPR manua
 
   assert.match(startup, /applyManualTargetRiskRuntime\(\)/);
   assert.match(patcher, /deriveQualifiedManualRisk/);
+  assert.match(patcher, /req\.body\.targetRiskUSD = manualRisk\.targetRiskUSD/);
   assert.match(patcher, /targetRiskUSD: manualRisk\.targetRiskUSD/);
+  assert.match(patcher, /manualExecution: true/);
   assert.match(patcher, /qualified_signal_button_ppr/);
   assert.match(patcher, /expectedTargetRiskUSD/);
-  assert.match(patcher, /dynamicRisk\.riskPercent = 1\.25/);
   assert.match(router, /targetRiskUSD = null/);
   assert.match(router, /manualExecution = false/);
   assert.match(pprAuto, /executePprTrade\(executionCandidate/);

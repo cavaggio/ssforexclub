@@ -1,0 +1,35 @@
+name: ICT test diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'web/lib/**'
+      - 'scripts/**'
+      - 'package.json'
+      - '.github/workflows/ict-test-diagnostic.yml'
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run full tests with focused failure output
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          git clone --quiet --depth 1 --branch "$HEAD_BRANCH" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          npm ci --ignore-scripts >/dev/null
+          if ! npm test >/tmp/full-test.log 2>&1; then
+            first_failure=$(grep -n 'not ok' /tmp/full-test.log | head -1 | cut -d: -f1 || true)
+            if [ -n "$first_failure" ]; then
+              start=$(( first_failure > 12 ? first_failure - 12 : 1 ))
+              end=$(( first_failure + 85 ))
+              sed -n "${start},${end}p" /tmp/full-test.log
+            else
+              tail -100 /tmp/full-test.log
+            fi
+            exit 1
+          fi
+          echo 'FULL TEST SUITE PASSED'

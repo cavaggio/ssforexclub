@@ -196,7 +196,10 @@ def main() -> None:
     ]:
         text = text.replace(old, "", 1)
 
-    if NEW_SETUP_BLOCK not in text:
+    # Later policy passes may append adaptive-stop metadata to this return object.
+    # Presence of the target-policy call is the stable contract; do not require an
+    # exact byte-for-byte NEW_SETUP_BLOCK on subsequent enforcement passes.
+    if "const targetPolicy = enforceMinimumRRTarget({" not in text:
         if OLD_SETUP_BLOCK not in text:
             raise RuntimeError("ICT R:R floor marker missing: computeSetup risk/reward block")
         text = text.replace(OLD_SETUP_BLOCK, NEW_SETUP_BLOCK, 1)
