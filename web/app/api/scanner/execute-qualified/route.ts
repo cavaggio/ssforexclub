@@ -29,6 +29,42 @@ function normalizeDirection(signal: Record<string, any>): 'long' | 'short' | nul
   return null;
 }
 
+async function resolveTrustedTargetRiskUSD(req: Request): Promise<number> {
+  const headers = new Headers();
+  const cookie = req.headers.get('cookie');
+  const authorization = req.headers.get('authorization');
+  if (cookie) headers.set('cookie', cookie);
+  if (authorization) headers.set('authorization', authorization);
+
+  const riskUrl = new URL('/api/risk/status', req.url);
+  const response = await fetch(riskUrl, {
+    method: 'GET',
+    headers,
+    cache: 'no-store',
+  });
+
+  let payload: Record<string, any> = {};
+  try {
+    payload = (await response.json()) as Record<string, any>;
+  } catch {
+    throw new Error(`Risk preflight returned unreadable JSON (HTTP ${response.status}).`);
+  }
+
+  const targetRiskUSD = finite(payload?.risk?.riskAmountUSD);
+  const riskPercent = finite(payload?.risk?.riskPerTradePercent);
+  if (!response.ok || payload?.ok === false || targetRiskUSD === null || targetRiskUSD <= 0) {
+    throw new Error(
+      typeof payload?.error === 'string'
+        ? payload.error
+        : 'Could not derive targetRiskUSD from the active OANDA account.',
+    );
+  }
+  if (riskPercent === null || riskPercent > 1.25 + 1e-9) {
+    throw new Error(`Risk preflight returned an unsafe per-trade percentage (${riskPercent ?? 'unknown'}%).`);
+  }
+  return targetRiskUSD;
+}
+
 function executionFromResult(engine: Engine, data: unknown): Record<string, any> {
   const payload = data && typeof data === 'object' ? data as Record<string, any> : {};
   if (engine === 'ppr' && Array.isArray(payload.executed) && payload.executed.length > 0) {
@@ -126,6 +162,26 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'Invalid signal pair' }, { status: 400 });
   }
 
+  let targetRiskUSD: number;
+  try {
+    targetRiskUSD = await resolveTrustedTargetRiskUSD(req);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Qualified execution risk preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+      { status: 502 },
+    );
+  }
+
+  const trustedSignal = {
+    ...signal,
+    pair,
+    targetRiskUSD,
+    riskPercent: 1.25,
+  };
+
   if (engine === 'v3') {
     return callScannerForCurrentUser({
       internalPath: '/api/internal/oanda/v3-trade',
@@ -133,19 +189,20 @@ export async function POST(req: Request) {
       payloadKey: 'trade',
       requireLive: false,
       extraBody: {
-        signal: { ...signal, pair },
+        signal: trustedSignal,
+        targetRiskUSD,
         executionSource: 'qualified_signal_button_v3',
       },
-      afterCall: auditExecution({ engine, signal, pair }),
+      afterCall: auditExecution({ engine, signal: trustedSignal, pair }),
     });
   }
 
   if (engine === 'ict') {
-    const direction = normalizeDirection(signal);
-    const entry = finite(signal.entry);
-    const stopLoss = finite(signal.stopLoss);
-    const targetProfit = finite(signal.target1 ?? signal.targetProfit ?? signal.takeProfit);
-    const ictSignalId = String(signal.signalId ?? signal.ictSignalId ?? '').trim();
+    const direction = normalizeDirection(trustedSignal);
+    const entry = finite(trustedSignal.entry);
+    const stopLoss = finite(trustedSignal.stopLoss);
+    const targetProfit = finite(trustedSignal.target1 ?? trustedSignal.targetProfit ?? trustedSignal.takeProfit);
+    const ictSignalId = String(trustedSignal.signalId ?? trustedSignal.ictSignalId ?? '').trim();
 
     if (!direction || entry === null || stopLoss === null || targetProfit === null || !ictSignalId) {
       return NextResponse.json(
@@ -166,13 +223,15 @@ export async function POST(req: Request) {
         stopLoss,
         targetProfit,
         ictSignalId,
+        targetRiskUSD,
+        manualExecution: true,
         executionSource: 'qualified_signal_button_ict',
       },
-      afterCall: auditExecution({ engine, signal, pair }),
+      afterCall: auditExecution({ engine, signal: trustedSignal, pair }),
     });
   }
 
-  const direction = normalizeDirection(signal);
+  const direction = normalizeDirection(trustedSignal);
   if (!direction) {
     return NextResponse.json({ ok: false, error: 'Qualified PPR signal is missing direction' }, { status: 400 });
   }
@@ -191,8 +250,10 @@ export async function POST(req: Request) {
       pairs: [pair],
       runId: `manual-ppr-${Date.now()}`,
       requestedDirection: direction,
+      targetRiskUSD,
+      manualExecution: true,
       executionSource: 'qualified_signal_button_ppr',
     },
-    afterCall: auditExecution({ engine, signal, pair }),
+    afterCall: auditExecution({ engine, signal: trustedSignal, pair }),
   });
 }
