@@ -6,6 +6,7 @@ import {
   FIXED_STOP_LOSS_PIPS,
   enforceFixedStopGeometry,
   buildFixedStopLossOnFill,
+  getLossQuoteHomeConversionFactor,
 } from './fixedTradeRiskPolicy.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
 
@@ -33,6 +34,16 @@ test('EUR_CHF long geometry forces an exact 20-pip stop', () => {
     distance: '0.00200',
     timeInForce: 'GTC',
   });
+});
+
+
+test('USD-quoted instruments need no broker conversion request in a USD account', async () => {
+  const factor = await getLossQuoteHomeConversionFactor({
+    pair: 'EUR_USD',
+    client: { accountId: 'ACC-TEST' },
+    homeCurrency: 'USD',
+  });
+  assert.equal(factor, 1);
 });
 
 
