@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,24 @@ function truthy(value) {
 function finiteNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function runSourceEnforcement(relativePath) {
+  const scriptPath = resolve(ROOT, relativePath);
+  const result = spawnSync('python3', [scriptPath], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'inherit',
+  });
+
+  if (result.error) {
+    throw new Error(`Could not run ${relativePath}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${relativePath} failed with exit code ${result.status}`);
+  }
+
+  console.log(`[RUNTIME_EXECUTION_START] applied ${relativePath}`);
 }
 
 function enforceRuntimeFloors() {
@@ -37,6 +56,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 }
 
 enforceRuntimeFloors();
+runSourceEnforcement('scripts/apply_ict_rr_floor.py');
 
 patchFile(
   'server/ictEngine.js',
@@ -64,7 +84,10 @@ patchFile(
   [
     "ICT_MODE === 'active'",
     "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
-    "Math.max(1.5, parseFloat(process.env.ICT_MIN_RR || '1.5'))",
+    'export const ICT_MIN_RR = 1.5;',
+    'minRR: configuredIctMinRR()',
+    'export function enforceMinimumRRTarget',
+    'const targetPolicy = enforceMinimumRRTarget({',
     "(c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true",
   ],
 );
