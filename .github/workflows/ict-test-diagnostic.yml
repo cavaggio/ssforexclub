@@ -6,6 +6,9 @@ on:
       - 'server/ictPolicy.js'
       - 'server/ictClaudeAdvisor.js'
       - 'server/ictPolicy.test.js'
+      - 'server/ictExecution.test.js'
+      - 'server/ictExecutionPaper.test.js'
+      - 'server/ictAutoTradeQualification.test.js'
       - 'scripts/apply_ict_entry_policy.mjs'
       - 'scripts/apply_ict_lifecycle_alignment.mjs'
       - 'scripts/apply_ict_execution_alignment.py'
@@ -17,7 +20,7 @@ jobs:
   diagnostic:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone and run ICT tests individually
+      - name: Clone and run affected tests individually
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.head_ref }}
@@ -37,6 +40,14 @@ jobs:
             server/ictLifecycleEngine.test.js
             server/ictAutoTradeQualification.test.js
             server/ictAutoClosePolicy.contract.test.js
+            server/oandaTradeLifecycleEngine.test.js
+            server/reassessMarketDecision.test.js
+            server/autoAiRouter.test.js
+            server/ictWatchlist.test.js
+            server/autoAiRiskLimits.test.js
+            server/autoAiGating.test.js
+            server/riskManager.test.js
+            web/lib/autoAiAllEngines.contract.test.js
           )
           for test_file in "${tests[@]}"; do
             echo "RUNNING: $test_file"
@@ -46,4 +57,4 @@ jobs:
               exit 1
             fi
           done
-          echo 'ALL FOCUSED ICT TESTS PASSED'
+          echo 'ALL AFFECTED TESTS PASSED'
