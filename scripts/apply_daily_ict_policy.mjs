@@ -95,6 +95,13 @@ if (!execution.includes('markTradeOpened,')) {
   );
 }
 
+if (!execution.includes('hydrateDailyRiskState,')) {
+  execution = execution.replace(
+    '  checkDailyRiskLock,\n',
+    '  checkDailyRiskLock,\n  hydrateDailyRiskState,\n  persistDailyRiskState,\n',
+  );
+}
+
 if (!execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })")) {
   execution = execution.replace(
     "  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
@@ -102,18 +109,33 @@ if (!execution.includes("applyStoredStudyCalibration(await analyze(pair), { clie
   );
 }
 
-if (!execution.includes('markTradeOpened({ accountId, balanceUSD, now });')) {
+if (!execution.includes('await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });')) {
   execution = execution.replace(
-    "  registerTradeLock(pair, direction);\n  const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;",
-    "  registerTradeLock(pair, direction);\n  markTradeOpened({ accountId, balanceUSD, now });\n  const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;",
+    "  if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');\n\n  // ── 8a. Daily drawdown circuit breaker",
+    "  if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');\n  const riskAccountId =\n    client?.accountId || client?.accountID || client?.account_id ||\n    client?.config?.accountId || client?.defaults?.accountId;\n  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n\n  // ── 8a. Daily drawdown circuit breaker",
+  );
+}
+
+execution = execution
+  .replace('checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now })', 'checkDailyRiskLock({ accountId: riskAccountId, balanceUSD, now })')
+  .replace('reserveDailyLossBudget({ accountId: client.accountId, balanceUSD,', 'reserveDailyLossBudget({ accountId: riskAccountId, balanceUSD,');
+
+if (!execution.includes('await persistDailyRiskState({ accountId, balanceUSD, now });')) {
+  execution = execution.replace(
+    '  markTradeOpened({ accountId, balanceUSD, now });\n',
+    '  markTradeOpened({ accountId, balanceUSD, now });\n  await persistDailyRiskState({ accountId, balanceUSD, now });\n',
   );
 }
 
 for (const marker of [
   "from './dailyMarketStudy.js'",
   'markTradeOpened,',
+  'hydrateDailyRiskState,',
+  'persistDailyRiskState,',
   "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
+  'await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });',
   'markTradeOpened({ accountId, balanceUSD, now });',
+  'await persistDailyRiskState({ accountId, balanceUSD, now });',
 ]) {
   if (!execution.includes(marker)) throw new Error(`ICT execution daily policy incomplete: missing ${marker}`);
 }
