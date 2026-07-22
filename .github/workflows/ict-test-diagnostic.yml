@@ -3,12 +3,8 @@ name: ICT test diagnostic
 on:
   pull_request:
     paths:
-      - 'server/ictPolicy.js'
-      - 'server/ictClaudeAdvisor.js'
-      - 'server/ictPolicy.test.js'
-      - 'server/ictExecution.test.js'
-      - 'server/ictExecutionPaper.test.js'
-      - 'server/ictAutoTradeQualification.test.js'
+      - 'server/**'
+      - 'web/lib/**'
       - 'scripts/apply_ict_entry_policy.mjs'
       - 'scripts/apply_ict_lifecycle_alignment.mjs'
       - 'scripts/apply_ict_execution_alignment.py'
@@ -20,7 +16,7 @@ jobs:
   diagnostic:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone and run affected tests individually
+      - name: Clone and run server tests individually
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.head_ref }}
@@ -30,24 +26,65 @@ jobs:
           npm ci --ignore-scripts >/dev/null
           npm run apply:v3-entry >/dev/null
           tests=(
-            server/ictPolicy.test.js
-            server/ictIndependence.test.js
-            server/ictActiveModeExecution.contract.test.js
-            server/ictExecution.test.js
-            server/ictExecutionPaper.test.js
-            server/ictRiskRewardFloor.test.js
-            server/ictEngine.test.js
-            server/ictLifecycleEngine.test.js
-            server/ictAutoTradeQualification.test.js
-            server/ictAutoClosePolicy.contract.test.js
             server/oandaTradeLifecycleEngine.test.js
             server/reassessMarketDecision.test.js
+            server/oandaCalibration.test.js
+            server/oandaClose.test.js
+            server/executionReservationLifecycle.test.js
+            web/lib/sanitizePayload.test.js
+            server/oandaFibonacci.test.js
+            server/v3FibEntryTiming.test.js
+            server/v3MarketMovementNullSafety.test.js
+            server/v3ManualExecution.test.js
+            server/liquidityEngine.test.js
+            server/liquidityIntent.test.js
+            server/premiumDiscount.test.js
+            server/marketStructureEngine.test.js
+            server/sessionEngine.test.js
+            server/volatilityExpansionEngine.test.js
+            server/liquidityTargeting.test.js
+            server/v3ExecutionModel.test.js
+            server/v3ShadowLog.test.js
+            server/primaryTimeframeAlignment.test.js
+            server/v3QualityConfirmation.test.js
+            server/v3IndependentScanner.test.js
+            server/v3DashboardScan.test.js
+            server/v3TimeframeClassification.test.js
+            server/v3EntryContract.integration.test.js
+            server/v3EngineIsolation.test.js
+            server/ictPolicy.test.js
+            server/ictConcepts.test.js
+            server/ictEngine.test.js
+            server/ictRiskRewardFloor.test.js
+            server/ictExecution.test.js
+            server/ictExecutionPaper.test.js
+            server/ictActiveModeExecution.contract.test.js
+            server/ictIndependence.test.js
+            server/forexFactoryNews.test.js
+            server/ictLifecycleEngine.test.js
+            server/ictAutoScheduler.test.js
+            server/ictAutoClosePolicy.contract.test.js
+            server/ictAutoTradeQualification.test.js
             server/autoAiRouter.test.js
             server/ictWatchlist.test.js
             server/autoAiRiskLimits.test.js
             server/autoAiGating.test.js
             server/riskManager.test.js
+            server/providerRouting.test.js
+            server/futuresSymbols.test.js
+            server/ninjatraderClient.test.js
+            server/topstepClient.test.js
+            server/futuresNoSecretLeak.test.js
+            server/oandaTradeCap.test.js
+            server/pprEngine.test.js
+            server/pprExecutionPolicy.test.js
+            server/pprScannerRouting.test.js
+            server/pprLiveExecutionAlignment.test.js
+            server/qualifiedExecutionContract.test.js
+            web/lib/scannerEngine.test.js
             web/lib/autoAiAllEngines.contract.test.js
+            web/lib/futuresStatus.test.js
+            web/lib/brokerDisplay.test.js
           )
           for test_file in "${tests[@]}"; do
             echo "RUNNING: $test_file"
@@ -57,4 +94,4 @@ jobs:
               exit 1
             fi
           done
-          echo 'ALL AFFECTED TESTS PASSED'
+          echo 'ALL SERVER TEST FILES PASSED INDIVIDUALLY'
