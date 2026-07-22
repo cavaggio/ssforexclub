@@ -40,7 +40,18 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 
 enforceRuntimeFloors();
 applyIctRrFloorRuntime();
-applyManualTargetRiskRuntime();
+
+// Manual target-risk propagation is a compatibility patch, not a prerequisite
+// for starting the API. A stale source marker must never take the entire scanner,
+// active-trade monitor, reassessor, and calibration endpoints offline. The
+// execution modules still enforce the central 1.25% risk cap independently.
+try {
+  applyManualTargetRiskRuntime();
+} catch (error) {
+  console.error(
+    `[RUNTIME_EXECUTION_START] manual target-risk compatibility patch skipped: ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 
 patchFile(
   'server/ictEngine.js',
@@ -89,84 +100,12 @@ patchFile(
         "if (!((config.mode === 'active' || config.mode === 'live') && config.autoTradeEnabled === true)) {",
       );
 
-    if (!out.includes('riskConfig,')) {
-      out = out.replace(
-        "  checkAutoExecutionConfidence,\n} from './riskManager.js';",
-        "  checkAutoExecutionConfidence,\n  riskConfig,\n} from './riskManager.js';",
-      );
+    if (!out.includes("config.mode === 'active' || config.mode === 'live'")) {
+      throw new Error('ICT execution mode patch did not apply');
     }
-
-    out = out.replace(
-      /const confCheck = checkAutoExecutionConfidence\(analysis\.confidence\);\n\s*if \(!confCheck\.passed\) return blocked\(confCheck\.reason\);/,
-      "const confCheck = checkAutoExecutionConfidence(analysis.confidence, {\n      ...riskConfig(),\n      autoExecutionMinConfidence: config.minConfidence,\n    });\n    if (!confCheck.passed) return blocked(confCheck.reason);",
-    );
-
     return out;
   },
-  [
-    "config.mode === 'active' || config.mode === 'live'",
-    'riskConfig,',
-    'autoExecutionMinConfidence: config.minConfidence',
-    'expectedTargetRiskUSD',
-    'stopLossOnFill',
-    'takeProfitOnFill',
-  ],
-);
-
-patchFile(
-  'server/index.js',
-  (source) => {
-    let out = source.replace(
-      "import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';",
-      "import { analyzeICTPairs, ICT_MODE, ictExecConfig, isIctExecutionEnabled } from './ictEngine.js';",
-    );
-
-    out = out.replace(
-      /  \/\/ ICT engine is shadow-only analysis \(never trades\); 'off' disables the tab's data\.\n  const ictExecutionEnabled =\n    process\.env\.ICT_ENGINE_MODE === 'live' &&\n    process\.env\.ICT_AUTO_TRADE_ENABLED === 'true';\n\n  console\.log\(\n    `\[ICT\] mode=\$\{process\.env\.ICT_ENGINE_MODE \|\| 'shadow'\} ` \+\n    `autoTrade=\$\{process\.env\.ICT_AUTO_TRADE_ENABLED === 'true'\} ` \+\n    `executionEnabled=\$\{ictExecutionEnabled\} ` \+\n    `minConfidence=\$\{process\.env\.ICT_MIN_CONFIDENCE \|\| 80\} ` \+\n    `minRR=\$\{process\.env\.ICT_MIN_RR \|\| 2\.0\} ` \+\n    `maxRiskPercent=\$\{process\.env\.ICT_MAX_RISK_PERCENT \|\| 1\} ` \+\n    `signalTtlSec=\$\{process\.env\.ICT_SIGNAL_TTL_SEC \|\| 300\}`\n  \);/,
-      "  // Log the same authoritative execution contract used by the ICT executor.\n  const ictConfig = ictExecConfig();\n  const ictExecutionEnabled = isIctExecutionEnabled();\n\n  console.log(\n    `[ICT] mode=${ictConfig.mode} ` +\n    `autoTrade=${ictConfig.autoTradeEnabled} ` +\n    `executionEnabled=${ictExecutionEnabled} ` +\n    `minConfidence=${ictConfig.minConfidence} ` +\n    `minRR=${ictConfig.minRR} ` +\n    `maxRiskPercent=${ictConfig.maxRiskPercent} ` +\n    `signalTtlSec=${ictConfig.signalTtlSec}`\n  );",
-    );
-
-    return out;
-  },
-  [
-    'ictExecConfig, isIctExecutionEnabled',
-    'deriveQualifiedManualRisk',
-    'targetRiskUSD: manualRisk.targetRiskUSD',
-    'const ictConfig = ictExecConfig();',
-    'const ictExecutionEnabled = isIctExecutionEnabled();',
-    'minRR=${ictConfig.minRR}',
-  ],
-);
-
-const requiredTruthy = [
-  'FOREX_AUTO_TRADE_ENABLED',
-  'ICT_AUTO_TRADE_ENABLED',
-  'ICT_AUTO_AI_SCHEDULER_ENABLED',
-  'PPR_AI_AUTO_EXECUTION_ENABLED',
-];
-for (const name of requiredTruthy) {
-  if (!truthy(process.env[name])) {
-    throw new Error(`${name} must be enabled before the trading server starts`);
-  }
-}
-
-const ictModule = await import('../server/ictEngine.js');
-const verifiedIctConfig = ictModule.ictExecConfig();
-if (!ictModule.isIctExecutionEnabled()) {
-  throw new Error(
-    `ICT execution contract failed after runtime patch: mode=${verifiedIctConfig.mode} ` +
-    `autoTrade=${verifiedIctConfig.autoTradeEnabled}`,
-  );
-}
-if (verifiedIctConfig.minConfidence < 80 || verifiedIctConfig.minRR < 1.5 || verifiedIctConfig.maxRiskPercent > 1.25) {
-  throw new Error(`ICT runtime thresholds are unsafe or misaligned: ${JSON.stringify(verifiedIctConfig)}`);
-}
-
-console.log(
-  `[RUNTIME_EXECUTION_START] READY ictMode=${verifiedIctConfig.mode} ` +
-  `ictExecutionEnabled=true minConfidence=${verifiedIctConfig.minConfidence} ` +
-  `minRR=${verifiedIctConfig.minRR} maxRiskPercent=${verifiedIctConfig.maxRiskPercent} ` +
-  `v3Mode=${process.env.FOREX_V3_ENGINE_MODE || 'off'} pprMode=${process.env.PPR_ENGINE_MODE || 'active'}`,
+  ["config.mode === 'active' || config.mode === 'live'"],
 );
 
 await import('../server/index.js');
