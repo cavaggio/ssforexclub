@@ -88,15 +88,18 @@ export async function getLossQuoteHomeConversionFactor({
   client,
   homeCurrency = 'USD',
 } = {}) {
-  if (!client || typeof client.get !== 'function') {
-    throw new Error('Missing request-scoped OANDA client for home-currency risk conversion.');
-  }
-
   const normalizedPair = String(pair || '').toUpperCase();
   const quoteCurrency = normalizedPair.split('_')[1];
   const normalizedHome = String(homeCurrency || 'USD').toUpperCase();
   if (!quoteCurrency) throw new Error(`Invalid instrument for risk conversion: ${pair}`);
+
+  // No broker call is required when P/L is already denominated in the account
+  // currency (for example EUR_USD in a USD account).
   if (quoteCurrency === normalizedHome) return 1;
+
+  if (!client || typeof client.get !== 'function') {
+    throw new Error('Missing request-scoped OANDA client for home-currency risk conversion.');
+  }
 
   const accountId = client.accountId || client.accountID || client.account_id;
   if (!accountId) throw new Error('Missing OANDA accountId for home-currency risk conversion.');
