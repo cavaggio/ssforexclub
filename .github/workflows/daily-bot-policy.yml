@@ -1,0 +1,62 @@
+name: Daily bot policy validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Apply generated-source policy
+        shell: bash
+        run: |
+          if ! npm run apply:v3-entry >/tmp/daily-policy-apply.log 2>&1; then
+            echo '--- daily policy apply failure ---'
+            tail -100 /tmp/daily-policy-apply.log
+            exit 1
+          fi
+          tail -20 /tmp/daily-policy-apply.log
+      - name: Syntax check policy modules
+        run: |
+          node --check scripts/apply_daily_bot_policy.mjs
+          node --check server/autoAiWindow.js
+          node --check server/autoAiRouter.js
+          node --check server/riskManager.js
+          node --check server/dailyMarketStudy.js
+          node --check server/ictAutoScheduler.js
+          node --check server/ictAutoTrade.js
+          node --check server/pprAutoTrade.js
+          node --check server/pprExecution.js
+          node --check server/ictExecution.js
+          node --check server/oandaTrade.js
+      - name: Run focused policy tests
+        shell: bash
+        run: |
+          if ! node --test \
+            server/autoAiRouter.test.js \
+            server/ictAutoScheduler.test.js \
+            server/ictWatchlist.test.js \
+            server/dailyMarketStudy.test.js \
+            server/riskManager.test.js \
+            >/tmp/daily-policy-tests.log 2>&1; then
+            echo '--- daily policy test failure ---'
+            tail -120 /tmp/daily-policy-tests.log
+            exit 1
+          fi
+          tail -30 /tmp/daily-policy-tests.log
