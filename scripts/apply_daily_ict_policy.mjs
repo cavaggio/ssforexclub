@@ -52,9 +52,7 @@ if (!auto.includes('executionAllowed = true')) {
 
 if (!auto.includes("runDailyMarketStudy({ client, engine: 'ict'")) {
   const scanCall = /  const \{ analyses \} = await analyzeICTPairs\(scanPairs, \{ client, now, scanMode \}\);\n/;
-  if (!scanCall.test(auto)) {
-    throw new Error('ICT generated scan-call marker missing');
-  }
+  if (!scanCall.test(auto)) throw new Error('ICT generated scan-call marker missing');
   auto = auto.replace(
     scanCall,
     "  if (scanMode === 'daily_study') {\n    return runDailyMarketStudy({ client, engine: 'ict', pairs: scanPairs, now });\n  }\n\n  const { analyses: rawAnalyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });\n  const analyses = await Promise.all(rawAnalyses.map((item) =>\n    applyStoredStudyCalibration(item, { client, engine: 'ict' })\n  ));\n",
@@ -78,3 +76,47 @@ for (const marker of [
 
 if (auto !== autoBefore) writeFileSync(autoPath, auto, 'utf8');
 console.log(`[DAILY_ICT_POLICY] verified server/ictAutoTrade.js${auto !== autoBefore ? ' (patched)' : ''}`);
+
+const executionPath = resolve(ROOT, 'server/ictExecution.js');
+const executionBefore = readFileSync(executionPath, 'utf8');
+let execution = executionBefore;
+
+if (!execution.includes("from './dailyMarketStudy.js'")) {
+  execution = execution.replace(
+    "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';",
+    "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';\nimport { applyStoredStudyCalibration } from './dailyMarketStudy.js';",
+  );
+}
+
+if (!execution.includes('markTradeOpened,')) {
+  execution = execution.replace(
+    /(  checkAutoExecutionConfidence,\n)(  riskConfig,\n)?\} from '\.\/riskManager\.js';/,
+    (_match, confidenceLine, riskConfigLine = '') => `${confidenceLine}  markTradeOpened,\n${riskConfigLine}} from './riskManager.js';`,
+  );
+}
+
+if (!execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })")) {
+  execution = execution.replace(
+    "  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
+    "  try {\n    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
+  );
+}
+
+if (!execution.includes('markTradeOpened({ accountId, balanceUSD, now });')) {
+  execution = execution.replace(
+    "  registerTradeLock(pair, direction);\n  const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;",
+    "  registerTradeLock(pair, direction);\n  markTradeOpened({ accountId, balanceUSD, now });\n  const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;",
+  );
+}
+
+for (const marker of [
+  "from './dailyMarketStudy.js'",
+  'markTradeOpened,',
+  "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
+  'markTradeOpened({ accountId, balanceUSD, now });',
+]) {
+  if (!execution.includes(marker)) throw new Error(`ICT execution daily policy incomplete: missing ${marker}`);
+}
+
+if (execution !== executionBefore) writeFileSync(executionPath, execution, 'utf8');
+console.log(`[DAILY_ICT_POLICY] verified server/ictExecution.js${execution !== executionBefore ? ' (patched)' : ''}`);
