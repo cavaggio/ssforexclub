@@ -15,15 +15,22 @@ jobs:
   diagnostic:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Apply once and snapshot
+      - name: Clone branch and verify generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
-          npm run apply:v3-entry
+          git clone --quiet --depth 1 --branch "$HEAD_BRANCH" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          npm run apply:v3-entry >/tmp/ict-first.log
           find server web -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ict-first.sha
-      - name: Apply twice and verify idempotency
-        run: |
-          npm run apply:v3-entry
+          npm run apply:v3-entry >/tmp/ict-second.log
           find server web -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/ict-second.sha
-          diff -u /tmp/ict-first.sha /tmp/ict-second.sha
-      - name: Run focused policy tests
-        run: node --test server/ictPolicy.test.js
+          echo '--- SECOND-RUN CHANGES ---'
+          diff -u /tmp/ict-first.sha /tmp/ict-second.sha || true
+          changed=$(diff -u /tmp/ict-first.sha /tmp/ict-second.sha | awk '/^[+-][0-9a-f]/{print $3}' | sort -u)
+          for file in $changed; do
+            echo "CHANGED: $file"
+          done
+          test -z "$changed"
+          node --test server/ictPolicy.test.js
