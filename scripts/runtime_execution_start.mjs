@@ -6,6 +6,15 @@ import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
+const ICT_ENGINE_PATH = resolve(ROOT, 'server/ictEngine.js');
+const ICT_RR_RUNTIME_MARKERS = [
+  'export const ICT_MIN_RR = 1.5;',
+  'minRR: configuredIctMinRR()',
+  'export function enforceMinimumRRTarget',
+  'const targetPolicy = enforceMinimumRRTarget({',
+  'targetAdjustedToMinRR',
+  'minimumRR: configuredIctMinRR()',
+];
 
 function truthy(value) {
   return TRUE_VALUES.has(String(value || '').trim().toLowerCase());
@@ -20,10 +29,34 @@ function enforceRuntimeFloors() {
   // These are execution contracts, not optional tuning suggestions. A stale or
   // accidentally loosened Railway variable must never make the runtime less safe
   // or contradict the scanner's qualified status.
-  process.env.ICT_MIN_CONFIDENCE = String(Math.max(80, finiteNumber(process.env.ICT_MIN_CONFIDENCE, 80)));
+  process.env.ICT_MIN_CONFIDENCE = String(Math.max(93, finiteNumber(process.env.ICT_MIN_CONFIDENCE, 93)));
   process.env.ICT_MIN_RR = String(Math.max(1.5, finiteNumber(process.env.ICT_MIN_RR, 1.5)));
   process.env.ICT_MAX_RISK_PERCENT = String(Math.min(1.25, Math.max(0.01, finiteNumber(process.env.ICT_MAX_RISK_PERCENT, 1.25))));
   process.env.RISK_MAX_PER_TRADE_PERCENT = String(Math.min(1.25, Math.max(0.01, finiteNumber(process.env.RISK_MAX_PER_TRADE_PERCENT, 1.25))));
+}
+
+function hasIctRrRuntimeContract(source) {
+  return ICT_RR_RUNTIME_MARKERS.every((marker) => source.includes(marker));
+}
+
+function ensureIctRrFloorRuntime() {
+  // The build-time source pipeline runs before Railway starts and newer ICT
+  // policy passes may append adaptive-stop metadata to computeSetup. The legacy
+  // runtime patcher matches the original block byte-for-byte, so do not rerun it
+  // when the stable R:R contract is already present in the evolved source.
+  const before = readFileSync(ICT_ENGINE_PATH, 'utf8');
+  if (hasIctRrRuntimeContract(before)) {
+    console.log('[RUNTIME_EXECUTION_START] ICT R:R floor already enforced by build pipeline');
+    return;
+  }
+
+  applyIctRrFloorRuntime();
+
+  const after = readFileSync(ICT_ENGINE_PATH, 'utf8');
+  const missing = ICT_RR_RUNTIME_MARKERS.filter((marker) => !after.includes(marker));
+  if (missing.length) {
+    throw new Error(`ICT R:R runtime enforcement incomplete after patch: ${missing.join(', ')}`);
+  }
 }
 
 function patchFile(relativePath, patcher, requiredMarkers) {
@@ -39,7 +72,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 }
 
 enforceRuntimeFloors();
-applyIctRrFloorRuntime();
+ensureIctRrFloorRuntime();
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
 // for starting the API. A stale source marker must never take the entire scanner,
@@ -61,8 +94,8 @@ patchFile(
       "export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'active' || ICT_MODE === 'live'; }",
     )
     .replace(
-      /minConfidence:\s*Math\.max\((?:80|85),\s*parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '(?:80|85)'\)\)/,
-      "minConfidence: Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
+      /minConfidence:\s*Math\.max\((?:80|85|93),\s*parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '(?:80|85|93)'\)\)/,
+      "minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))",
     )
     .replace(
       /minRR:\s*(?:Math\.max\(1\.5,\s*)?parseFloat\(process\.env\.ICT_MIN_RR \|\| '(?:1|1\.0|1\.5|2|2\.0)'\)\)?/,
@@ -78,7 +111,7 @@ patchFile(
     ),
   [
     "ICT_MODE === 'active'",
-    "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
+    "Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))",
     'export const ICT_MIN_RR = 1.5;',
     'minRR: configuredIctMinRR()',
     'export function enforceMinimumRRTarget',
