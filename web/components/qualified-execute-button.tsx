@@ -27,12 +27,37 @@ export function QualifiedExecuteButton({
   const execute = useCallback(async () => {
     setOutcome({ state: 'pending' });
     try {
+      const riskResponse = await fetch('/api/risk/status', { method: 'GET' });
+      const riskJson: any = await riskResponse.json().catch(() => ({}));
+      const targetRiskUSD = finiteNumber(riskJson?.risk?.riskAmountUSD);
+      const riskPercent = finiteNumber(riskJson?.risk?.riskPerTradePercent);
+
+      if (!riskResponse.ok || !riskJson?.ok || targetRiskUSD == null || targetRiskUSD <= 0) {
+        setOutcome({
+          state: 'error',
+          reason: riskJson?.error || 'Could not calculate target risk from the active broker account.',
+        });
+        return;
+      }
+      if (riskPercent == null || riskPercent <= 0 || riskPercent > 1.25) {
+        setOutcome({
+          state: 'error',
+          reason: `Invalid risk percentage returned by the server (${riskPercent ?? 'unknown'}%).`,
+        });
+        return;
+      }
+
       const response = await fetch('/api/scanner/execute-qualified', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine, signal }),
+        body: JSON.stringify({
+          engine,
+          targetRiskUSD,
+          riskPercent,
+          signal: { ...signal, targetRiskUSD, riskPercent },
+        }),
       });
-      const json = await response.json().catch(() => ({}));
+      const json: any = await response.json().catch(() => ({}));
       if (!response.ok || !json?.ok) {
         setOutcome({ state: 'error', reason: json?.error || `HTTP ${response.status}` });
         return;
