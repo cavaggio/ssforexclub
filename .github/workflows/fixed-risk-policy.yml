@@ -11,12 +11,17 @@ on:
       - 'package.json'
       - '.github/workflows/fixed-risk-policy.yml'
 
+permissions:
+  contents: write
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -25,6 +30,18 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Apply generated source policies
         run: npm run apply:v3-entry
+      - name: Commit authoritative generated source
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet -- server/riskManager.js server/oandaRiskSizing.js server/oandaTrade.js server/ictExecution.js; then
+            echo 'Authoritative execution source is already materialized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/riskManager.js server/oandaRiskSizing.js server/oandaTrade.js server/ictExecution.js
+          git commit -m 'Materialize fixed 1.25 percent risk policy'
+          git push origin HEAD:agent/enforce-1-25-risk-20-pip-sl
       - name: Fixed policy unit tests
         run: node --test server/fixedTradeRiskPolicy.test.js
       - name: Central risk manager tests
