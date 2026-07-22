@@ -51,6 +51,8 @@ export async function runAutoV3ForUser({
   runId = null,
   scanMode = 'full',
   pairs = null,
+  executionAllowed = true,
+  executionBlockedReason = null,
 } = {}) {
   const tag = `[AUTO_AI][V3][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
@@ -105,6 +107,51 @@ export async function runAutoV3ForUser({
       skipped: [],
       v3Promoted: 0,
       independentV3Qualified: 0,
+      qualityWatch: stageWatchCandidates.length,
+      watchCandidates: stageWatchCandidates,
+      ...watchState,
+    };
+  }
+
+  if (executionAllowed === false) {
+    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const skipped = qualified.map((signal) => ({
+      pair: signal.pair,
+      direction: signal.direction,
+      reason,
+    }));
+    log(`scan-only gate active qualified=${qualified.length} executed=0 reason="${reason}"`);
+    return {
+      engine: 'v3',
+      architecture: 'independent_v3_raw_market_data',
+      scanned: scan?.meta?.pairsScanned ?? qualified.length,
+      qualified: qualified.length,
+      executed: [],
+      skipped,
+      executionAllowed: false,
+      v3Promoted: qualified.length,
+      independentV3Qualified: qualified.length,
+      qualityWatch: stageWatchCandidates.length,
+      watchCandidates: stageWatchCandidates,
+      ...watchState,
+    };
+  }
+
+  if (!executionAllowed) {
+    const reason = executionBlockedReason || 'V3 scan-only window: new orders are not allowed yet';
+    const skipped = qualified.map((candidate) => ({
+      pair: candidate.pair, direction: candidate.direction, reason,
+    }));
+    log(`V3 scan-only window qualified=${qualified.length} executed=0 reason="${reason}"`);
+    return {
+      engine: 'v3',
+      architecture: 'independent_v3_raw_market_data',
+      scanned: scan?.meta?.pairsScanned ?? qualified.length,
+      qualified: qualified.length,
+      executed: [],
+      skipped,
+      v3Promoted: qualified.length,
+      independentV3Qualified: qualified.length,
       qualityWatch: stageWatchCandidates.length,
       watchCandidates: stageWatchCandidates,
       ...watchState,

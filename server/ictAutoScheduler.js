@@ -4,6 +4,7 @@ import { etParts } from './ictTime.js';
 export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
 export const AUTO_AI_EXECUTION_WINDOW = { startMin: 135, endMin: 600 }; // entries: 02:15–10:00 ET
 export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET
+export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1020, endMin: 1035 }; // 17:00–17:15 ET
 
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
 
@@ -15,13 +16,15 @@ function interval(name, fallback) {
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = interval('AUTO_AI_FULL_SCAN_INTERVAL_MS', 120000);
 export const AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS = interval('AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS', 60000);
 export const AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS = interval('AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS', 30000);
-export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 300000);
+export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math.max(1800000, interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000));
 export const OANDA_TRANSACTION_SYNC_INTERVAL_MS = interval('OANDA_TRANSACTION_SYNC_INTERVAL_MS', 1800000);
+export const DAILY_MARKET_STUDY_INTERVAL_MS = interval('DAILY_MARKET_STUDY_INTERVAL_MS', 300000);
 
 const engineWatchStates = Object.fromEntries(
   AUTO_ENGINES.map((engine) => [engine, { nearQualifiedPairs: new Set(), hotPairs: new Set() }]),
 );
 let timers = [];
+let lastDailyStudyDateKey = null;
 
 function inWindow(date, window) {
   const et = etParts(date);
@@ -31,6 +34,7 @@ function inWindow(date, window) {
 export function inAutoAiWindow(date = new Date()) { return inWindow(date, AUTO_AI_WINDOW); }
 export function inAutoAiExecutionWindow(date = new Date()) { return inWindow(date, AUTO_AI_EXECUTION_WINDOW); }
 export function inActiveTradeManagementWindow(date = new Date()) { return inWindow(date, ACTIVE_TRADE_MANAGEMENT_WINDOW); }
+export function inDailyMarketStudyWindow(date = new Date()) { return inWindow(date, DAILY_MARKET_STUDY_WINDOW); }
 export function makeRunId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
 function normalize(value) {
@@ -101,7 +105,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] scans=02:00–10:00_ET entries=02:15–10:00_ET weekdays_only ` +
+    `[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ` +
     `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
     `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
     `management=10:00–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
@@ -114,16 +118,19 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
   addTimer(setInterval(() => void tickAllEngineWatches(nextUrl, secret, 'hot_watch'), AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS));
   addTimer(setInterval(() => void activeTradeManagementTick(nextUrl, secret), ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS));
   addTimer(setInterval(() => void transactionSyncTick(nextUrl, secret), OANDA_TRANSACTION_SYNC_INTERVAL_MS));
+  addTimer(setInterval(() => void dailyMarketStudyTick(nextUrl, secret), DAILY_MARKET_STUDY_INTERVAL_MS));
 
   void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
-  void activeTradeManagementTick(nextUrl, secret);
+  // Do not run active management immediately on process startup. The first close-capable review must occur on the 30-minute scheduler cadence.
   void transactionSyncTick(nextUrl, secret);
+  void dailyMarketStudyTick(nextUrl, secret);
   return {
     started: true,
     fullScanMs: full,
     nearRecheckMs: AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
     hotWatchMs: AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
     managementMs: ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS,
+    dailyStudyMs: DAILY_MARKET_STUDY_INTERVAL_MS,
   };
 }
 
@@ -161,6 +168,32 @@ async function activeTradeManagementTick(nextUrl, secret) {
 
 async function transactionSyncTick(nextUrl, secret) {
   return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');
+}
+
+function newYorkDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date);
+}
+
+export async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {
+  if (!inDailyMarketStudyWindow(now)) {
+    return { ok: true, skipped: true, reason: 'outside_daily_market_study_window' };
+  }
+  const dayKey = newYorkDateKey(now);
+  if (lastDailyStudyDateKey === dayKey) {
+    return { ok: true, skipped: true, reason: 'daily_market_study_already_completed', dayKey };
+  }
+  const results = [];
+  for (const engine of ['ict', 'ppr']) {
+    const runId = makeRunId();
+    results.push(await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {
+      source: 'railway-scheduler', runId, scanMode: 'daily_study', pairs: [], engine,
+    }, `[DAILY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));
+  }
+  const ok = results.every((result) => result.ok);
+  if (ok) lastDailyStudyDateKey = dayKey;
+  return { ok, dayKey, results };
 }
 
 function applyReturnedWatchState(engine, returned, scanMode, scannedPairs) {

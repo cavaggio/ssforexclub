@@ -223,11 +223,17 @@ export function reserveDailyLossBudget({ accountId, balanceUSD, openRiskUSD = 0,
   };
 }
 
-export function resetDailyRisk() {
+export function resetDailyRisk(accountId = null) {
+  if (accountId != null) {
+    const key = accountKey(accountId);
+    const cleared = dailyState.delete(key) ? 1 : 0;
+    console.log(`[DAILY RISK LOCK] account reset accountId=${key} cleared=${cleared}`);
+    return { ok: true, cleared, accountId: key, scope: 'account' };
+  }
   const cleared = dailyState.size;
   dailyState.clear();
-  console.log(`[DAILY RISK LOCK] reset — cleared ${cleared} account baseline(s)`);
-  return { ok: true, cleared };
+  console.log(`[DAILY RISK LOCK] global reset — cleared ${cleared} account baseline(s)`);
+  return { ok: true, cleared, accountId: null, scope: 'all' };
 }
 
 export function checkAutoExecutionConfidence(confidence, cfg = riskConfig()) {

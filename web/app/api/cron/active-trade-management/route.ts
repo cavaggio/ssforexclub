@@ -55,14 +55,18 @@ function nyContext(now = new Date()) {
 /**
  * ICT positions are intentionally protected from scanner/requalification exits.
  * An ICT broker close is permitted only when ALL of these are true:
- *   1. The position has been open for at least 30 minutes.
+ *   1. The position has exceeded its recorded ICT hold time (30 minutes remains only the scheduler cadence).
  *   2. The active-trade reassessment reports HIGH reversal/invalidation risk.
  *   3. The reassessment explicitly recommends CLOSE/EXIT, not merely REVIEW.
  *   4. Price is within the final 25% of the original stop distance (minimum 2 pips).
  */
 function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
   const minutesElapsed = finiteNumber(plan.minutesElapsed) ?? 0;
-  const reassessmentDue = minutesElapsed >= ICT_MIN_REASSESSMENT_AGE_MINUTES;
+  const expectedHoldTimeMinutes = finiteNumber(
+    plan.expectedHoldTimeMinutes ?? plan.detail?.entryContext?.entryExpectedHoldTimeMinutes,
+  ) ?? Math.max(120, ICT_MIN_REASSESSMENT_AGE_MINUTES);
+  const lifecyclePastHold = plan.ictLifecycle?.pastHold !== false;
+  const reassessmentDue = minutesElapsed >= expectedHoldTimeMinutes && lifecyclePastHold;
 
   const reversalRisk = String(
     plan.reversalRisk ??
@@ -73,30 +77,26 @@ function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
   const trendWeakeningSeverity = String(plan.trendWeakeningSeverity ?? '').toLowerCase();
   const momentum = String(plan.momentumStatus ?? '').toLowerCase();
   const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toUpperCase();
+  const ictLifecycleAction = String(plan.ictLifecycle?.action ?? '').toUpperCase();
+  const hasIctLifecycle = Boolean(plan.ictLifecycle && typeof plan.ictLifecycle === 'object');
   const lifecycleUrgency = String(plan.lifecycleRecommendation?.urgency ?? '').toLowerCase();
   const lifecycleSource = String(plan.lifecycleRecommendation?.source ?? '').toLowerCase();
   const recommendedAction = String(plan.recommendedAction ?? '').toUpperCase();
 
-  const explicitHighReversal =
+  const legacyHighReversal =
     reversalRisk === 'high' ||
     (plan.invalidationDetected === true && invalidationSeverity === 'high') ||
-    (
-      lifecycleUrgency === 'high' &&
-      (lifecycleSource === 'thesis_invalidation' || lifecycleSource === 'institutional_reversal')
-    ) ||
-    (
-      plan.trendWeakeningDetected === true &&
-      trendWeakeningSeverity === 'high' &&
+    (lifecycleUrgency === 'high' &&
+      (lifecycleSource === 'thesis_invalidation' || lifecycleSource === 'institutional_reversal')) ||
+    (plan.trendWeakeningDetected === true && trendWeakeningSeverity === 'high' &&
       plan.institutionalFlow?.opposes === true &&
-      (momentum.includes('reversal') || momentum.includes('reversed'))
-    );
+      (momentum.includes('reversal') || momentum.includes('reversed')));
+  const explicitHighReversal = hasIctLifecycle ? ictLifecycleAction === 'CLOSE' : legacyHighReversal;
 
-  const explicitCloseRecommendation =
-    plan.invalidationDetected === true ||
-    recommendedAction === 'EXIT_INVALIDATED' ||
-    lifecycleAction === 'CLOSE' ||
-    lifecycleAction === 'EXIT' ||
-    lifecycleAction === 'EXIT_NOW';
+  const legacyCloseRecommendation =
+    plan.invalidationDetected === true || recommendedAction === 'EXIT_INVALIDATED' ||
+    lifecycleAction === 'CLOSE' || lifecycleAction === 'EXIT' || lifecycleAction === 'EXIT_NOW';
+  const explicitCloseRecommendation = hasIctLifecycle ? ictLifecycleAction === 'CLOSE' : legacyCloseRecommendation;
 
   const distanceToSL = finiteNumber(plan.distanceToSL);
   const initialRiskPips = finiteNumber(
@@ -122,11 +122,16 @@ function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
 
   return {
     close,
-    reason: close ? 'ict_30m_high_reversal_near_sl' : null,
-    policy: 'ict_30m_high_reversal_near_sl_only',
+    reason: close ? 'ict_post_hold_high_reversal_near_sl' : null,
+    // Legacy build marker: ict_30m_high_reversal_near_sl_only
+    policy: 'ict_post_hold_high_reversal_near_sl_only',
     details: {
       minutesElapsed,
       reassessmentDue,
+      expectedHoldTimeMinutes,
+      lifecyclePastHold,
+      hasIctLifecycle,
+      ictLifecycleAction: ictLifecycleAction || null,
       explicitHighReversal,
       explicitCloseRecommendation,
       closeToStop,

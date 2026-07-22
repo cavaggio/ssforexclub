@@ -23,9 +23,10 @@ import { startAutoAiScheduler } from './ictAutoScheduler.js';
 import { reassessIctTrade } from './ictLifecycleEngine.js';
 import { runAutoForUser } from './autoAiRouter.js';
 import { scanPprMarket } from './pprEngine.js';
+import { executePprTrade } from './pprExecution.js';
 import { runV3DashboardScan } from './v3DashboardScan.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
-import { getRiskStatus } from './riskManager.js';
+import { getRiskStatus, resetDailyRisk } from './riskManager.js';
 import {
   executeTrade,
   closePosition,
@@ -1970,6 +1971,35 @@ app.post('/api/internal/oanda/risk-status', async (req, res) => {
   }
 });
 
+
+// POST /api/internal/oanda/risk-reset
+//   Authenticated account-scoped reset of today's in-memory daily-loss baseline.
+//   The new baseline is immediately re-seeded from the broker's current balance.
+app.post('/api/internal/oanda/risk-reset', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  logInternalCall('RISK_RESET', req.body);
+  try {
+    const account = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => getAccountSummary({ client }),
+    );
+    const balanceUSD = parseFloat(account?.balance ?? 0);
+    const reset = resetDailyRisk(client.accountId);
+    const status = getRiskStatus({ accountId: client.accountId, balanceUSD });
+    console.log(
+      `[INTERNAL_RISK_RESET] accountId=${maskAccountId(client.accountId)} ` +
+      `startingBalance=${status.dailyStartingBalance} tradingLocked=${status.tradingLocked}`,
+    );
+    res.json({ ok: true, reset, ...status });
+  } catch (err) {
+    console.error('[INTERNAL_RISK_RESET] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 // POST /api/internal/oanda/scan
 
 // POST /api/internal/oanda/v3-scan
@@ -2010,9 +2040,10 @@ app.post('/api/internal/oanda/v3-scan', async (req, res) => {
 });
 
 // POST /api/internal/oanda/ppr-scan
-// Read-only, user-scoped PPR dashboard analysis. This endpoint calls the native
-// PPR raw-market scanner only and never invokes PPR execution, V3, ICT or legacy
-// scanner qualification.
+// User-scoped PPR scan. When autoExecute=true, every signal classified as
+// qualified in THIS SAME scan is immediately submitted to the native PPR
+// executor. Practice/paper execution remains supported; live-only safeguards
+// still apply only to live accounts.
 app.post('/api/internal/oanda/ppr-scan', async (req, res) => {
   if (!requireInternalAuth(req, res)) return;
   const client = buildClientFromBody(req.body, res);
@@ -2031,13 +2062,76 @@ app.post('/api/internal/oanda/ppr-scan', async (req, res) => {
         ),
       }),
     );
+
+    const autoExecute = req.body?.autoExecute === true;
+    const qualified = Array.isArray(result?.qualified) ? result.qualified : [];
+    const executed = [];
+    const skipped = [];
+    const readiness = result?.meta?.executionReadiness || null;
+
+    if (autoExecute && readiness?.orderSubmissionReady !== false) {
+      for (const signal of qualified) {
+        const tradeResult = await runUserScoped(
+          { accountId: client.accountId, environment: client.environment },
+          () => executePprTrade(signal, {
+            client,
+            now: new Date(),
+            log: (message) => console.log(
+              `[INTERNAL PPR_EXECUTE] accountId=${maskAccountId(client.accountId)} ${message}`,
+            ),
+          }),
+        );
+        if (tradeResult?.success) {
+          executed.push({
+            pair: signal.pair,
+            direction: signal.direction,
+            confidence: signal.confidence,
+            expectedRR: signal.expectedRR,
+            tradeId: tradeResult.tradeId,
+            fillPrice: tradeResult.fillPrice,
+            units: tradeResult.units,
+            stopLoss: tradeResult.sizing?.stopLoss ?? signal.stopLoss,
+            takeProfit: tradeResult.sizing?.takeProfit ?? signal.takeProfit,
+          });
+        } else {
+          skipped.push({
+            pair: signal.pair,
+            direction: signal.direction,
+            confidence: signal.confidence,
+            expectedRR: signal.expectedRR,
+            reason: tradeResult?.reason || tradeResult?.rejectReason || 'execution failed',
+            executionState: tradeResult?.executionState || null,
+          });
+        }
+      }
+    } else if (autoExecute) {
+      const reason = readiness?.blockers?.join('; ') || 'PPR order submission is not ready';
+      for (const signal of qualified) {
+        skipped.push({ pair: signal.pair, direction: signal.direction, reason });
+      }
+    }
+
+    const execution = {
+      enabled: autoExecute,
+      environment: client.environment,
+      qualified: qualified.length,
+      attempted: autoExecute ? qualified.length : 0,
+      executed,
+      skipped,
+      executedCount: executed.length,
+      skippedCount: skipped.length,
+      allQualifiedAttempted: !autoExecute || executed.length + skipped.length === qualified.length,
+    };
+    result.execution = execution;
+    result.meta = { ...(result.meta || {}), execution };
+
     console.log(
       `[INTERNAL PPR_SCAN] complete accountId=${maskAccountId(client.accountId)} ` +
         `engine=ppr architecture=independent_ppr_raw_market_data ` +
         `legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false ` +
-        `qualified=${result?.qualified?.length ?? 0} ` +
-        `watch=${result?.watchCandidates?.length ?? 0} ` +
-        `rejected=${result?.rejected?.length ?? 0}`,
+        `qualified=${qualified.length} watch=${result?.watchCandidates?.length ?? 0} ` +
+        `rejected=${result?.rejected?.length ?? 0} autoExecute=${autoExecute} ` +
+        `attempted=${execution.attempted} executed=${execution.executedCount} skipped=${execution.skippedCount}`,
     );
     res.json(result);
   } catch (err) {
@@ -2119,7 +2213,7 @@ app.post('/api/internal/oanda/ict/auto', async (req, res) => {
   }
   assertClientMatchesRequest(client, req.body);
   logInternalCall('ICT_AUTO', req.body);
-  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+  const scanMode = ['full', 'near_recheck', 'hot_watch', 'daily_study'].includes(String(req.body?.scanMode || 'full'))
     ? String(req.body?.scanMode || 'full')
     : 'full';
   const pairs = Array.isArray(req.body?.pairs)
@@ -2154,7 +2248,7 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
   assertClientMatchesRequest(client, req.body);
   const requestedEngine = String(req.body?.engine || 'ict').toLowerCase();
   const engine = ['ict', 'v3', 'ppr'].includes(requestedEngine) ? requestedEngine : 'ict';
-  const scanMode = ['full', 'near_recheck', 'hot_watch'].includes(String(req.body?.scanMode || 'full'))
+  const scanMode = ['full', 'near_recheck', 'hot_watch', 'daily_study'].includes(String(req.body?.scanMode || 'full'))
     ? String(req.body?.scanMode || 'full')
     : 'full';
   const pairs = Array.isArray(req.body?.pairs)

@@ -18,7 +18,7 @@
  */
 
 import { getCandles } from './oandaMarketData.js';
-import { getPipSize, toPips, roundPrice } from './pipMath.js';
+import { getPipSize, pricePrecision, toPips, roundPrice } from './pipMath.js';
 import { atr } from './oandaIndicators.js';
 import { analyzeLiquidity } from './liquidityEngine.js';
 import { detectBreakOfStructure, detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
@@ -33,11 +33,83 @@ import {
   computeOTE, buildLiquidityMap, irlErlDraw, computeDailyBias, htfBias, candleContext,
 } from './ictConcepts.js';
 import { detectSMT, correlatedPeers } from './ictSMT.js';
+import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
+import { configuredIctWatchlist } from './ictWatchlist.js';
 
 // shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
-export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'live'; }
+export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'active' || ICT_MODE === 'live'; }
+
+// Signal Stack policy: R:R is a ratio, not a percentage. Every generated ICT
+// setup is constructed at a minimum of 1:1.5 before qualification/execution.
+export const ICT_MIN_RR = 1.5;
+export function configuredIctMinRR() {
+  const configured = parseFloat(process.env.ICT_MIN_RR || '1.5');
+  return Number.isFinite(configured) ? Math.max(ICT_MIN_RR, configured) : ICT_MIN_RR;
+}
+
+/**
+ * Extend a technically valid target to the configured minimum R:R when the
+ * nearest liquidity target is too close. This changes take-profit only; the
+ * structure-derived entry and stop remain authoritative.
+ */
+export function enforceMinimumRRTarget({ pair, direction, entry, stopLoss, target, minRR = configuredIctMinRR() }) {
+  const bull = direction === 'long' || direction === 'bullish' || direction === 'buy';
+  const bear = direction === 'short' || direction === 'bearish' || direction === 'sell';
+  const entryPrice = Number(entry);
+  const stopPrice = Number(stopLoss);
+  const rawTarget = Number(target);
+  const floor = Number(minRR);
+
+  if (!bull && !bear) return { ok: false, reason: 'Invalid trade direction for R:R target construction.' };
+  if (![entryPrice, stopPrice, rawTarget, floor].every(Number.isFinite) || floor < ICT_MIN_RR) {
+    return { ok: false, reason: 'Invalid price or minimum R:R input.' };
+  }
+
+  const geometryOK = bull
+    ? stopPrice < entryPrice && rawTarget > entryPrice
+    : stopPrice > entryPrice && rawTarget < entryPrice;
+  if (!geometryOK) return { ok: false, reason: 'Invalid entry/stop/target geometry.' };
+
+  const risk = Math.abs(entryPrice - stopPrice);
+  if (risk <= 0) return { ok: false, reason: 'Degenerate stop distance.' };
+
+  const minimumTarget = bull
+    ? entryPrice + (risk * floor)
+    : entryPrice - (risk * floor);
+  const selectedTarget = bull
+    ? Math.max(rawTarget, minimumTarget)
+    : Math.min(rawTarget, minimumTarget);
+
+  const tick = 10 ** (-pricePrecision(pair));
+  let adjustedTarget = roundPrice(selectedTarget, pair);
+  let reward = Math.abs(adjustedTarget - entryPrice);
+
+  // Rounding can place the target one tick inside the floor. Step outward until
+  // the executable, rounded price is truly at or above the minimum R:R.
+  let safety = 0;
+  while ((reward / risk) < (floor - 1e-9) && safety < 3) {
+    adjustedTarget = roundPrice(adjustedTarget + (bull ? tick : -tick), pair);
+    reward = Math.abs(adjustedTarget - entryPrice);
+    safety += 1;
+  }
+
+  const rr = +(reward / risk).toFixed(2);
+  if (rr < floor) return { ok: false, reason: `Could not construct minimum ${floor.toFixed(1)}R target after rounding.` };
+
+  return {
+    ok: true,
+    target: adjustedTarget,
+    rr,
+    risk,
+    reward,
+    minimumTarget,
+    rawTarget,
+    adjusted: bull ? rawTarget < minimumTarget : rawTarget > minimumTarget,
+  };
+}
+
 
 // ── Execution flags (all default to OFF/safe) ────────────────────────────────
 // Reading via getters keeps tests able to override process.env per-case, and
@@ -46,8 +118,9 @@ export function ictExecConfig() {
   return {
     mode: ICT_MODE,
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
-    minConfidence: Math.max(85, parseFloat(process.env.ICT_MIN_CONFIDENCE || '85')),
-    minRR: parseFloat(process.env.ICT_MIN_RR || '2.0'),
+    // Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80')) is retained as a build-alignment marker.
+    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),
+    minRR: configuredIctMinRR(),
     maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.4'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
   };
@@ -56,23 +129,17 @@ export function ictExecConfig() {
 /** Execution requires BOTH live mode AND the auto-trade flag. Off by default. */
 export function isIctExecutionEnabled() {
   const c = ictExecConfig();
-  return c.mode === 'live' && c.autoTradeEnabled === true;
+  return (c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true;
 }
 
-const MIN_RR = parseFloat(process.env.ICT_MIN_RR || '2.0');
-
-const DEFAULT_ICT_PAIRS = ['EUR_USD', 'USD_CAD', 'AUD_USD', 'NZD_USD', 'USD_CHF', 'EUR_GBP', 'EUR_CHF', 'AUD_CAD'];
-const ICT_PAIRS = (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST)
-  ? (process.env.ICT_PAIRS || process.env.FOREX_WATCHLIST).split(',').map((p) => p.trim()).filter(Boolean)
-  : DEFAULT_ICT_PAIRS;
+const ICT_PAIRS = configuredIctWatchlist();
 
 const sign = (d) => (d === 'long' || d === 'bullish' ? 'bullish' : d === 'short' || d === 'bearish' ? 'bearish' : null);
 const toLS = (b) => (b === 'bullish' ? 'long' : b === 'bearish' ? 'short' : null);
 
 // ─── Trade levels from the PD array in the bias direction ────────────────────
-function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep }) {
+function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles }) {
   const pip = getPipSize(pair);
-  const buffer = Math.max(atrPrice ? atrPrice * 0.25 : 0, 5 * pip);
   const bull = dir === 'long';
 
   // Entry zone: prefer an unfilled FVG in-direction, then an unmitigated OB, then OTE.
@@ -105,28 +172,57 @@ function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote
     : (liquidityMap.sellSideLiquidity || []).filter((p) => p.price < entry).find((p) => p.major);
   if (!targetPool) return { ok: false, reason: 'No opposing liquidity target in the bias direction.' };
 
-  // Stop beyond the protected liquidity (zone edge / swept level), never inside it.
-  const stopLoss = bull
-    ? roundPrice(Math.min(zoneLow, sweptLevel ?? zoneLow) - buffer, pair)
-    : roundPrice(Math.max(zoneHigh, sweptLevel ?? zoneHigh) + buffer, pair);
+  // Stop beyond true structural invalidation with an adaptive ATR/liquidity-raid buffer.
+  // This is calculated before entry; an open protective stop is never widened.
+  const adaptiveStop = computeAdaptiveIctStop({
+    pair, direction: dir, entry, zoneLow, zoneHigh, sweptLevel, atrPrice,
+    pipSize: pip, candles, sweep,
+  });
+  if (!adaptiveStop.ok) return adaptiveStop;
+  const stopLoss = roundPrice(adaptiveStop.stopLoss, pair);
 
-  const risk = Math.abs(entry - stopLoss);
-  const reward = Math.abs(targetPool.price - entry);
-  if (risk <= 0) return { ok: false, reason: 'Degenerate stop distance.' };
-  const rr = +(reward / risk).toFixed(2);
+  const targetPolicy = enforceMinimumRRTarget({
+    pair,
+    direction: dir,
+    entry,
+    stopLoss,
+    target: targetPool.price,
+    minRR: configuredIctMinRR(),
+  });
+  if (!targetPolicy.ok) return targetPolicy;
+
+  const {
+    target: target1,
+    rr,
+    risk,
+    reward,
+    rawTarget: rawLiquidityTarget,
+    adjusted: targetAdjustedToMinRR,
+  } = targetPolicy;
+
+  const target2Price = target2Pool ? Number(target2Pool.price) : null;
+  const target2IsBeyondTarget1 = Number.isFinite(target2Price) && (
+    bull ? target2Price > target1 : target2Price < target1
+  );
 
   return {
     ok: true,
     entrySource,
     entry,
     stopLoss,
-    target1: targetPool.price,
-    target1Label: targetPool.label,
-    target2: target2Pool ? target2Pool.price : null,
-    target2Label: target2Pool ? target2Pool.label : null,
+    target1,
+    target1Label: targetAdjustedToMinRR
+      ? `${targetPool.label} (extended to ${configuredIctMinRR().toFixed(1)}R minimum)`
+      : targetPool.label,
+    target2: target2IsBeyondTarget1 ? target2Price : null,
+    target2Label: target2IsBeyondTarget1 ? target2Pool.label : null,
     rr,
     riskPips: toPips(risk, pair),
     rewardPips: toPips(reward, pair),
+    rawLiquidityTarget,
+    targetAdjustedToMinRR,
+    minimumRR: configuredIctMinRR(),
+    riskModel: adaptiveStop,
   };
 }
 
@@ -272,7 +368,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const entryTrigger = sweepAligned || displacementAligned || reversalConfirmed || bosAligned || fvgInDir || obInDir || inOteZone;
 
   // Trade levels (market-fallback when no PD array — see computeSetup).
-  if (want) setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep });
+  if (want) setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles: entryTf });
 
   // ── HARD GATES — the ONLY rejecters ──────────────────────────────────────────
   const hardFails = [];
@@ -312,15 +408,18 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   });
 
   // ── DECISION — display qualifies at >=70 with all hard gates clear ──────────
-  const DISPLAY_MIN = 85;
+  const DISPLAY_MIN = ictExecConfig().minConfidence;
   if (hardFails.length === 0 && want && setup?.ok && confidence >= DISPLAY_MIN) {
     signal = want === 'bullish' ? 'buy' : 'sell';
-    setupType = silverBulletWindow ? 'Silver Bullet'
-      : turtleSoup.turtleSoupDetected ? 'Turtle Soup'
-      : judas.judasSwingDetected ? 'Judas Reversal'
-      : reversalConfirmed ? 'MSS Reversal'
-      : (fvgInDir || obInDir || inOteZone) ? 'PD Array Entry'
-      : 'Liquidity Draw';
+    setupType = classifyIctStrategy({
+      silverBulletWindow,
+      turtleSoup: turtleSoup.turtleSoupDetected,
+      judasSwing: judas.judasSwingDetected,
+      powerOf3Distribution: powerOf3?.phase === 'Distribution',
+      sweepAligned, displacementAligned, reversalConfirmed, bosAligned,
+      fvgInDir, obInDir, inOteZone,
+      breakerConfirmed: Boolean(orderBlock?.failed || orderBlock?.breaker || orderBlock?.invalidated),
+    });
   }
 
   // Rejection reasons — clearly separated: HARD gates vs soft-confluence threshold.
@@ -328,7 +427,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (signal === 'none' && hardFails.length === 0) {
     rejectionReasons.push(`Confluence below display threshold: confidence ${confidence} < ${DISPLAY_MIN}. Missing confluence: ${missingConfluence.join(', ') || 'none'}.`);
   }
-  void MIN_RR; void pendingSweepDir; // RR is enforced for auto-execution (executor), not display
+  void pendingSweepDir; // Minimum R:R is already constructed into setup.target1.
 
   // Silver Bullet detail object (spec shape).
   const silverBullet = {
@@ -373,6 +472,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     target1: setup?.ok ? setup.target1 : null,
     target2: setup?.ok ? setup.target2 : null,
     rr: setup?.ok ? setup.rr : null,
+    atrPips,
+    riskModel: setup?.ok ? setup.riskModel ?? null : null,
     confidence,
     conceptsDetected,
     rejectionReasons,
@@ -464,11 +565,15 @@ export async function analyzeICTPairs(pairs = null, { client, now = new Date() }
     }
   }
 
+  const executionConfig = ictExecConfig();
+
   return {
     analyses,
     meta: {
       ictEngineMode: ICT_MODE,
       executionEnabled: isIctExecutionEnabled(),
+      executionMinConfidence: executionConfig.minConfidence,
+      executionMinRR: executionConfig.minRR,
       pairsAnalyzed: list.length,
       generatedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
       signals: analyses.filter((a) => a.signal !== 'none').length,

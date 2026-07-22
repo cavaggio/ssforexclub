@@ -39,13 +39,20 @@ import {
   checkDailyRiskLock,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
+  markTradeOpened,
   riskConfig,
 } from './riskManager.js';
 import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinimumRR, repriceV3TpHitConfidence } from './v3TpConfidence.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { evaluatePprExecutionPolicy, isPprExecutionSignal, pprSetupFingerprint } from './pprExecutionPolicy.js';
-import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+import {
+  reserveExecution,
+  markExecutionOpen,
+  releaseExecution,
+  releaseExecutionByTradeId,
+  releaseExecutionsForPairDirection,
+} from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
@@ -92,8 +99,24 @@ const ENTRY_TIMING_STRICT        = String(process.env.FOREX_ENTRY_TIMING_STRICT 
 let dailyTradeTimestamps = [];
 let dailyLossUSD         = 0;
 let lastTradeTime        = 0;
+const lastTradeTimesByPair = new Map();
 let dailyStartBalance    = null;
 const activeTrades       = new Set();
+
+export function markPairTradeCooldown(pair, atMs = Date.now()) {
+  const key = normalizePair(pair);
+  if (key) lastTradeTimesByPair.set(key, Number(atMs));
+}
+
+export function isPairTradeCooldownActive(pair, nowMs = Date.now()) {
+  const key = normalizePair(pair);
+  const last = Number(lastTradeTimesByPair.get(key) || 0);
+  return last > 0 && Number(nowMs) - last < COOLDOWN_MS;
+}
+
+export function clearPairTradeCooldowns() {
+  lastTradeTimesByPair.clear();
+}
 
 export function resetDailyCounters() {
   const before = {
@@ -106,6 +129,7 @@ export function resetDailyCounters() {
   dailyLossUSD         = 0;
   dailyStartBalance    = null;
   lastTradeTime        = 0;
+  clearPairTradeCooldowns();
   activeTrades.clear();
   console.log('[TRADE] Daily counters reset (in-memory only — no broker change).', before);
   return { ok: true, cleared: before };
@@ -172,6 +196,25 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
     activeTrades.delete(key);
   } else {
     console.log(`[BROKER POSITION CLEAR] ${key} — no broker position exists`);
+  }
+
+  // Broker truth releases only an old `open` reservation. A `reserved` row
+  // may belong to another execution request that is currently between its
+  // atomic reservation and broker fill, so reconciliation must not erase it.
+  // Loss locks are also excluded and remain enforceable.
+  try {
+    const cleanup = await releaseExecutionsForPairDirection({
+      accountId: client?.accountId,
+      pair,
+      direction,
+      status: 'released',
+      statuses: ['open'],
+    });
+    if (cleanup.released > 0) {
+      console.warn(`[STALE RESERVATION RELEASED] ${key} — released ${cleanup.released} local reservation(s)`);
+    }
+  } catch (err) {
+    console.warn(`[STALE RESERVATION CLEANUP] ${key} — ${err?.message || err}`);
   }
 
   return false;
@@ -878,9 +921,10 @@ export async function executeTrade(signal, options = {}) {
 
   // ── Guard 6: Cooldown ─────────────────────────────────────────────────────
   const now = Date.now();
-  if (now - lastTradeTime < COOLDOWN_MS) {
-    const waitSec = Math.ceil((COOLDOWN_MS - (now - lastTradeTime)) / 1000);
-    return blocked(`Cooldown active — wait ${waitSec}s before next trade`);
+  if (isPairTradeCooldownActive(pair, now)) {
+    const pairLastTradeTime = Number(lastTradeTimesByPair.get(normalizePair(pair)) || 0);
+    const waitSec = Math.ceil((COOLDOWN_MS - (now - pairLastTradeTime)) / 1000);
+    return blocked(`Pair cooldown active for ${pair} — wait ${waitSec}s before another ${pair} trade`);
   }
 
   // ── Guard 7: No duplicate (reconciled against OANDA) ──────────────────────
@@ -1370,6 +1414,7 @@ export async function executeTrade(signal, options = {}) {
   }
 
   if (!orderFillTransaction) {
+    await releaseExecution(executionReservationHash, 'no_fill');
     const rejectReason =
       'No fill transaction in OANDA response — IOC order found no liquidity';
     console.log(`[TRADE] ✗ Order REJECTED (no fill transaction)`);
@@ -1401,8 +1446,10 @@ export async function executeTrade(signal, options = {}) {
   // Count and lock every confirmed broker fill immediately. A successful emergency
   // flatten removes only the active lock; the daily fill count remains accurate.
   lastTradeTime = Date.now();
+  markPairTradeCooldown(pair, lastTradeTime);
   dailyTradeTimestamps.push(lastTradeTime);
   activeTrades.add(tradeKey);
+  markTradeOpened({ accountId, balanceUSD });
 
   let effectiveTpPrice = tpPrice;
   let postFillTpAdjusted = false;
@@ -1424,6 +1471,7 @@ export async function executeTrade(signal, options = {}) {
       ? await client.put(closePath, closeBody)
       : await oandaPut(closePath, closeBody);
     activeTrades.delete(tradeKey);
+    await releaseExecution(executionReservationHash, 'released');
     return response;
   };
 
@@ -1713,6 +1761,10 @@ export async function closePosition(instrument) {
     );
     activeTrades.delete(`${instrument}_long`);
     activeTrades.delete(`${instrument}_short`);
+    await Promise.all([
+      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'long', statuses: ['open'] }),
+      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'short', statuses: ['open'] }),
+    ]);
     console.log(`[TRADE] ✓ Position closed: ${instrument}`);
     return { success: true, response };
   } catch (err) {
@@ -1807,6 +1859,13 @@ export async function closeBrokerTrade({ tradeId, instrument = null, units, clie
       if (isFullClose) {
         activeTrades.delete(`${instrument}_long`);
         activeTrades.delete(`${instrument}_short`);
+      }
+    }
+    if (isFullClose) {
+      try {
+        await releaseExecutionByTradeId(tradeId, 'released');
+      } catch (releaseError) {
+        console.warn(`[TRADE_CLOSE] reservation release failed tradeId=${tradeId}: ${releaseError?.message || releaseError}`);
       }
     }
     console.log(
