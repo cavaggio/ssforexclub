@@ -2,7 +2,7 @@
  * server/ictExecution.js
  *
  * ICT Engine — MANUAL trade execution, isolated from V3. It never auto-trades
- * and is OFF by default (requires ICT_ENGINE_MODE=live AND ICT_AUTO_TRADE_ENABLED=true,
+ * and is OFF by default (requires ICT_ENGINE_MODE=active (or legacy live) AND ICT_AUTO_TRADE_ENABLED=true,
  * plus the broker-level live-ack FOREX_ALLOW_LIVE_EXECUTION).
  *
  * Reuses the EXISTING secure machinery without modifying V3 behavior:
@@ -27,11 +27,13 @@ import { getAccountSummary, getCandles, getOpenTrades, getPricing } from './oand
 import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
+  computeRiskBudgetUSD,
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
+  riskConfig,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
@@ -40,6 +42,12 @@ import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
 import { isExplicitSwingSignal } from './scalpOnlyPolicy.js';
+import {
+  FIXED_RISK_PER_TRADE_PERCENT,
+  enforceFixedStopGeometry,
+  buildFixedStopLossOnFill,
+  getLossQuoteHomeConversionFactor,
+} from './fixedTradeRiskPolicy.js';
 const PAIR_RE = /^[A-Z]{3}_[A-Z]{3}$/;
 const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
 const priceDecimalsFor = (p) => (isMetal(p) ? 2 : String(p).includes('JPY') ? 3 : 5);
@@ -129,8 +137,8 @@ export async function executeIctTrade(params = {}, {
   const rec = (m) => { log.push(m); console.log(`[ICT_TRADE] ${m}`); };
   rec(`requested pair=${pair} dir=${direction} entry=${entry} sl=${stopLoss} tp=${targetProfit} id=${ictSignalId} env=${tradingEnv}`);
 
-  // ── 1. Execution enabled (mode=live AND auto-trade) — the default-off gate ──
-  if (!(config.mode === 'live' && config.autoTradeEnabled === true)) {
+  // ── 1. Execution enabled (mode=active/live AND auto-trade) ────────────────
+  if (!((config.mode === 'active' || config.mode === 'live') && config.autoTradeEnabled === true)) {
     return blocked(`ICT execution disabled (ICT_ENGINE_MODE=${config.mode}, ICT_AUTO_TRADE_ENABLED=${config.autoTradeEnabled}).`);
   }
   // ── 2. Live acknowledgement (LIVE only — paper/practice never requires it) ──
@@ -165,7 +173,10 @@ export async function executeIctTrade(params = {}, {
   }
   // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
   if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(analysis.confidence);
+    const confCheck = checkAutoExecutionConfidence(analysis.confidence, {
+      ...riskConfig(),
+      autoExecutionMinConfidence: config.minConfidence,
+    });
     if (!confCheck.passed) return blocked(confCheck.reason);
   }
 
@@ -209,22 +220,41 @@ export async function executeIctTrade(params = {}, {
   }
 
   const pipSize = getPipSize(pair);
-  const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
-  const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
-  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
-  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
-  const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
+  const dp = priceDecimalsFor(pair);
+  const fixedGeometry = enforceFixedStopGeometry({
+    pair, direction, entry, takeProfit: targetProfit, minRR: config.minRR, priceDecimals: dp,
+  });
+  const slPips = fixedGeometry.stopLossPips;
+  const tpPips = fixedGeometry.takeProfitPips;
+  const enforcedStopLoss = fixedGeometry.stopLoss;
+  const enforcedTargetProfit = fixedGeometry.takeProfit;
+  const requestedRiskUSD = computeRiskBudgetUSD(balanceUSD);
   let openTradesForBudget = [];
   try { const openFn = getOpen || (() => getOpenTrades({ client })); openTradesForBudget = (await openFn()) || []; } catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
   const dailyBudget = reserveDailyLossBudget({ accountId: client.accountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
   if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
-  const targetRiskUSD = dailyBudget.approvedRiskUSD;
+  if (dailyBudget.capped) {
+    return blocked(
+      `Full fixed ${FIXED_RISK_PER_TRADE_PERCENT}% risk is unavailable within the remaining daily loss budget; ` +
+      `requested=$${requestedRiskUSD.toFixed(2)} approved=$${dailyBudget.approvedRiskUSD.toFixed(2)}. Trade blocked.`
+    );
+  }
+  const targetRiskUSD = requestedRiskUSD;
+  let lossQuoteHomeConversionFactor;
+  try {
+    lossQuoteHomeConversionFactor = await getLossQuoteHomeConversionFactor({
+      pair, client, homeCurrency: account.currency || 'USD',
+    });
+  } catch (err) {
+    return blocked(`Could not calculate broker home-currency stop risk: ${err.message}`);
+  }
   const sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
-    stopLossPips: slPips, stopLossPrice: stopLoss,
-    takeProfitPips: tpPips, takeProfitPrice: targetProfit,
+    stopLossPips: slPips, stopLossPrice: enforcedStopLoss,
+    takeProfitPips: tpPips, takeProfitPrice: enforcedTargetProfit,
     accountMarginRate: parseFloat(account?.marginRate ?? 0),
     accountBalanceUSD: balanceUSD,
+    lossQuoteHomeConversionFactor,
   });
   const units = sizing.signedUnits;
   if (!units || Math.abs(units) < 1) {
@@ -239,7 +269,7 @@ export async function executeIctTrade(params = {}, {
     return blocked(marginCheck.reason);
   }
 
-  // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.4%) ───────
+  // ── 8b-ii. Hard risk-per-trade validation (actual sized risk ≤ 1.25%) ───────
   const riskCheck = checkRiskPerTrade({
     balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slPips, positionSize: Math.abs(units),
   });
@@ -327,8 +357,8 @@ export async function executeIctTrade(params = {}, {
     pair,
     direction,
     quote: freshQuote,
-    stopLoss,
-    targetProfit,
+    stopLoss: enforcedStopLoss,
+    targetProfit: enforcedTargetProfit,
   });
 
   if (!protectiveCheck.ok) {
@@ -337,20 +367,19 @@ export async function executeIctTrade(params = {}, {
   }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
-  const dp = priceDecimalsFor(pair);
   const orderPayload = {
     order: {
       type: 'MARKET', instrument: pair, units: units.toString(),
       timeInForce: 'IOC', positionFill: 'DEFAULT',
-      stopLossOnFill: { price: stopLoss.toFixed(dp), timeInForce: 'GTC' },
-      takeProfitOnFill: { price: targetProfit.toFixed(dp), timeInForce: 'GTC' },
+      stopLossOnFill: buildFixedStopLossOnFill({ pair, priceDecimals: dp }),
+      takeProfitOnFill: { price: enforcedTargetProfit.toFixed(dp), timeInForce: 'GTC' },
     },
   };
   rec(`submitted ${pair} ${direction} units=${units} risk=$${targetRiskUSD} (recomputed conf=${analysis.confidence} rr=${analysis.rr})`);
 
   let resp;
   try {
-    const executionSignal = { ...analysis, pair, direction, entry, stopLoss, takeProfit: targetProfit };
+    const executionSignal = { ...analysis, pair, direction, entry, stopLoss: enforcedStopLoss, takeProfit: enforcedTargetProfit };
     const setupKey = setupFingerprint(executionSignal, accountId);
     const reservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
     if (!reservation.allowed) return blocked(`Atomic setup reservation rejected: ${reservation.reason}`);
@@ -373,6 +402,7 @@ export async function executeIctTrade(params = {}, {
   }
   const fill = resp?.orderFillTransaction;
   if (!fill) {
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'no_fill');
     rec('rejected: no fill transaction (IOC found no liquidity)');
     return { success: false, blocked: false, executionState: 'REJECTED', reason: 'No fill transaction — IOC order found no liquidity.', sizing, oandaResponse: resp, executionLog: log };
   }
@@ -388,7 +418,7 @@ export async function executeIctTrade(params = {}, {
   return {
     success: true, blocked: false, executionState: 'FILLED',
     tradeId, fillPrice, units, pair, direction,
-    stopLoss, takeProfit: targetProfit,
+    stopLoss: enforcedStopLoss, takeProfit: enforcedTargetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
     holdMinutes,
     executionLog: log,

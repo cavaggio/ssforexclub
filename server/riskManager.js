@@ -24,16 +24,18 @@
  *   dailyRealizedPnL ≈ currentBalance − dailyStartingBalance
  */
 
+import { FIXED_RISK_PER_TRADE_PERCENT } from './fixedTradeRiskPolicy.js';
+
 // Exact operator-facing message required when a margin restriction would be hit.
 export const MARGIN_RESTRICTION_MESSAGE = 'Account margin restriction would be exceeded.';
 
 // Small relative tolerance so integer-unit / pip rounding in sizing doesn't
 // trip the hard risk cap by a fraction of a cent.
-const RISK_TOLERANCE = 0.005; // 0.5%
+const RISK_TOLERANCE = 0; // never authorize planned risk above 1.25%
 
 export function riskConfig() {
   return {
-    maxRiskPerTradePercent: parseFloat(process.env.RISK_MAX_PER_TRADE_PERCENT || '1.25'),
+    maxRiskPerTradePercent: FIXED_RISK_PER_TRADE_PERCENT,
     dailyMaxDrawdownPercent: 2.5,
     autoExecutionMinConfidence: Math.max(85, parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '85')),
   };
@@ -180,11 +182,17 @@ export function reserveDailyLossBudget({ accountId, balanceUSD, openRiskUSD = 0,
 }
 
 /** Manual/admin reset of all daily baselines (e.g. broker daily reset hook). */
-export function resetDailyRisk() {
+export function resetDailyRisk(accountId = null) {
+  if (accountId != null) {
+    const key = accountKey(accountId);
+    const cleared = dailyState.delete(key) ? 1 : 0;
+    console.log(`[DAILY RISK LOCK] account reset accountId=${key} cleared=${cleared}`);
+    return { ok: true, cleared, accountId: key, scope: 'account' };
+  }
   const cleared = dailyState.size;
   dailyState.clear();
-  console.log(`[DAILY RISK LOCK] reset — cleared ${cleared} account baseline(s)`);
-  return { ok: true, cleared };
+  console.log(`[DAILY RISK LOCK] global reset — cleared ${cleared} account baseline(s)`);
+  return { ok: true, cleared, accountId: null, scope: 'all' };
 }
 
 // ─── 3. Auto-execution confidence floor ─────────────────────────────────────

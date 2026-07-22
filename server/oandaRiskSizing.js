@@ -85,8 +85,12 @@ function approxQuoteToUsd(quote) {
  *   USD-base (USD_JPY, …):     1 pip = pipSize in quote currency → pipSize / entryPrice
  *   Cross pairs (EUR_JPY, …):  pipSize in quote → multiply by approx quote→USD rate
  */
-export function dollarPerPipPerUnit(pair, entryPrice) {
+export function dollarPerPipPerUnit(pair, entryPrice, lossQuoteHomeConversionFactor = null) {
   const pipSize = getPipSize(pair);
+  const brokerLossFactor = Number(lossQuoteHomeConversionFactor);
+  if (Number.isFinite(brokerLossFactor) && brokerLossFactor > 0) {
+    return pipSize * brokerLossFactor;
+  }
 
   if (isMetalsPair(pair)) return pipSize;
 
@@ -250,6 +254,7 @@ export function computeFixedDollarSizing({
   takeProfitPrice,
   accountMarginRate = 0,
   accountBalanceUSD = null,
+  lossQuoteHomeConversionFactor = null,
 }) {
   if (!stopLossPips || stopLossPips <= 0) {
     throw new Error('computeFixedDollarSizing: stopLossPips is required and must be > 0');
@@ -260,7 +265,7 @@ export function computeFixedDollarSizing({
 
   const riskReward = +(takeProfitPips / stopLossPips).toFixed(2);
 
-  const pipUsdPerUnit         = dollarPerPipPerUnit(pair, entryPrice);
+  const pipUsdPerUnit         = dollarPerPipPerUnit(pair, entryPrice, lossQuoteHomeConversionFactor);
   const pipUsdPerStandardLot  = pipUsdPerUnit * (isMetalsPair(pair)
     ? (pair === 'XAU_USD' ? 100 : 5000)
     : 100000);
@@ -300,6 +305,9 @@ export function computeFixedDollarSizing({
     signedUnits,
     lotSize,
     pipValuePerStandardLot: +pipUsdPerStandardLot.toFixed(4),
+    lossQuoteHomeConversionFactor: Number.isFinite(Number(lossQuoteHomeConversionFactor))
+      ? Number(lossQuoteHomeConversionFactor)
+      : null,
 
     actualRiskUSD,
     estimatedRewardUSD,
