@@ -14,12 +14,16 @@ const {
   checkRiskPerTrade,
   checkDailyRiskLock,
   reserveDailyLossBudget,
+  hydrateDailyRiskState,
+  persistDailyRiskState,
   markTradeOpened,
   recordRealizedTradeResult,
   resetDailyRisk,
   checkAutoExecutionConfidence,
   checkMargin,
   getRiskStatus,
+  __setRiskPersistenceForTests,
+  __resetRiskMemoryForTests,
   MARGIN_RESTRICTION_MESSAGE,
 } = await import('./riskManager.js');
 
@@ -83,6 +87,15 @@ test('daily realized loss at 2% locks new entries', () => {
   assert.match(result.reason, /Auto-trading is locked/);
 });
 
+test('daily lock remains latched after the threshold is hit', () => {
+  resetDailyRisk();
+  checkDailyRiskLock({ accountId: 'ACC-LATCH', balanceUSD: 10000, now: NOW });
+  assert.equal(checkDailyRiskLock({ accountId: 'ACC-LATCH', balanceUSD: 9800, now: NOW }).tradingLocked, true);
+  const recoveredBalance = checkDailyRiskLock({ accountId: 'ACC-LATCH', balanceUSD: 9950, now: NOW });
+  assert.equal(recoveredBalance.tradingLocked, true);
+  assert.equal(recoveredBalance.remainingLossBudget, 0);
+});
+
 test('daily lock is per-account', () => {
   resetDailyRisk();
   checkDailyRiskLock({ accountId: 'ACC-LOCK', balanceUSD: 10000, now: NOW });
@@ -136,6 +149,52 @@ test('transaction synchronization can explicitly arm post-loss sizing', () => {
   });
   assert.equal(state.recoveryTradesRemaining, 1);
   assert.equal(state.nextTradeRiskPercent, 0.5);
+});
+
+test('daily lock and pending 0.5% recovery sizing survive a process restart', async () => {
+  const rows = new Map();
+  const adapter = {
+    async load(accountId, dayKey) {
+      return rows.get(`${accountId}:${dayKey}`) || null;
+    },
+    async save(row) {
+      rows.set(`${row.account_id}:${row.risk_date}`, structuredClone(row));
+    },
+    async clear(accountId, dayKey) {
+      for (const key of [...rows.keys()]) {
+        if ((accountId == null || key.startsWith(`${accountId}:`)) && (dayKey == null || key.endsWith(`:${dayKey}`))) {
+          rows.delete(key);
+        }
+      }
+    },
+  };
+
+  __setRiskPersistenceForTests(adapter);
+  __resetRiskMemoryForTests();
+  await hydrateDailyRiskState({ accountId: 'ACC-PERSIST', balanceUSD: 10000, now: NOW });
+  checkDailyRiskLock({ accountId: 'ACC-PERSIST', balanceUSD: 9800, now: NOW });
+  await persistDailyRiskState({ accountId: 'ACC-PERSIST', balanceUSD: 9800, now: NOW });
+
+  __resetRiskMemoryForTests();
+  await hydrateDailyRiskState({ accountId: 'ACC-PERSIST', balanceUSD: 9900, now: NOW });
+  assert.equal(checkDailyRiskLock({ accountId: 'ACC-PERSIST', balanceUSD: 9900, now: NOW }).tradingLocked, true);
+
+  __resetRiskMemoryForTests();
+  rows.clear();
+  await hydrateDailyRiskState({ accountId: 'ACC-RECOVERY-PERSIST', balanceUSD: 10000, now: NOW });
+  checkDailyRiskLock({ accountId: 'ACC-RECOVERY-PERSIST', balanceUSD: 9900, now: NOW });
+  await persistDailyRiskState({ accountId: 'ACC-RECOVERY-PERSIST', balanceUSD: 9900, now: NOW });
+
+  __resetRiskMemoryForTests();
+  await hydrateDailyRiskState({ accountId: 'ACC-RECOVERY-PERSIST', balanceUSD: 9900, now: NOW });
+  const recovery = reserveDailyLossBudget({
+    accountId: 'ACC-RECOVERY-PERSIST', balanceUSD: 9900, requestedRiskUSD: 100, now: NOW,
+  });
+  assert.equal(recovery.recoveryTrade, true);
+  assert.equal(recovery.riskPercentApplied, 0.5);
+
+  __resetRiskMemoryForTests();
+  __setRiskPersistenceForTests(null);
 });
 
 test('confidence at 85 passes the auto-execution floor', () => {
