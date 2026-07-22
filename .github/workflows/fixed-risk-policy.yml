@@ -26,38 +26,12 @@ jobs:
       - name: Apply generated source policies
         run: npm run apply:v3-entry
       - name: Fixed policy unit tests
-        id: fixed_policy
-        continue-on-error: true
         run: node --test server/fixedTradeRiskPolicy.test.js
       - name: Central risk manager tests
-        id: risk_manager
-        continue-on-error: true
         run: node --test server/riskManager.test.js
       - name: ICT execution tests
-        id: ict_execution
-        continue-on-error: true
         run: node --test server/ictExecution.test.js
       - name: ICT paper execution tests
-        id: ict_paper
-        continue-on-error: true
         run: node --test server/ictExecutionPaper.test.js
       - name: OANDA trade cap tests
-        id: oanda_cap
-        continue-on-error: true
         run: node --test server/oandaTradeCap.test.js
-      - name: Enforce regression results
-        if: always()
-        env:
-          FIXED_POLICY: ${{ steps.fixed_policy.outcome }}
-          RISK_MANAGER: ${{ steps.risk_manager.outcome }}
-          ICT_EXECUTION: ${{ steps.ict_execution.outcome }}
-          ICT_PAPER: ${{ steps.ict_paper.outcome }}
-          OANDA_CAP: ${{ steps.oanda_cap.outcome }}
-        run: |
-          printf 'fixed_policy=%s\nrisk_manager=%s\nict_execution=%s\nict_paper=%s\noanda_cap=%s\n' \
-            "$FIXED_POLICY" "$RISK_MANAGER" "$ICT_EXECUTION" "$ICT_PAPER" "$OANDA_CAP"
-          test "$FIXED_POLICY" = success
-          test "$RISK_MANAGER" = success
-          test "$ICT_EXECUTION" = success
-          test "$ICT_PAPER" = success
-          test "$OANDA_CAP" = success
