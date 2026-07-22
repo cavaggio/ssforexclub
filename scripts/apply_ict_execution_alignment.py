@@ -55,9 +55,17 @@ engine = replace_once(
     "ICT batch response execution thresholds",
 )
 
+# The R:R runtime hardening now exposes configuredIctMinRR() instead of leaving
+# a raw parseFloat expression in ictEngine.js. Accept either representation so
+# this older alignment pass remains idempotent and cannot fail the build after
+# the stricter R:R patch has already run.
+rr_marker_present = (
+    "parseFloat(process.env.ICT_MIN_RR || '1.5')" in engine
+    or "configuredIctMinRR()" in engine
+)
+
 for marker in [
     "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
-    "parseFloat(process.env.ICT_MIN_RR || '1.5')",
     "ICT_MODE === 'active'",
     "(c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true",
     "executionMinConfidence: executionConfig.minConfidence",
@@ -65,6 +73,10 @@ for marker in [
 ]:
     if marker not in engine:
         raise RuntimeError(f"ICT engine alignment incomplete: missing {marker}")
+if not rr_marker_present:
+    raise RuntimeError(
+        "ICT engine alignment incomplete: missing configured ICT minimum R:R contract"
+    )
 
 ENGINE.write_text(engine, encoding="utf-8")
 
