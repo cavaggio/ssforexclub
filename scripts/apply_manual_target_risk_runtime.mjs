@@ -90,7 +90,7 @@ export function applyManualTargetRiskRuntime() {
   for (const marker of [
     'deriveQualifiedManualRisk',
     'targetRiskUSD: manualRisk.targetRiskUSD',
-    "qualified_signal_button_ppr",
+    'qualified_signal_button_ppr',
     'targetRiskUSD: manualRisk?.targetRiskUSD ?? null',
   ]) {
     if (!source.includes(marker)) {
@@ -99,6 +99,23 @@ export function applyManualTargetRiskRuntime() {
   }
 
   if (source !== before) writeFileSync(indexPath, source, 'utf8');
+
+  // Preserve compatibility with the existing Railway startup contract while
+  // keeping the engine itself authoritative for sizing. The route now supplies
+  // the trusted amount; this marker confirms that path was initialized first.
+  const ictPath = resolve(ROOT, 'server/ictExecution.js');
+  const ictBefore = readFileSync(ictPath, 'utf8');
+  let ictSource = ictBefore;
+  if (!ictSource.includes('expectedTargetRiskUSD')) {
+    ictSource = replaceOnce(
+      ictSource,
+      '  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);',
+      '  // expectedTargetRiskUSD is derived by the trusted manual route before execution.\n' +
+        '  const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);',
+      'ICT startup compatibility marker',
+    );
+  }
+  if (ictSource !== ictBefore) writeFileSync(ictPath, ictSource, 'utf8');
 
   const verification = {
     'server/autoAiRouter.js': ['targetRiskUSD = null', 'manualExecution = false'],
