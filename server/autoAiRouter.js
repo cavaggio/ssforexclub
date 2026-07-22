@@ -66,6 +66,8 @@ export async function runAutoForUser({
   runId = null,
   scanMode = 'full',
   pairs = null,
+  targetRiskUSD = null,
+  manualExecution = false,
   runIct = null,
   runV3 = null,
   runPpr = null,
@@ -82,6 +84,8 @@ export async function runAutoForUser({
     runId,
     scanMode,
     pairs: safePairs,
+    targetRiskUSD,
+    manualExecution,
     executionAllowed,
     executionBlockedReason: executionAllowed ? null : autoAiExecutionWindowReason(),
   };
