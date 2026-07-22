@@ -252,6 +252,7 @@ export async function executeIctTrade(params = {}, {
     client?.accountId || client?.accountID || client?.account_id ||
     client?.config?.accountId || client?.defaults?.accountId;
   await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });
+  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });
 
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
   const dailyLock = checkDailyRiskLock({ accountId: riskAccountId, balanceUSD, now });

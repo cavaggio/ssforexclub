@@ -963,6 +963,7 @@ export async function executeTrade(signal, options = {}) {
   }
   const riskAccountId = client?.accountId || getAccountId();
   await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });
+  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD });
 
   // ── Daily drawdown circuit breaker (central, blocks NEW entries only) ──────
   const dailyLock = checkDailyRiskLock({ accountId: riskAccountId, balanceUSD });
