@@ -24,14 +24,23 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts >/dev/null
       - name: Apply generated-source policy
+        id: apply_policy
+        continue-on-error: true
         shell: bash
+        run: npm run apply:v3-entry >/tmp/daily-policy-apply.log 2>&1
+      - name: Upload generated-source log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-policy-apply-log
+          path: /tmp/daily-policy-apply.log
+          if-no-files-found: error
+          retention-days: 3
+      - name: Stop on generated-source failure
+        if: steps.apply_policy.outcome == 'failure'
         run: |
-          if ! npm run apply:v3-entry >/tmp/daily-policy-apply.log 2>&1; then
-            echo '--- daily policy apply failure ---'
-            tail -100 /tmp/daily-policy-apply.log
-            exit 1
-          fi
-          tail -20 /tmp/daily-policy-apply.log
+          tail -40 /tmp/daily-policy-apply.log
+          exit 1
       - name: Syntax check policy modules
         run: |
           node --check scripts/apply_daily_bot_policy.mjs
@@ -46,17 +55,27 @@ jobs:
           node --check server/ictExecution.js
           node --check server/oandaTrade.js
       - name: Run focused policy tests
+        id: focused_tests
+        continue-on-error: true
         shell: bash
         run: |
-          if ! node --test \
+          node --test \
             server/autoAiRouter.test.js \
             server/ictAutoScheduler.test.js \
             server/ictWatchlist.test.js \
             server/dailyMarketStudy.test.js \
             server/riskManager.test.js \
-            >/tmp/daily-policy-tests.log 2>&1; then
-            echo '--- daily policy test failure ---'
-            tail -120 /tmp/daily-policy-tests.log
-            exit 1
-          fi
-          tail -30 /tmp/daily-policy-tests.log
+            >/tmp/daily-policy-tests.log 2>&1
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-policy-test-log
+          path: /tmp/daily-policy-tests.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Stop on focused test failure
+        if: steps.focused_tests.outcome == 'failure'
+        run: |
+          tail -80 /tmp/daily-policy-tests.log
+          exit 1
