@@ -9,8 +9,7 @@ const AUTO = path.join(ROOT, 'server', 'ictAutoTrade.js');
 const EXECUTION = path.join(ROOT, 'server', 'ictExecution.js');
 
 function replaceRequired(text, pattern, replacement, label) {
-  if (typeof pattern === 'string' && text.includes(replacement)) return text;
-  if (pattern instanceof RegExp && text.match(pattern)?.[0] === replacement) return text;
+  if (text.includes(replacement)) return text;
   const next = text.replace(pattern, replacement);
   if (next === text) throw new Error(`ICT entry-policy marker missing: ${label}`);
   return next;
@@ -23,44 +22,15 @@ function insertAfter(text, anchor, addition, label) {
 }
 
 let engine = fs.readFileSync(ENGINE, 'utf8');
-engine = insertAfter(
-  engine,
-  "import { detectSMT, correlatedPeers } from './ictSMT.js';\n",
-  "import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';\n",
-  'ICT policy import',
-);
-engine = replaceRequired(
-  engine,
-  /    minConfidence: Math\.max\(\d+, parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '\d+'\)\),/,
-  `    // Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80')) is retained as a build-alignment marker.\n    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),`,
-  '93% execution floor',
-);
-engine = replaceRequired(
-  engine,
-  /function computeSetup\(\{ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep(?:, candles)? \}\) \{/,
-  'function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles }) {',
-  'computeSetup candles',
-);
+engine = insertAfter(engine, "import { detectSMT, correlatedPeers } from './ictSMT.js';\n", "import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';\n", 'ICT policy import');
+const confidencePolicy = `    // Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80')) is retained as a build-alignment marker.\n    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),`;
+engine = replaceRequired(engine, /(?:    \/\/ Math\.max\(80, parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '80'\)\) is retained as a build-alignment marker\.\n)?    minConfidence: Math\.max\(\d+, parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '\d+'\)\),/, confidencePolicy, '93% execution floor');
+engine = replaceRequired(engine, /function computeSetup\(\{ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep(?:, candles)? \}\) \{/, 'function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles }) {', 'computeSetup candles');
 engine = engine.replace(/  const buffer = Math\.max\(atrPrice \? atrPrice \* 0\.25 : 0, 5 \* pip\);\n/, '');
-engine = replaceRequired(
-  engine,
-  /  \/\/ Stop beyond the protected liquidity \(zone edge \/ swept level\), never inside it\.\n  const stopLoss = bull\n    \? roundPrice\(Math\.min\(zoneLow, sweptLevel \?\? zoneLow\) - buffer, pair\)\n    : roundPrice\(Math\.max\(zoneHigh, sweptLevel \?\? zoneHigh\) \+ buffer, pair\);/,
-  `  // Stop beyond true structural invalidation with an adaptive ATR/liquidity-raid buffer.\n  // This is calculated before entry; an open protective stop is never widened.\n  const adaptiveStop = computeAdaptiveIctStop({\n    pair, direction: dir, entry, zoneLow, zoneHigh, sweptLevel, atrPrice,\n    pipSize: pip, candles, sweep,\n  });\n  if (!adaptiveStop.ok) return adaptiveStop;\n  const stopLoss = roundPrice(adaptiveStop.stopLoss, pair);`,
-  'adaptive structural stop',
-);
-engine = replaceRequired(
-  engine,
-  /computeSetup\(\{ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep \}\)/,
-  'computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles: entryTf })',
-  'pass candles into stop model',
-);
+engine = replaceRequired(engine, /  \/\/ Stop beyond the protected liquidity \(zone edge \/ swept level\), never inside it\.\n  const stopLoss = bull\n    \? roundPrice\(Math\.min\(zoneLow, sweptLevel \?\? zoneLow\) - buffer, pair\)\n    : roundPrice\(Math\.max\(zoneHigh, sweptLevel \?\? zoneHigh\) \+ buffer, pair\);/, `  // Stop beyond true structural invalidation with an adaptive ATR/liquidity-raid buffer.\n  // This is calculated before entry; an open protective stop is never widened.\n  const adaptiveStop = computeAdaptiveIctStop({\n    pair, direction: dir, entry, zoneLow, zoneHigh, sweptLevel, atrPrice,\n    pipSize: pip, candles, sweep,\n  });\n  if (!adaptiveStop.ok) return adaptiveStop;\n  const stopLoss = roundPrice(adaptiveStop.stopLoss, pair);`, 'adaptive structural stop');
+engine = replaceRequired(engine, /computeSetup\(\{ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep \}\)/, 'computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles: entryTf })', 'pass candles into stop model');
 engine = replaceRequired(engine, /  const DISPLAY_MIN = \d+;/, '  const DISPLAY_MIN = ictExecConfig().minConfidence;', 'threshold alignment');
-engine = replaceRequired(
-  engine,
-  /    setupType = silverBulletWindow \? 'Silver Bullet'[\s\S]*?      : 'Liquidity Draw';/,
-  `    const classifiedStrategy = classifyIctStrategy({\n      silverBulletWindow,\n      turtleSoup: turtleSoup.turtleSoupDetected,\n      judasSwing: judas.judasSwingDetected,\n      powerOf3Distribution: powerOf3?.phase === 'Distribution',\n      sweepAligned, displacementAligned, reversalConfirmed, bosAligned,\n      fvgInDir, obInDir, inOteZone,\n      breakerConfirmed: Boolean(orderBlock?.failed || orderBlock?.breaker || orderBlock?.invalidated),\n    });\n    setupType = smt.smtDetected && reversalConfirmed ? 'SMT Divergence' : classifiedStrategy;`,
-  'strategy router',
-);
+engine = replaceRequired(engine, /    setupType = silverBulletWindow \? 'Silver Bullet'[\s\S]*?      : 'Liquidity Draw';/, `    const classifiedStrategy = classifyIctStrategy({\n      silverBulletWindow,\n      turtleSoup: turtleSoup.turtleSoupDetected,\n      judasSwing: judas.judasSwingDetected,\n      powerOf3Distribution: powerOf3?.phase === 'Distribution',\n      sweepAligned, displacementAligned, reversalConfirmed, bosAligned,\n      fvgInDir, obInDir, inOteZone,\n      breakerConfirmed: Boolean(orderBlock?.failed || orderBlock?.breaker || orderBlock?.invalidated),\n    });\n    setupType = smt.smtDetected && reversalConfirmed ? 'SMT Divergence' : classifiedStrategy;`, 'strategy router');
 engine = replaceRequired(engine, /    minimumRR: configuredIctMinRR\(\),\n  \};/, `    minimumRR: configuredIctMinRR(),\n    riskModel: adaptiveStop,\n  };`, 'risk model');
 engine = replaceRequired(engine, /    rr: setup\?\.ok \? setup\.rr : null,\n    confidence,/, `    rr: setup?.ok ? setup.rr : null,\n    atrPips,\n    riskModel: setup?.ok ? setup.riskModel ?? null : null,\n    confidence,`, 'risk metadata');
 fs.writeFileSync(ENGINE, engine);
