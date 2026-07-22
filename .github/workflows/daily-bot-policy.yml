@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   policy:
@@ -14,8 +14,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -58,19 +56,14 @@ jobs:
         run: |
           tail -40 /tmp/daily-policy-apply.log
           exit 1
-      - name: Commit generated source to PR branch
-        if: steps.apply_policy.outcome == 'success'
+      - name: Verify generated source is synchronized
         shell: bash
         run: |
-          if git diff --quiet; then
-            echo 'Generated source is already synchronized.'
-            exit 0
+          if ! git diff --quiet; then
+            echo 'Generated source differs from the committed source:'
+            cat /tmp/generated-files.txt
+            exit 1
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- $(cat /tmp/generated-files.txt)
-          git commit -m 'Synchronize generated daily bot policy source'
-          git push origin HEAD:${{ github.head_ref }}
       - name: Syntax check policy modules
         run: |
           node --check scripts/apply_daily_ict_policy.mjs
