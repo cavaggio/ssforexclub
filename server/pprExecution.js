@@ -42,9 +42,25 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
   return { allowed: true, signal: fresh.signal, policy, runtime };
 }
 
-export async function executePprTrade(candidate, { client, now = new Date(), log = () => {} } = {}) {
+export async function executePprTrade(candidate, {
+  client,
+  now = new Date(),
+  log = () => {},
+  targetRiskUSD = null,
+  manualExecution = false,
+} = {}) {
   const refreshed = await refreshPprCandidateForExecution({ candidate, client, now, log });
   if (!refreshed.allowed) return { success: false, blocked: true, reason: refreshed.reason, pprRefresh: refreshed };
+
+  const authoritativeTargetRiskUSD = Number(targetRiskUSD ?? candidate?.targetRiskUSD);
+  if (manualExecution && (!Number.isFinite(authoritativeTargetRiskUSD) || authoritativeTargetRiskUSD <= 0)) {
+    return {
+      success: false,
+      blocked: true,
+      reason: 'PPR manual execution failed: the server could not derive targetRiskUSD from the active account balance.',
+      pprRefresh: refreshed,
+    };
+  }
 
   const signal = {
     ...refreshed.signal,
@@ -58,8 +74,16 @@ export async function executePprTrade(candidate, { client, now = new Date(), log
     ictLogicUsed: false,
     environment: client?.environment || refreshed.signal.environment,
     pprRuntime: refreshed.runtime,
+    ...(Number.isFinite(authoritativeTargetRiskUSD) && authoritativeTargetRiskUSD > 0
+      ? { targetRiskUSD: authoritativeTargetRiskUSD, riskPercent: 1.25 }
+      : {}),
   };
-  const result = await executeTrade(signal, { client, autoAi: true });
+  const result = await executeTrade(signal, {
+    client,
+    autoAi: true,
+    targetRiskUSD: Number.isFinite(authoritativeTargetRiskUSD) ? authoritativeTargetRiskUSD : null,
+    manualExecution,
+  });
   return {
     ...result,
     engine: 'ppr',

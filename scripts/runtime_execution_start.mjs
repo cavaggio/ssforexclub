@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
+import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -39,6 +40,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 
 enforceRuntimeFloors();
 applyIctRrFloorRuntime();
+applyManualTargetRiskRuntime();
 
 patchFile(
   'server/ictEngine.js',
@@ -105,6 +107,7 @@ patchFile(
     "config.mode === 'active' || config.mode === 'live'",
     'riskConfig,',
     'autoExecutionMinConfidence: config.minConfidence',
+    'expectedTargetRiskUSD',
     'stopLossOnFill',
     'takeProfitOnFill',
   ],
@@ -127,6 +130,8 @@ patchFile(
   },
   [
     'ictExecConfig, isIctExecutionEnabled',
+    'deriveQualifiedManualRisk',
+    'targetRiskUSD: manualRisk.targetRiskUSD',
     'const ictConfig = ictExecConfig();',
     'const ictExecutionEnabled = isIctExecutionEnabled();',
     'minRR=${ictConfig.minRR}',

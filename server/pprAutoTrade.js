@@ -87,6 +87,8 @@ export async function runAutoPprForUser({
   runId = null,
   scanMode = 'full',
   pairs = null,
+  targetRiskUSD = null,
+  manualExecution = false,
 } = {}) {
   const tag = `[AUTO_AI][PPR][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
@@ -185,7 +187,16 @@ export async function runAutoPprForUser({
   const executed = [];
   const skipped = [];
   for (const candidate of qualified) {
-    const result = await executePprTrade(candidate, { client, now: new Date(), log });
+    const executionCandidate = manualExecution && Number.isFinite(Number(targetRiskUSD))
+      ? { ...candidate, targetRiskUSD: Number(targetRiskUSD), riskPercent: 1.25 }
+      : candidate;
+    const result = await executePprTrade(executionCandidate, {
+      client,
+      now: new Date(),
+      log,
+      targetRiskUSD,
+      manualExecution,
+    });
     if (result?.success) {
       executed.push({
         pair: candidate.pair,
@@ -200,7 +211,7 @@ export async function runAutoPprForUser({
         manipulationType: candidate.pprConfirmation?.manipulationType || null,
         strategy: 'PPR',
         architecture: 'independent_ppr_raw_market_data',
-        signal: result.signal || candidate,
+        signal: result.signal || executionCandidate,
       });
       log(`trade executed pair=${candidate.pair} dir=${candidate.direction} id=${result.tradeId}`);
     } else {
