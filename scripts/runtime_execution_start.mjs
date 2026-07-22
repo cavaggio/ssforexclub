@@ -5,6 +5,7 @@ import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
 import './apply_daily_ict_policy.mjs';
 import './apply_daily_bot_policy.mjs';
+import './apply_daily_risk_persistence.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
