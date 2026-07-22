@@ -137,7 +137,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'riskPercent must be between 0 and 1.25' }, { status: 400 });
   }
 
-  const executionSignal = { ...signal, pair, targetRiskUSD, riskPercent };
+  const executionSignal: Record<string, any> = { ...signal, pair, targetRiskUSD, riskPercent };
 
   if (engine === 'v3') {
     return callScannerForCurrentUser({
