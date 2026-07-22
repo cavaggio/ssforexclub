@@ -27,7 +27,13 @@ patchFile(
     if (!out.includes('await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });')) {
       out = out.replace(
         "  if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');\n\n  // ── 8a. Daily drawdown circuit breaker",
-        "  if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');\n  const riskAccountId =\n    client?.accountId || client?.accountID || client?.account_id ||\n    client?.config?.accountId || client?.defaults?.accountId;\n  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n\n  // ── 8a. Daily drawdown circuit breaker",
+        "  if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');\n  const riskAccountId =\n    client?.accountId || client?.accountID || client?.account_id ||\n    client?.config?.accountId || client?.defaults?.accountId;\n  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n\n  // ── 8a. Daily drawdown circuit breaker",
+      );
+    }
+    if (!out.includes('await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });')) {
+      out = out.replace(
+        '  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n',
+        '  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });\n',
       );
     }
     out = out
@@ -45,6 +51,7 @@ patchFile(
     'hydrateDailyRiskState,',
     'persistDailyRiskState,',
     'await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });',
+    'await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });',
     'checkDailyRiskLock({ accountId: riskAccountId, balanceUSD, now })',
     'reserveDailyLossBudget({ accountId: riskAccountId, balanceUSD,',
     'await persistDailyRiskState({ accountId, balanceUSD, now });',
@@ -64,7 +71,13 @@ patchFile(
     if (!out.includes('await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });')) {
       out = out.replace(
         "  if (balanceUSD === 0 || isNaN(balanceUSD)) {\n    return blocked('Account balance is 0. Fund account before live trading.');\n  }\n\n  // ── Daily drawdown circuit breaker",
-        "  if (balanceUSD === 0 || isNaN(balanceUSD)) {\n    return blocked('Account balance is 0. Fund account before live trading.');\n  }\n  const riskAccountId = client?.accountId || getAccountId();\n  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });\n\n  // ── Daily drawdown circuit breaker",
+        "  if (balanceUSD === 0 || isNaN(balanceUSD)) {\n    return blocked('Account balance is 0. Fund account before live trading.');\n  }\n  const riskAccountId = client?.accountId || getAccountId();\n  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });\n  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD });\n\n  // ── Daily drawdown circuit breaker",
+      );
+    }
+    if (!out.includes('await persistDailyRiskState({ accountId: riskAccountId, balanceUSD });')) {
+      out = out.replace(
+        '  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });\n',
+        '  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });\n  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD });\n',
       );
     }
     out = out
@@ -83,6 +96,7 @@ patchFile(
     'hydrateDailyRiskState,',
     'persistDailyRiskState,',
     'await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });',
+    'await persistDailyRiskState({ accountId: riskAccountId, balanceUSD });',
     'checkDailyRiskLock({ accountId: riskAccountId, balanceUSD })',
     'accountId: riskAccountId,',
     'const accountId  = riskAccountId;',
