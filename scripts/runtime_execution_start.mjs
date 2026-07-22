@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -13,24 +13,6 @@ function truthy(value) {
 function finiteNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function runSourceEnforcement(relativePath) {
-  const scriptPath = resolve(ROOT, relativePath);
-  const result = spawnSync('python3', [scriptPath], {
-    cwd: ROOT,
-    env: process.env,
-    stdio: 'inherit',
-  });
-
-  if (result.error) {
-    throw new Error(`Could not run ${relativePath}: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`${relativePath} failed with exit code ${result.status}`);
-  }
-
-  console.log(`[RUNTIME_EXECUTION_START] applied ${relativePath}`);
 }
 
 function enforceRuntimeFloors() {
@@ -56,7 +38,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 }
 
 enforceRuntimeFloors();
-runSourceEnforcement('scripts/apply_ict_rr_floor.py');
+applyIctRrFloorRuntime();
 
 patchFile(
   'server/ictEngine.js',
