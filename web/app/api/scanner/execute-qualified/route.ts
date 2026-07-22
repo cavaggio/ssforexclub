@@ -10,6 +10,8 @@ type Engine = 'ict' | 'ppr' | 'v3';
 type Body = {
   engine?: unknown;
   signal?: unknown;
+  targetRiskUSD?: unknown;
+  riskPercent?: unknown;
 };
 
 function finite(value: unknown): number | null {
@@ -27,42 +29,6 @@ function normalizeDirection(signal: Record<string, any>): 'long' | 'short' | nul
   if (signal.signal === 'buy') return 'long';
   if (signal.signal === 'sell') return 'short';
   return null;
-}
-
-async function resolveTrustedTargetRiskUSD(req: Request): Promise<number> {
-  const headers = new Headers();
-  const cookie = req.headers.get('cookie');
-  const authorization = req.headers.get('authorization');
-  if (cookie) headers.set('cookie', cookie);
-  if (authorization) headers.set('authorization', authorization);
-
-  const riskUrl = new URL('/api/risk/status', req.url);
-  const response = await fetch(riskUrl, {
-    method: 'GET',
-    headers,
-    cache: 'no-store',
-  });
-
-  let payload: Record<string, any> = {};
-  try {
-    payload = (await response.json()) as Record<string, any>;
-  } catch {
-    throw new Error(`Risk preflight returned unreadable JSON (HTTP ${response.status}).`);
-  }
-
-  const targetRiskUSD = finite(payload?.risk?.riskAmountUSD);
-  const riskPercent = finite(payload?.risk?.riskPerTradePercent);
-  if (!response.ok || payload?.ok === false || targetRiskUSD === null || targetRiskUSD <= 0) {
-    throw new Error(
-      typeof payload?.error === 'string'
-        ? payload.error
-        : 'Could not derive targetRiskUSD from the active OANDA account.',
-    );
-  }
-  if (riskPercent === null || riskPercent > 1.25 + 1e-9) {
-    throw new Error(`Risk preflight returned an unsafe per-trade percentage (${riskPercent ?? 'unknown'}%).`);
-  }
-  return targetRiskUSD;
 }
 
 function executionFromResult(engine: Engine, data: unknown): Record<string, any> {
@@ -162,16 +128,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'Invalid signal pair' }, { status: 400 });
   }
 
-  let targetRiskUSD: number;
-  try {
-    targetRiskUSD = await resolveTrustedTargetRiskUSD(req);
-  } catch (error) {
+  // The button obtains these values from the authenticated /api/risk/status
+  // preflight. Railway and the native executor remain authoritative and enforce
+  // the 1.25% cap again before sizing/order submission.
+  const targetRiskUSD = finite(body.targetRiskUSD ?? signal.targetRiskUSD);
+  const riskPercent = finite(body.riskPercent ?? signal.riskPercent);
+  if (targetRiskUSD === null || targetRiskUSD <= 0) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: `Qualified execution risk preflight failed: ${error instanceof Error ? error.message : String(error)}`,
-      },
-      { status: 502 },
+      { ok: false, error: 'Qualified execution requires a positive targetRiskUSD from the risk preflight.' },
+      { status: 400 },
+    );
+  }
+  if (riskPercent === null || riskPercent <= 0 || riskPercent > 1.25 + 1e-9) {
+    return NextResponse.json(
+      { ok: false, error: `Qualified execution riskPercent must be positive and no greater than 1.25 (got ${riskPercent ?? 'unknown'}).` },
+      { status: 400 },
     );
   }
 
@@ -179,7 +150,7 @@ export async function POST(req: Request) {
     ...signal,
     pair,
     targetRiskUSD,
-    riskPercent: 1.25,
+    riskPercent,
   };
 
   if (engine === 'v3') {
@@ -191,6 +162,7 @@ export async function POST(req: Request) {
       extraBody: {
         signal: trustedSignal,
         targetRiskUSD,
+        riskPercent,
         executionSource: 'qualified_signal_button_v3',
       },
       afterCall: auditExecution({ engine, signal: trustedSignal, pair }),
@@ -224,6 +196,7 @@ export async function POST(req: Request) {
         targetProfit,
         ictSignalId,
         targetRiskUSD,
+        riskPercent,
         manualExecution: true,
         executionSource: 'qualified_signal_button_ict',
       },
@@ -251,6 +224,7 @@ export async function POST(req: Request) {
       runId: `manual-ppr-${Date.now()}`,
       requestedDirection: direction,
       targetRiskUSD,
+      riskPercent,
       manualExecution: true,
       executionSource: 'qualified_signal_button_ppr',
     },
