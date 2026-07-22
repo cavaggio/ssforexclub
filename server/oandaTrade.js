@@ -37,6 +37,8 @@ import {
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
+  hydrateDailyRiskState,
+  persistDailyRiskState,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
   markTradeOpened,
@@ -959,9 +961,11 @@ export async function executeTrade(signal, options = {}) {
   if (balanceUSD === 0 || isNaN(balanceUSD)) {
     return blocked('Account balance is 0. Fund account before live trading.');
   }
+  const riskAccountId = client?.accountId || getAccountId();
+  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD });
 
   // ── Daily drawdown circuit breaker (central, blocks NEW entries only) ──────
-  const dailyLock = checkDailyRiskLock({ accountId: client?.accountId, balanceUSD });
+  const dailyLock = checkDailyRiskLock({ accountId: riskAccountId, balanceUSD });
   if (dailyLock.tradingLocked) {
     return blocked(dailyLock.reason);
   }
@@ -1037,7 +1041,7 @@ export async function executeTrade(signal, options = {}) {
   try { openTradesForBudget = (await getOpenTrades({ client })) || []; }
   catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
   const dailyBudget = reserveDailyLossBudget({
-    accountId: client?.accountId,
+    accountId: riskAccountId,
     balanceUSD,
     openRiskUSD: computeOpenRiskUSD(openTradesForBudget),
     requestedRiskUSD: dynamicRisk.riskUSD,
@@ -1292,7 +1296,7 @@ export async function executeTrade(signal, options = {}) {
 
   const riskAmount = sizing.actualRiskUSD;
   // Use the per-request client's accountId when present; fall back to env-default.
-  const accountId  = client?.accountId || getAccountId();
+  const accountId  = riskAccountId;
 
   executionLog.push(logEntry('SIZING_DYNAMIC', {
     riskMode: sizing.riskMode,
@@ -1450,6 +1454,7 @@ export async function executeTrade(signal, options = {}) {
   dailyTradeTimestamps.push(lastTradeTime);
   activeTrades.add(tradeKey);
   markTradeOpened({ accountId, balanceUSD });
+  await persistDailyRiskState({ accountId, balanceUSD });
 
   let effectiveTpPrice = tpPrice;
   let postFillTpAdjusted = false;

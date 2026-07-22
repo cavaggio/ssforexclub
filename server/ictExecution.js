@@ -30,6 +30,8 @@ import {
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
+  hydrateDailyRiskState,
+  persistDailyRiskState,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
   markTradeOpened,
@@ -246,9 +248,13 @@ export async function executeIctTrade(params = {}, {
   try { account = await accountFn(); } catch (err) { return blocked(`Failed to fetch account: ${err.message}`); }
   const balanceUSD = parseFloat(account?.balance ?? 0);
   if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');
+  const riskAccountId =
+    client?.accountId || client?.accountID || client?.account_id ||
+    client?.config?.accountId || client?.defaults?.accountId;
+  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });
 
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
-  const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
+  const dailyLock = checkDailyRiskLock({ accountId: riskAccountId, balanceUSD, now });
   if (dailyLock.tradingLocked) {
     rec(`blocked: ${dailyLock.reason}`);
     return blocked(dailyLock.reason);
@@ -262,7 +268,7 @@ export async function executeIctTrade(params = {}, {
   const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
   let openTradesForBudget = [];
   try { const openFn = getOpen || (() => getOpenTrades({ client })); openTradesForBudget = (await openFn()) || []; } catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
-  const dailyBudget = reserveDailyLossBudget({ accountId: client.accountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
+  const dailyBudget = reserveDailyLossBudget({ accountId: riskAccountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
   if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
   const targetRiskUSD = dailyBudget.approvedRiskUSD;
   const sizing = computeFixedDollarSizing({
@@ -433,6 +439,7 @@ export async function executeIctTrade(params = {}, {
   // Filled — SL/TP attached atomically on fill. Register the shared lock.
   registerTradeLock(pair, direction);
   markTradeOpened({ accountId, balanceUSD, now });
+  await persistDailyRiskState({ accountId, balanceUSD, now });
   const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;
   if (params.__reservationHash) await markExecutionOpen({ hash: params.__reservationHash, tradeId });
   const fillPrice = parseFloat(fill.price ?? entry);
