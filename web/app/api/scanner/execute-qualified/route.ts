@@ -10,6 +10,8 @@ type Engine = 'ict' | 'ppr' | 'v3';
 type Body = {
   engine?: unknown;
   signal?: unknown;
+  targetRiskUSD?: unknown;
+  riskPercent?: unknown;
 };
 
 function finite(value: unknown): number | null {
@@ -126,6 +128,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'Invalid signal pair' }, { status: 400 });
   }
 
+  const targetRiskUSD = finite(body.targetRiskUSD ?? signal.targetRiskUSD);
+  const riskPercent = finite(body.riskPercent ?? signal.riskPercent);
+  if (targetRiskUSD === null || targetRiskUSD <= 0) {
+    return NextResponse.json({ ok: false, error: 'Missing targetRiskUSD from risk preflight' }, { status: 400 });
+  }
+  if (riskPercent === null || riskPercent <= 0 || riskPercent > 1.25) {
+    return NextResponse.json({ ok: false, error: 'riskPercent must be between 0 and 1.25' }, { status: 400 });
+  }
+
+  const executionSignal = { ...signal, pair, targetRiskUSD, riskPercent };
+
   if (engine === 'v3') {
     return callScannerForCurrentUser({
       internalPath: '/api/internal/oanda/v3-trade',
@@ -133,19 +146,21 @@ export async function POST(req: Request) {
       payloadKey: 'trade',
       requireLive: false,
       extraBody: {
-        signal: { ...signal, pair },
+        signal: executionSignal,
+        targetRiskUSD,
+        riskPercent,
         executionSource: 'qualified_signal_button_v3',
       },
-      afterCall: auditExecution({ engine, signal, pair }),
+      afterCall: auditExecution({ engine, signal: executionSignal, pair }),
     });
   }
 
   if (engine === 'ict') {
-    const direction = normalizeDirection(signal);
-    const entry = finite(signal.entry);
-    const stopLoss = finite(signal.stopLoss);
-    const targetProfit = finite(signal.target1 ?? signal.targetProfit ?? signal.takeProfit);
-    const ictSignalId = String(signal.signalId ?? signal.ictSignalId ?? '').trim();
+    const direction = normalizeDirection(executionSignal);
+    const entry = finite(executionSignal.entry);
+    const stopLoss = finite(executionSignal.stopLoss);
+    const targetProfit = finite(executionSignal.target1 ?? executionSignal.targetProfit ?? executionSignal.takeProfit);
+    const ictSignalId = String(executionSignal.signalId ?? executionSignal.ictSignalId ?? '').trim();
 
     if (!direction || entry === null || stopLoss === null || targetProfit === null || !ictSignalId) {
       return NextResponse.json(
@@ -166,20 +181,20 @@ export async function POST(req: Request) {
         stopLoss,
         targetProfit,
         ictSignalId,
+        targetRiskUSD,
+        riskPercent,
+        manualExecution: true,
         executionSource: 'qualified_signal_button_ict',
       },
-      afterCall: auditExecution({ engine, signal, pair }),
+      afterCall: auditExecution({ engine, signal: executionSignal, pair }),
     });
   }
 
-  const direction = normalizeDirection(signal);
+  const direction = normalizeDirection(executionSignal);
   if (!direction) {
     return NextResponse.json({ ok: false, error: 'Qualified PPR signal is missing direction' }, { status: 400 });
   }
 
-  // PPR owns its authoritative refresh. Re-run only the selected pair through the
-  // existing engine-routed internal endpoint, which refreshes the candidate and
-  // executes only when the current PPR signal remains qualified.
   return callScannerForCurrentUser({
     internalPath: '/api/internal/oanda/auto',
     logTag: 'QUALIFIED_PPR_TRADE',
@@ -191,8 +206,11 @@ export async function POST(req: Request) {
       pairs: [pair],
       runId: `manual-ppr-${Date.now()}`,
       requestedDirection: direction,
+      targetRiskUSD,
+      riskPercent,
+      manualExecution: true,
       executionSource: 'qualified_signal_button_ppr',
     },
-    afterCall: auditExecution({ engine, signal, pair }),
+    afterCall: auditExecution({ engine, signal: executionSignal, pair }),
   });
 }
