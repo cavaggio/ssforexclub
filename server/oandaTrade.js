@@ -34,6 +34,7 @@ import { getCandles } from './oandaMarketData.js';
 import { checkTotalOpenRisk, computeOpenRiskPercent, computeOpenRiskUSD } from './autoAiRiskLimits.js';
 import {
   capPerTradeRiskPercent,
+  computeRiskBudgetUSD,
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
@@ -45,10 +46,23 @@ import { computeV3EntryTpHitConfidence, computePostFillRiskReward, priceForMinim
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { evaluatePprExecutionPolicy, isPprExecutionSignal, pprSetupFingerprint } from './pprExecutionPolicy.js';
-import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
+import {
+  reserveExecution,
+  markExecutionOpen,
+  releaseExecution,
+  releaseExecutionByTradeId,
+  releaseExecutionsForPairDirection,
+} from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
+import {
+  FIXED_RISK_PER_TRADE_PERCENT,
+  FIXED_STOP_LOSS_PIPS,
+  enforceFixedStopGeometry,
+  buildFixedStopLossOnFill,
+  getLossQuoteHomeConversionFactor,
+} from './fixedTradeRiskPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
 const MIN_SCORE             = parseInt(process.env.FOREX_MIN_SCORE     || '8',   10);
@@ -92,8 +106,24 @@ const ENTRY_TIMING_STRICT        = String(process.env.FOREX_ENTRY_TIMING_STRICT 
 let dailyTradeTimestamps = [];
 let dailyLossUSD         = 0;
 let lastTradeTime        = 0;
+const lastTradeTimesByPair = new Map();
 let dailyStartBalance    = null;
 const activeTrades       = new Set();
+
+export function markPairTradeCooldown(pair, atMs = Date.now()) {
+  const key = normalizePair(pair);
+  if (key) lastTradeTimesByPair.set(key, Number(atMs));
+}
+
+export function isPairTradeCooldownActive(pair, nowMs = Date.now()) {
+  const key = normalizePair(pair);
+  const last = Number(lastTradeTimesByPair.get(key) || 0);
+  return last > 0 && Number(nowMs) - last < COOLDOWN_MS;
+}
+
+export function clearPairTradeCooldowns() {
+  lastTradeTimesByPair.clear();
+}
 
 export function resetDailyCounters() {
   const before = {
@@ -106,6 +136,7 @@ export function resetDailyCounters() {
   dailyLossUSD         = 0;
   dailyStartBalance    = null;
   lastTradeTime        = 0;
+  clearPairTradeCooldowns();
   activeTrades.clear();
   console.log('[TRADE] Daily counters reset (in-memory only — no broker change).', before);
   return { ok: true, cleared: before };
@@ -172,6 +203,25 @@ export async function reconcileTradeLock(pair, direction, options = {}) {
     activeTrades.delete(key);
   } else {
     console.log(`[BROKER POSITION CLEAR] ${key} — no broker position exists`);
+  }
+
+  // Broker truth releases only an old `open` reservation. A `reserved` row
+  // may belong to another execution request that is currently between its
+  // atomic reservation and broker fill, so reconciliation must not erase it.
+  // Loss locks are also excluded and remain enforceable.
+  try {
+    const cleanup = await releaseExecutionsForPairDirection({
+      accountId: client?.accountId,
+      pair,
+      direction,
+      status: 'released',
+      statuses: ['open'],
+    });
+    if (cleanup.released > 0) {
+      console.warn(`[STALE RESERVATION RELEASED] ${key} — released ${cleanup.released} local reservation(s)`);
+    }
+  } catch (err) {
+    console.warn(`[STALE RESERVATION CLEANUP] ${key} — ${err?.message || err}`);
   }
 
   return false;
@@ -878,9 +928,10 @@ export async function executeTrade(signal, options = {}) {
 
   // ── Guard 6: Cooldown ─────────────────────────────────────────────────────
   const now = Date.now();
-  if (now - lastTradeTime < COOLDOWN_MS) {
-    const waitSec = Math.ceil((COOLDOWN_MS - (now - lastTradeTime)) / 1000);
-    return blocked(`Cooldown active — wait ${waitSec}s before next trade`);
+  if (isPairTradeCooldownActive(pair, now)) {
+    const pairLastTradeTime = Number(lastTradeTimesByPair.get(normalizePair(pair)) || 0);
+    const waitSec = Math.ceil((COOLDOWN_MS - (now - pairLastTradeTime)) / 1000);
+    return blocked(`Pair cooldown active for ${pair} — wait ${waitSec}s before another ${pair} trade`);
   }
 
   // ── Guard 7: No duplicate (reconciled against OANDA) ──────────────────────
@@ -957,37 +1008,22 @@ export async function executeTrade(signal, options = {}) {
 
   console.warn(`[TRADE] ⚠ ${DYNAMIC_RISK_NOTICE}`);
 
-  const dynamicRisk = computeDynamicTradeRisk({
-    accountBalanceUSD: balanceUSD,
-    confidence: signal.confidence,
-    score: signal.score,
-    minConfidence: executionConfidenceFloor,
-    spreadPips: signal.spreadPips,
-    maxSpreadPips: maxSpread,
-    volatilityState: signal.volatilityState,
-  });
-
-  if (!dynamicRisk.allowed) {
-    return blocked(
-      `Dynamic risk sizing rejected (${dynamicRisk.reason}). ` +
-      `balance=$${balanceUSD.toFixed(2)} confidence=${signal.confidence}%`
-    );
-  }
-
-  // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to EVERY trade
-  // (manual + auto). No confidence/quality score may override it.
-  {
-    const cap = capPerTradeRiskPercent(dynamicRisk.riskPercent);
-    if (dynamicRisk.riskPercent > cap) {
-      const cappedRiskUSD = +(balanceUSD * (cap / 100)).toFixed(2);
-      console.log(
-        `[RISK CAP] ${pair} ${direction} — capping risk ${dynamicRisk.riskPercent}% → ${cap}% ` +
-        `($${dynamicRisk.riskUSD} → $${cappedRiskUSD})`
-      );
-      dynamicRisk.riskPercent = cap;
-      dynamicRisk.riskUSD = cappedRiskUSD;
-    }
-  }
+  // FINAL AUTHORITY: every submitted trade targets exactly 1.25% of live balance.
+  // Confidence, engine, setup score, environment variables, and manual/API callers
+  // cannot raise or lower this broker-bound risk budget.
+  const dynamicRisk = {
+    allowed: true,
+    riskPercent: FIXED_RISK_PER_TRADE_PERCENT,
+    riskUSD: computeRiskBudgetUSD(balanceUSD),
+    factors: {
+      confidence: signal.confidence,
+      score: signal.score,
+      spreadPips: signal.spreadPips,
+      maxSpreadPips: maxSpread,
+      volatilityState: signal.volatilityState,
+      modifiers: ['fixed-1.25%-execution-policy'],
+    },
+  };
 
   let openTradesForBudget = [];
   try { openTradesForBudget = (await getOpenTrades({ client })) || []; }
@@ -1000,8 +1036,10 @@ export async function executeTrade(signal, options = {}) {
   });
   if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
   if (dailyBudget.capped) {
-    dynamicRisk.riskUSD = dailyBudget.approvedRiskUSD;
-    dynamicRisk.riskPercent = +((dailyBudget.approvedRiskUSD / balanceUSD) * 100).toFixed(4);
+    return blocked(
+      `Full fixed ${FIXED_RISK_PER_TRADE_PERCENT}% risk is unavailable within the remaining daily loss budget; ` +
+      `requested=$${dynamicRisk.riskUSD.toFixed(2)} approved=$${dailyBudget.approvedRiskUSD.toFixed(2)}. Trade blocked.`
+    );
   }
 
   // Use the signal's lifecycle SL/TP if present and fresh; otherwise recompute.
@@ -1098,6 +1136,29 @@ export async function executeTrade(signal, options = {}) {
   tpPips = scalpLifecycle.lifecycle.tp.takeProfitPips;
   tpPriceFromLifecycle = scalpLifecycle.lifecycle.tp.takeProfitPrice;
 
+  // FINAL AUTHORITY: lifecycle/engine stops are advisory only. OANDA receives
+  // an exact 20-pip stop and a TP that remains at or above the hard RR floor.
+  const fixedGeometry = enforceFixedStopGeometry({
+    pair, direction, entry: executableEntry, takeProfit: tpPriceFromLifecycle,
+    minRR: MIN_EXECUTABLE_RR, priceDecimals,
+  });
+  slPips = fixedGeometry.stopLossPips;
+  slPriceFromLifecycle = fixedGeometry.stopLoss;
+  tpPips = fixedGeometry.takeProfitPips;
+  tpPriceFromLifecycle = fixedGeometry.takeProfit;
+  signal.stopLoss = slPriceFromLifecycle;
+  signal.takeProfit = tpPriceFromLifecycle;
+  console.log(`[FIXED_RISK_POLICY] ${pair} ${direction} risk=${FIXED_RISK_PER_TRADE_PERCENT}% SL=${FIXED_STOP_LOSS_PIPS}p TP=${tpPips}p RR=${fixedGeometry.riskReward}`);
+
+  let lossQuoteHomeConversionFactor;
+  try {
+    lossQuoteHomeConversionFactor = await getLossQuoteHomeConversionFactor({
+      pair, client, homeCurrency: account.currency || 'USD',
+    });
+  } catch (err) {
+    return blocked(`Could not calculate broker home-currency stop risk: ${err.message}`);
+  }
+
   const sizing = computeFixedDollarSizing({
     pair,
     direction,
@@ -1109,6 +1170,7 @@ export async function executeTrade(signal, options = {}) {
     takeProfitPrice: tpPriceFromLifecycle,
     accountMarginRate,
     accountBalanceUSD: balanceUSD,
+    lossQuoteHomeConversionFactor,
   });
 
   const finalRiskReward = Number(sizing?.riskReward ?? 0);
@@ -1141,27 +1203,11 @@ export async function executeTrade(signal, options = {}) {
       marginAvailable,
       minFreeMarginUSD,
     });
-
     if (fit.changed) {
-      console.warn(
-        `[AUTO_AI_MARGIN_FIT] ${pair} ${direction} ${fit.reason}; ` +
-        `units ${units} → ${fit.signedUnits}`
+      return blocked(
+        `Full fixed ${FIXED_RISK_PER_TRADE_PERCENT}% position does not fit the required free-margin reserve; ` +
+        `refusing to silently resize units (${units} -> ${fit.signedUnits}).`
       );
-
-      units = fit.signedUnits;
-      absUnits = Math.abs(units);
-
-      if (absUnits >= 1) {
-        const unitRatio = absUnits / Math.abs(sizing.signedUnits || 1);
-        estimatedMargin = +(sizing.estimatedMarginRequired * unitRatio).toFixed(2);
-        notionalUSD = +(sizing.notionalUSD * unitRatio).toFixed(2);
-        sizing.signedUnits = units;
-        sizing.tradeUnits = absUnits;
-        sizing.estimatedMarginRequired = estimatedMargin;
-        sizing.notionalUSD = notionalUSD;
-        sizing.actualRiskUSD = +(sizing.actualRiskUSD * unitRatio).toFixed(2);
-        sizing.estimatedRewardUSD = +(sizing.estimatedRewardUSD * unitRatio).toFixed(2);
-      }
     }
   }
 
@@ -1199,7 +1245,7 @@ export async function executeTrade(signal, options = {}) {
     }
   }
 
-  // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.4%) ──────
+  // ── Central hard risk-per-trade validation (actual sized risk ≤ 1.25%) ──────
   {
     const riskCheck = checkRiskPerTrade({
       balanceUSD, actualDollarRisk: sizing.actualRiskUSD, stopLossPips: slDistancePips, positionSize: absUnits,
@@ -1305,6 +1351,9 @@ export async function executeTrade(signal, options = {}) {
     takeProfit: tpPrice,
     priceDecimals,
   });
+  // Use fill-relative distance so OANDA places the stop exactly 20 pips
+  // from the actual market fill instead of from a stale pre-fill quote.
+  orderPayload.order.stopLossOnFill = buildFixedStopLossOnFill({ pair, priceDecimals });
 
   console.log(`[ORDER_PAYLOAD] ${pair} ${direction} atomic IOC MARKET + SL/TP onFill`);
   console.log(`[ORDER_PAYLOAD]`, JSON.stringify(orderPayload));
@@ -1370,6 +1419,7 @@ export async function executeTrade(signal, options = {}) {
   }
 
   if (!orderFillTransaction) {
+    await releaseExecution(executionReservationHash, 'no_fill');
     const rejectReason =
       'No fill transaction in OANDA response — IOC order found no liquidity';
     console.log(`[TRADE] ✗ Order REJECTED (no fill transaction)`);
@@ -1397,10 +1447,15 @@ export async function executeTrade(signal, options = {}) {
   const tradeMarginUsed = parseFloat(
     fillInfo.initialMarginRequired || fillInfo.marginRequired || 0
   );
+  const actualStopPrice = Number((direction === 'long'
+    ? fillPrice - FIXED_STOP_LOSS_PIPS * pipSize
+    : fillPrice + FIXED_STOP_LOSS_PIPS * pipSize
+  ).toFixed(priceDecimals));
 
   // Count and lock every confirmed broker fill immediately. A successful emergency
   // flatten removes only the active lock; the daily fill count remains accurate.
   lastTradeTime = Date.now();
+  markPairTradeCooldown(pair, lastTradeTime);
   dailyTradeTimestamps.push(lastTradeTime);
   activeTrades.add(tradeKey);
 
@@ -1409,7 +1464,7 @@ export async function executeTrade(signal, options = {}) {
   let actualFillRR = computePostFillRiskReward({
     direction,
     entry: fillPrice,
-    stopLoss: slPrice,
+    stopLoss: actualStopPrice,
     takeProfit: effectiveTpPrice,
   });
 
@@ -1424,6 +1479,7 @@ export async function executeTrade(signal, options = {}) {
       ? await client.put(closePath, closeBody)
       : await oandaPut(closePath, closeBody);
     activeTrades.delete(tradeKey);
+    await releaseExecution(executionReservationHash, 'released');
     return response;
   };
 
@@ -1431,7 +1487,7 @@ export async function executeTrade(signal, options = {}) {
     const repairedTp = priceForMinimumRR({
       direction,
       fillPrice,
-      stopLoss: slPrice,
+      stopLoss: actualStopPrice,
       minRR: MIN_EXECUTABLE_RR,
       priceDecimals,
     });
@@ -1451,13 +1507,13 @@ export async function executeTrade(signal, options = {}) {
       actualFillRR = computePostFillRiskReward({
         direction,
         entry: fillPrice,
-        stopLoss: slPrice,
+        stopLoss: actualStopPrice,
         takeProfit: effectiveTpPrice,
       });
       postFillTpAdjusted = true;
       executionLog.push(logEntry('POST_FILL_RR_REPAIRED', {
         fillPrice,
-        stopLoss: slPrice,
+        stopLoss: actualStopPrice,
         previousTakeProfit: tpPrice,
         repairedTakeProfit: effectiveTpPrice,
         actualFillRR,
@@ -1560,7 +1616,7 @@ export async function executeTrade(signal, options = {}) {
     tradeId,
     fillPrice,
     marginRequired: tradeMarginUsed,
-    stopLoss: slPrice,
+    stopLoss: actualStopPrice,
     takeProfit: effectiveTpPrice,
     actualFillRR,
     postFillTpAdjusted,
@@ -1583,7 +1639,7 @@ export async function executeTrade(signal, options = {}) {
     sizing,
     signal,
     entry: fillPrice,
-    stopLoss: slPrice,
+    stopLoss: actualStopPrice,
     takeProfit: effectiveTpPrice,
     score,
     confidence,
@@ -1713,6 +1769,10 @@ export async function closePosition(instrument) {
     );
     activeTrades.delete(`${instrument}_long`);
     activeTrades.delete(`${instrument}_short`);
+    await Promise.all([
+      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'long', statuses: ['open'] }),
+      releaseExecutionsForPairDirection({ accountId, pair: instrument, direction: 'short', statuses: ['open'] }),
+    ]);
     console.log(`[TRADE] ✓ Position closed: ${instrument}`);
     return { success: true, response };
   } catch (err) {
@@ -1807,6 +1867,13 @@ export async function closeBrokerTrade({ tradeId, instrument = null, units, clie
       if (isFullClose) {
         activeTrades.delete(`${instrument}_long`);
         activeTrades.delete(`${instrument}_short`);
+      }
+    }
+    if (isFullClose) {
+      try {
+        await releaseExecutionByTradeId(tradeId, 'released');
+      } catch (releaseError) {
+        console.warn(`[TRADE_CLOSE] reservation release failed tradeId=${tradeId}: ${releaseError?.message || releaseError}`);
       }
     }
     console.log(

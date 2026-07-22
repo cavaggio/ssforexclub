@@ -244,21 +244,30 @@ trade = replace_once(
     "    const confCheck = purePprExecution\n      ? checkAutoExecutionConfidence(confidence, {\n          ...riskConfig(),\n          autoExecutionMinConfidence: executionConfidenceFloor,\n        })\n      : checkAutoExecutionConfidence(confidence);\n    if (!confCheck.passed) return blocked(confCheck.reason);",
     "PPR Auto AI confidence override",
 )
-trade = replace_once(
-    trade,
-    "    minConfidence: MIN_CONFIDENCE,",
-    "    minConfidence: executionConfidenceFloor,",
-    "dynamic sizing PPR confidence floor",
-)
 
-for marker in [
+# The fixed-risk executor deliberately removes confidence-based dynamic sizing.
+# Keep the PPR 80% entry floor above, but do not require or recreate a
+# `minConfidence` field inside a sizing block that no longer exists.
+fixed_risk_executor = "[FIXED_RISK_POLICY]" in trade
+if not fixed_risk_executor:
+    trade = replace_once(
+        trade,
+        "    minConfidence: MIN_CONFIDENCE,",
+        "    minConfidence: executionConfidenceFloor,",
+        "dynamic sizing PPR confidence floor",
+    )
+
+required_trade_markers = [
     "export function pprExecutionConfidenceFloor",
     "purePprExecution ? pprExecutionConfidenceFloor() : MIN_CONFIDENCE",
     "autoExecutionMinConfidence: executionConfidenceFloor",
-    "minConfidence: executionConfidenceFloor",
-]:
+]
+if not fixed_risk_executor:
+    required_trade_markers.append("minConfidence: executionConfidenceFloor")
+
+for marker in required_trade_markers:
     if marker not in trade:
         raise RuntimeError(f"Shared executor PPR alignment incomplete: missing {marker}")
 
 TRADE.write_text(trade, encoding="utf-8")
-print("PPR execution aligned: 80% floor, practice/live readiness, and exact scan accounting")
+print("PPR execution aligned: 80% floor, practice/live readiness, exact scan accounting, and fixed-risk compatibility")
