@@ -7,6 +7,7 @@ account when ICT_AUTO_TRADE_ENABLED=true. Live-only acknowledgement remains
 required only when the selected broker environment is live.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,8 +65,15 @@ rr_marker_present = (
     or "configuredIctMinRR()" in engine
 )
 
+# The later 93% policy intentionally raises the floor. Keep accepting the
+# original 80% marker for a pristine source tree and the final 93% contract on
+# subsequent generated-source passes.
+confidence_marker_present = (
+    "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))" in engine
+    or "Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))" in engine
+)
+
 for marker in [
-    "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
     "ICT_MODE === 'active'",
     "(c.mode === 'active' || c.mode === 'live') && c.autoTradeEnabled === true",
     "executionMinConfidence: executionConfig.minConfidence",
@@ -73,6 +81,8 @@ for marker in [
 ]:
     if marker not in engine:
         raise RuntimeError(f"ICT engine alignment incomplete: missing {marker}")
+if not confidence_marker_present:
+    raise RuntimeError("ICT engine alignment incomplete: missing configured ICT confidence contract")
 if not rr_marker_present:
     raise RuntimeError(
         "ICT engine alignment incomplete: missing configured ICT minimum R:R contract"
@@ -82,10 +92,7 @@ ENGINE.write_text(engine, encoding="utf-8")
 
 
 auto = AUTO.read_text(encoding="utf-8")
-auto = replace_once(
-    auto,
-    "}\n\nfunction buildIctWatchState(analyses = [], minConfidence = 85) {",
-    "}\n\n"
+qualification_helper = (
     "export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {\n"
     "  const confidence = Number(analysis?.confidence);\n"
     "  const rr = Number(analysis?.rr);\n"
@@ -93,9 +100,18 @@ auto = replace_once(
     "    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&\n"
     "    Number.isFinite(rr) && rr >= cfg.minRR;\n"
     "}\n\n"
-    "function buildIctWatchState(analyses = [], minConfidence = 85) {",
-    "ICT autonomous qualification helper",
 )
+if "export function isIctAutoQualified" not in auto:
+    match = re.search(
+        r"(?=function buildIctWatchState\(analyses = \[\], minConfidence = \d+\) \{)",
+        auto,
+    )
+    if not match:
+        raise RuntimeError(
+            "ICT execution alignment marker missing: ICT autonomous qualification helper"
+        )
+    auto = auto[: match.start()] + qualification_helper + auto[match.start() :]
+
 auto = replace_once(
     auto,
     "  const qualified = analyses.filter((a) => a.signal !== 'none' && a.confidence >= cfg.minConfidence);",
