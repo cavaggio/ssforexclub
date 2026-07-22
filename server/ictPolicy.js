@@ -2,6 +2,7 @@ import { getPipSize } from './pipMath.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finite = (value) => {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
