@@ -3,31 +3,23 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { configuredIctWatchlist, DEFAULT_ICT_WATCHLIST } from './ictWatchlist.js';
 
-test('ICT core watchlist exactly mirrors the V3 12-pair market universe', () => {
-  assert.deepEqual(DEFAULT_ICT_WATCHLIST, [
-    'EUR_USD',
-    'GBP_USD',
-    'USD_JPY',
-    'USD_CAD',
-    'USD_CHF',
-    'AUD_USD',
-    'NZD_USD',
-    'EUR_GBP',
-    'EUR_CHF',
-    'AUD_CAD',
-    'GBP_JPY',
-    'EUR_JPY',
-  ]);
+const REQUIRED_ICT_PAIRS = [
+  'EUR_USD',
+  'GBP_USD',
+  'USD_JPY',
+  'GBP_JPY',
+];
+
+test('ICT watchlist contains exactly the four approved pairs', () => {
+  assert.deepEqual(DEFAULT_ICT_WATCHLIST, REQUIRED_ICT_PAIRS);
+  assert.deepEqual(configuredIctWatchlist(), REQUIRED_ICT_PAIRS);
 });
 
-test('environment configuration can add pairs but cannot remove the 12 core pairs', () => {
-  const watchlist = configuredIctWatchlist({
-    ICT_PAIRS: 'eur_usd,usd_cad,xau_usd',
-  });
-
-  assert.deepEqual(watchlist.slice(0, 12), [...DEFAULT_ICT_WATCHLIST]);
-  assert.equal(watchlist.length, 13);
-  assert.equal(watchlist.at(-1), 'XAU_USD');
+test('stale environment variables cannot reintroduce removed ICT instruments', () => {
+  assert.deepEqual(configuredIctWatchlist({
+    ICT_PAIRS: 'EUR_USD,USD_CAD,XAU_USD',
+    FOREX_WATCHLIST: 'AUD_USD,NZD_USD',
+  }), REQUIRED_ICT_PAIRS);
 });
 
 test('ICT engine fallback is enforced through the ICT-owned watchlist module', () => {
