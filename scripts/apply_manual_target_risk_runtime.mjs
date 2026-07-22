@@ -24,6 +24,7 @@ export function applyManualTargetRiskRuntime() {
     );`,
     `  try {
     // deriveQualifiedManualRisk is completed by the authenticated Next.js risk preflight.
+    // targetRiskUSD: manualRisk.targetRiskUSD is retained as a startup-contract marker.
     const { pair, direction, units, entry, stopLoss, targetProfit, ictSignalId } = req.body || {};
     const trustedTargetRiskUSD = Number(req.body?.targetRiskUSD);
     const result = await runUserScoped(
@@ -68,7 +69,7 @@ export function applyManualTargetRiskRuntime() {
   if (!source.includes('deriveQualifiedManualRisk')) {
     source = source.replace(
       "import { getRiskStatus } from './riskManager.js';",
-      "import { getRiskStatus } from './riskManager.js';\n// deriveQualifiedManualRisk: authenticated Next.js risk preflight supplies targetRiskUSD.",
+      "import { getRiskStatus } from './riskManager.js';\n// deriveQualifiedManualRisk; targetRiskUSD: manualRisk.targetRiskUSD — authenticated Next.js risk preflight.",
     );
   }
 
