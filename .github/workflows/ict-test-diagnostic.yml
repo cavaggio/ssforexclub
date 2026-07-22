@@ -5,10 +5,7 @@ on:
     paths:
       - 'server/**'
       - 'web/lib/**'
-      - 'scripts/apply_ict_entry_policy.mjs'
-      - 'scripts/apply_ict_lifecycle_alignment.mjs'
-      - 'scripts/apply_ict_execution_alignment.py'
-      - 'scripts/apply_ict_rr_floor.py'
+      - 'scripts/**'
       - 'package.json'
       - '.github/workflows/ict-test-diagnostic.yml'
 
@@ -16,7 +13,7 @@ jobs:
   diagnostic:
     runs-on: ubuntu-latest
     steps:
-      - name: Run full tests with compact failure output
+      - name: Run full tests with focused failure output
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.head_ref }}
@@ -27,8 +24,15 @@ jobs:
           if ! npm test >/tmp/full-test.log 2>&1; then
             echo '=== FAILURE INDEX ==='
             grep -nE 'not ok|ERR_ASSERTION|testCodeFailure|Error:|FAIL' /tmp/full-test.log | tail -120 || true
-            echo '=== LOG TAIL ==='
-            tail -350 /tmp/full-test.log
+            first_failure=$(grep -n 'not ok' /tmp/full-test.log | head -1 | cut -d: -f1 || true)
+            if [ -n "$first_failure" ]; then
+              start=$(( first_failure > 50 ? first_failure - 50 : 1 ))
+              end=$(( first_failure + 220 ))
+              echo "=== FIRST FAILURE CONTEXT ${start}-${end} ==="
+              sed -n "${start},${end}p" /tmp/full-test.log
+            else
+              tail -350 /tmp/full-test.log
+            fi
             exit 1
           fi
           echo 'FULL TEST SUITE PASSED'
