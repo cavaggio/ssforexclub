@@ -1,9 +1,9 @@
 /**
- * Engine-neutral Auto AI scan and execution windows.
+ * Engine-aware Auto AI scan and execution windows.
  *
- * Scanning begins at 02:00 ET so every selected engine can build its own watch
- * state before entries are allowed. New orders are blocked until 02:15 ET.
- * This module contains scheduling policy only and imports no strategy code.
+ * All engines begin scanning at 02:00 ET so they can build watch state before
+ * entries are allowed. PPR may submit new orders from 03:00 ET, ICT from
+ * 05:00 ET, and V3 retains its existing 02:15 ET entry start.
  */
 export const AUTO_AI_SCAN_WINDOW = Object.freeze({
   startMin: 120,
@@ -12,16 +12,39 @@ export const AUTO_AI_SCAN_WINDOW = Object.freeze({
   weekdaysOnly: true,
 });
 
-export const AUTO_AI_EXECUTION_WINDOW = Object.freeze({
-  startMin: 135,
-  endMin: 600,
-  timeZone: 'America/New_York',
-  weekdaysOnly: true,
+export const AUTO_AI_EXECUTION_WINDOWS = Object.freeze({
+  v3: Object.freeze({
+    startMin: 135,
+    endMin: 600,
+    timeZone: 'America/New_York',
+    weekdaysOnly: true,
+  }),
+  ppr: Object.freeze({
+    startMin: 180,
+    endMin: 600,
+    timeZone: 'America/New_York',
+    weekdaysOnly: true,
+  }),
+  ict: Object.freeze({
+    startMin: 300,
+    endMin: 600,
+    timeZone: 'America/New_York',
+    weekdaysOnly: true,
+  }),
 });
 
-// Backward-compatible alias. Existing callers that only need to know whether
-// Auto AI should be active should use the broader scan window.
+// Backward-compatible alias for callers that still import one execution window.
+export const AUTO_AI_EXECUTION_WINDOW = AUTO_AI_EXECUTION_WINDOWS.v3;
 export const AUTO_AI_WINDOW = AUTO_AI_SCAN_WINDOW;
+
+function normalizeEngine(value) {
+  const engine = String(value || 'v3').toLowerCase();
+  return Object.hasOwn(AUTO_AI_EXECUTION_WINDOWS, engine) ? engine : 'v3';
+}
+
+export function executionWindowForEngine(engine) {
+  return AUTO_AI_EXECUTION_WINDOWS[normalizeEngine(engine)];
+}
 
 function easternParts(date = new Date(), timeZone = AUTO_AI_SCAN_WINDOW.timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -55,11 +78,10 @@ export function inAutoAiScanWindow(date = new Date()) {
   return inWindow(date, AUTO_AI_SCAN_WINDOW);
 }
 
-export function inAutoAiExecutionWindow(date = new Date()) {
-  return inWindow(date, AUTO_AI_EXECUTION_WINDOW);
+export function inAutoAiExecutionWindow(date = new Date(), engine = 'v3') {
+  return inWindow(date, executionWindowForEngine(engine));
 }
 
-// Backward-compatible alias: Auto AI is considered active while scanning.
 export function inAutoAiWindow(date = new Date()) {
   return inAutoAiScanWindow(date);
 }
@@ -68,6 +90,8 @@ export function autoAiWindowReason() {
   return 'outside_auto_ai_scan_window_02:00-10:00_ET_weekdays';
 }
 
-export function autoAiExecutionWindowReason() {
-  return 'scan_only_until_02:15_ET_no_new_orders';
+export function autoAiExecutionWindowReason(engine = 'v3') {
+  const normalized = normalizeEngine(engine);
+  const start = normalized === 'ict' ? '05:00' : normalized === 'ppr' ? '03:00' : '02:15';
+  return `${normalized}_scan_only_until_${start}_ET_no_new_orders`;
 }

@@ -3,6 +3,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
+import './apply_daily_ict_policy.mjs';
+import './apply_daily_bot_policy.mjs';
+import './apply_daily_risk_persistence.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -31,8 +34,10 @@ function enforceRuntimeFloors() {
   // or contradict the scanner's qualified status.
   process.env.ICT_MIN_CONFIDENCE = String(Math.max(93, finiteNumber(process.env.ICT_MIN_CONFIDENCE, 93)));
   process.env.ICT_MIN_RR = String(Math.max(1.5, finiteNumber(process.env.ICT_MIN_RR, 1.5)));
-  process.env.ICT_MAX_RISK_PERCENT = String(Math.min(1.25, Math.max(0.01, finiteNumber(process.env.ICT_MAX_RISK_PERCENT, 1.25))));
-  process.env.RISK_MAX_PER_TRADE_PERCENT = String(Math.min(1.25, Math.max(0.01, finiteNumber(process.env.RISK_MAX_PER_TRADE_PERCENT, 1.25))));
+  process.env.ICT_MAX_RISK_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.ICT_MAX_RISK_PERCENT, 1))));
+  process.env.RISK_MAX_PER_TRADE_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.RISK_MAX_PER_TRADE_PERCENT, 1))));
+  process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT = String(Math.min(2, Math.max(0.01, finiteNumber(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT, 2))));
+  process.env.RISK_POST_LOSS_NEXT_TRADE_PERCENT = String(Math.min(0.5, Math.max(0.01, finiteNumber(process.env.RISK_POST_LOSS_NEXT_TRADE_PERCENT, 0.5))));
 }
 
 function hasIctRrRuntimeContract(source) {
@@ -77,7 +82,7 @@ ensureIctRrFloorRuntime();
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
 // for starting the API. A stale source marker must never take the entire scanner,
 // active-trade monitor, reassessor, and calibration endpoints offline. The
-// execution modules still enforce the central 1.25% risk cap independently.
+// execution modules still enforce the central 1% risk cap independently.
 try {
   applyManualTargetRiskRuntime();
 } catch (error) {

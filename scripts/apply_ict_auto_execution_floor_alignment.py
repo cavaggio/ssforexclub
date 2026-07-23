@@ -8,6 +8,7 @@ minimum-R:R protections remain unchanged.
 """
 
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTION = ROOT / "server" / "ictExecution.js"
@@ -21,13 +22,37 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def ensure_risk_config_import(text: str) -> str:
+    """Add riskConfig to the risk-manager import without assuming import order.
+
+    Later policy passes may also import markTradeOpened. Treat any existing
+    riskConfig entry inside the same import block as authoritative and idempotent.
+    """
+    block_pattern = re.compile(
+        r"import \{(?P<body>[\s\S]*?)\} from './riskManager\.js';"
+    )
+    match = block_pattern.search(text)
+    if not match:
+        raise RuntimeError("ICT auto-execution floor marker missing: riskManager import")
+
+    body = match.group("body")
+    if re.search(r"^\s*riskConfig,\s*$", body, flags=re.MULTILINE):
+        return text
+    if not re.search(r"^\s*checkAutoExecutionConfidence,\s*$", body, flags=re.MULTILINE):
+        raise RuntimeError("ICT auto-execution floor marker missing: checkAutoExecutionConfidence import")
+
+    next_body = re.sub(
+        r"(^\s*checkAutoExecutionConfidence,\s*$)",
+        r"\1\n  riskConfig,",
+        body,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    return text[: match.start("body")] + next_body + text[match.end("body") :]
+
+
 execution = EXECUTION.read_text(encoding="utf-8")
-execution = replace_once(
-    execution,
-    "  checkAutoExecutionConfidence,\n} from './riskManager.js';",
-    "  checkAutoExecutionConfidence,\n  riskConfig,\n} from './riskManager.js';",
-    "riskConfig import",
-)
+execution = ensure_risk_config_import(execution)
 execution = replace_once(
     execution,
     "    const confCheck = checkAutoExecutionConfidence(analysis.confidence);\n"

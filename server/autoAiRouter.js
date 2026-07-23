@@ -73,11 +73,12 @@ export async function runAutoForUser({
   runPpr = null,
 } = {}) {
   const selectedEngine = normalizeAutoEngine(engine);
+  const dailyStudy = scanMode === 'daily_study';
 
-  if (!inAutoAiScanWindow(now)) return outsideWindowResult(selectedEngine);
+  if (!dailyStudy && !inAutoAiScanWindow(now)) return outsideWindowResult(selectedEngine);
 
   const safePairs = Array.isArray(pairs) && pairs.length ? pairs : null;
-  const executionAllowed = inAutoAiExecutionWindow(now);
+  const executionAllowed = !dailyStudy && inAutoAiExecutionWindow(now, selectedEngine);
   const args = {
     client,
     now,
@@ -87,7 +88,11 @@ export async function runAutoForUser({
     targetRiskUSD,
     manualExecution,
     executionAllowed,
-    executionBlockedReason: executionAllowed ? null : autoAiExecutionWindowReason(),
+    executionBlockedReason: executionAllowed
+      ? null
+      : dailyStudy
+        ? 'daily_market_study_never_submits_orders'
+        : autoAiExecutionWindowReason(selectedEngine),
   };
   const injectedRunner = selectedEngine === 'v3'
     ? runV3

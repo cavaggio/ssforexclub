@@ -46,16 +46,23 @@ export function pprExecutionReadiness({ client = null, config = pprConfig() } = 
   const environment = String(client?.environment || 'practice').toLowerCase();
   const autoTradeEnabled = String(process.env.FOREX_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true';
   const liveExecutionAllowed = String(process.env.FOREX_ALLOW_LIVE_EXECUTION || 'false').toLowerCase() === 'true';
+  const practiceEnvironment = environment === 'practice' || environment === 'paper';
+  const liveEnvironment = environment === 'live';
+  const practiceReady = practiceEnvironment && autoTradeEnabled;
+  const liveReady = liveEnvironment && autoTradeEnabled && liveExecutionAllowed;
+  const orderSubmissionReady = practiceReady || liveReady;
   const blockers = [];
   if (!autoTradeEnabled) blockers.push('FOREX_AUTO_TRADE_ENABLED is not true on Railway');
-  if (environment !== 'live') blockers.push(`active broker environment is ${environment}, not live`);
-  if (environment === 'live' && !liveExecutionAllowed) blockers.push('FOREX_ALLOW_LIVE_EXECUTION is not true on Railway');
+  if (!practiceEnvironment && !liveEnvironment) blockers.push(`unsupported broker environment: ${environment}`);
+  if (liveEnvironment && !liveExecutionAllowed) blockers.push('FOREX_ALLOW_LIVE_EXECUTION is not true on Railway');
   return {
     environment,
+    executionMode: practiceEnvironment ? 'practice' : liveEnvironment ? 'live' : 'unsupported',
     autoTradeEnabled,
     liveExecutionAllowed,
-    orderSubmissionReady: autoTradeEnabled && (environment !== 'live' || liveExecutionAllowed),
-    liveReady: environment === 'live' && autoTradeEnabled && liveExecutionAllowed,
+    practiceReady,
+    liveReady,
+    orderSubmissionReady,
     minConfidence: config.minConfidence,
     minRR: config.minRR,
     blockers,
@@ -1124,7 +1131,7 @@ export async function scanPprMarket({ pairs = null, client, now = new Date(), lo
     `scan complete scanned=${requested.length} qualified=${counts.qualifiedCount} ` +
     `watching=${counts.watchCount} rejected=${counts.rejectedCount} ` +
     `accounted=${counts.accountedFor} countInvariantOk=${countInvariantOk} ` +
-    `liveReady=${executionReadiness.liveReady}`,
+    `executionMode=${executionReadiness.executionMode} executionReady=${executionReadiness.orderSubmissionReady}`,
   );
 
   return {

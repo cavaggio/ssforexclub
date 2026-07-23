@@ -1,6 +1,7 @@
 import { scanPprMarket } from './pprEngine.js';
 import { executePprTrade } from './pprExecution.js';
 import { pprRuntimeConfig } from './pprEnv.js';
+import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
@@ -89,6 +90,8 @@ export async function runAutoPprForUser({
   pairs = null,
   targetRiskUSD = null,
   manualExecution = false,
+  executionAllowed = true,
+  executionBlockedReason = null,
 } = {}) {
   const tag = `[AUTO_AI][PPR][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
@@ -99,6 +102,10 @@ export async function runAutoPprForUser({
     `runtime engineMode=${runtime.engineMode} active=${runtime.engineActive} ` +
     `autoExecution=${runtime.aiAutoExecutionEnabled} autoManage=${runtime.aiAutoManageEnabled}`,
   );
+
+  if (scanMode === 'daily_study') {
+    return runDailyMarketStudy({ client, engine: 'ppr', pairs, now });
+  }
 
   if (!runtime.engineActive) {
     const reason = `PPR engine inactive (PPR_ENGINE_MODE=${runtime.engineMode})`;
@@ -116,7 +123,16 @@ export async function runAutoPprForUser({
     'legacyScannerUsed=false v3LogicUsed=false ictLogicUsed=false',
   );
 
-  const scan = await scanPprMarket({ pairs: scanPairs, client, now, log });
+  const rawScan = await scanPprMarket({ pairs: scanPairs, client, now, log });
+  const scan = {
+    ...rawScan,
+    qualified: await Promise.all((Array.isArray(rawScan?.qualified) ? rawScan.qualified : []).map((item) =>
+      applyStoredStudyCalibration(item, { client, engine: 'ppr' })
+    )),
+    watchCandidates: await Promise.all((Array.isArray(rawScan?.watchCandidates) ? rawScan.watchCandidates : []).map((item) =>
+      applyStoredStudyCalibration(item, { client, engine: 'ppr' })
+    )),
+  };
   const qualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
   const watchState = buildPprWatchState(scan);
   const counts = scanSummary(scan);
@@ -142,6 +158,70 @@ export async function runAutoPprForUser({
       executionReadiness: counts.executionReadiness,
       executed: [],
       skipped: [],
+      watchCandidates: scan?.watchCandidates || [],
+      rejected: scan?.rejected || [],
+      pprRuntime: runtime,
+      autoManageEnabled: runtime.aiAutoManageEnabled,
+      ...watchState,
+    };
+  }
+
+  if (executionAllowed === false) {
+    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const skipped = qualified.map((candidate) => ({
+      pair: candidate.pair,
+      direction: candidate.direction,
+      reason,
+    }));
+    log(
+      `scan-only gate active scanned=${counts.scanned} qualified=${qualified.length} ` +
+      `watching=${counts.watchCount} executed=0 reason="${reason}"`,
+    );
+    return {
+      engine: 'ppr',
+      architecture: 'independent_ppr_raw_market_data',
+      legacyScannerUsed: false,
+      v3LogicUsed: false,
+      ictLogicUsed: false,
+      scanned: counts.scanned,
+      qualified: qualified.length,
+      watching: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk: counts.countInvariantOk,
+      executionReadiness: counts.executionReadiness,
+      executed: [],
+      skipped,
+      executionAllowed: false,
+      watchCandidates: scan?.watchCandidates || [],
+      rejected: scan?.rejected || [],
+      pprRuntime: runtime,
+      autoManageEnabled: runtime.aiAutoManageEnabled,
+      ...watchState,
+    };
+  }
+
+  if (!executionAllowed) {
+    const reason = executionBlockedReason || 'PPR scan-only window: new orders are not allowed yet';
+    const skipped = qualified.map((candidate) => ({
+      pair: candidate.pair, direction: candidate.direction, reason,
+    }));
+    log(`PPR scan-only window qualified=${qualified.length} executed=0 reason="${reason}"`);
+    return {
+      engine: 'ppr',
+      architecture: 'independent_ppr_raw_market_data',
+      legacyScannerUsed: false,
+      v3LogicUsed: false,
+      ictLogicUsed: false,
+      scanned: counts.scanned,
+      qualified: qualified.length,
+      watching: counts.watchCount,
+      rejectedCount: counts.rejectedCount,
+      accountedFor: counts.accountedFor,
+      countInvariantOk: counts.countInvariantOk,
+      executionReadiness: counts.executionReadiness,
+      executed: [],
+      skipped,
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
       pprRuntime: runtime,
@@ -188,7 +268,7 @@ export async function runAutoPprForUser({
   const skipped = [];
   for (const candidate of qualified) {
     const executionCandidate = manualExecution && Number.isFinite(Number(targetRiskUSD))
-      ? { ...candidate, targetRiskUSD: Number(targetRiskUSD), riskPercent: 1.25 }
+      ? { ...candidate, targetRiskUSD: Number(targetRiskUSD), riskPercent: 1 }
       : candidate;
     const result = await executePprTrade(executionCandidate, {
       client,

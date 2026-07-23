@@ -2,7 +2,7 @@
  * server/ictExecution.js
  *
  * ICT Engine — MANUAL trade execution, isolated from V3. It never auto-trades
- * and is OFF by default (requires ICT_ENGINE_MODE=live AND ICT_AUTO_TRADE_ENABLED=true,
+ * and is OFF by default (requires ICT_ENGINE_MODE=active (or legacy live) AND ICT_AUTO_TRADE_ENABLED=true,
  * plus the broker-level live-ack FOREX_ALLOW_LIVE_EXECUTION).
  *
  * Reuses the EXISTING secure machinery without modifying V3 behavior:
@@ -30,12 +30,20 @@ import {
   checkMargin,
   checkRiskPerTrade,
   checkDailyRiskLock,
+  hydrateDailyRiskState,
+  persistDailyRiskState,
   reserveDailyLossBudget,
   checkAutoExecutionConfidence,
+  markTradeOpened,
+  riskConfig,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
+import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
+import { applyBoundedIctStopWidening } from './ictPolicy.js';
+import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
+import { recordTrade } from './oandaTradeHistory.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
@@ -120,8 +128,15 @@ export async function executeIctTrade(params = {}, {
   autoAi = false,
   getOpen = null,
 } = {}) {
-  const config = cfg || ictExecConfig();
-  const { pair, direction, entry, stopLoss, targetProfit, ictSignalId } = params;
+  const rawConfig = cfg || ictExecConfig();
+  const config = {
+    ...rawConfig,
+    minConfidence: Math.max(93, Number(rawConfig?.minConfidence) || 93),
+  };
+  const { pair, direction, ictSignalId } = params;
+  let entry = Number(params.entry);
+  let stopLoss = Number(params.stopLoss);
+  let targetProfit = Number(params.targetProfit);
   // Resolve the trading environment: signal override → per-request client → live.
   const tradingEnv = String(params.environment || client?.environment || 'live').toLowerCase();
   const isPaperEnv = tradingEnv === 'practice' || tradingEnv === 'paper';
@@ -129,8 +144,8 @@ export async function executeIctTrade(params = {}, {
   const rec = (m) => { log.push(m); console.log(`[ICT_TRADE] ${m}`); };
   rec(`requested pair=${pair} dir=${direction} entry=${entry} sl=${stopLoss} tp=${targetProfit} id=${ictSignalId} env=${tradingEnv}`);
 
-  // ── 1. Execution enabled (mode=live AND auto-trade) — the default-off gate ──
-  if (!(config.mode === 'live' && config.autoTradeEnabled === true)) {
+  // ── 1. Execution enabled (mode=active/live AND auto-trade) ────────────────
+  if (!((config.mode === 'active' || config.mode === 'live') && config.autoTradeEnabled === true)) {
     return blocked(`ICT execution disabled (ICT_ENGINE_MODE=${config.mode}, ICT_AUTO_TRADE_ENABLED=${config.autoTradeEnabled}).`);
   }
   // ── 2. Live acknowledgement (LIVE only — paper/practice never requires it) ──
@@ -149,7 +164,9 @@ export async function executeIctTrade(params = {}, {
   // ── 4. Recompute ICT signal (server is authoritative) ──────────────────────
   const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));
   let analysis;
-  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }
+  try {
+    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });
+  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }
   const wantSignal = direction === 'long' ? 'buy' : 'sell';
   if (!analysis || analysis.signal !== wantSignal) {
     return blocked(`No current ICT ${wantSignal} signal for ${pair} (got "${analysis?.signal ?? 'none'}").`);
@@ -165,7 +182,10 @@ export async function executeIctTrade(params = {}, {
   }
   // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
   if (autoAi) {
-    const confCheck = checkAutoExecutionConfidence(analysis.confidence);
+    const confCheck = checkAutoExecutionConfidence(analysis.confidence, {
+      ...riskConfig(),
+      autoExecutionMinConfidence: config.minConfidence,
+    });
     if (!confCheck.passed) return blocked(confCheck.reason);
   }
 
@@ -185,6 +205,34 @@ export async function executeIctTrade(params = {}, {
     return blocked(`Stale or invalid signal id (age ${Number.isFinite(ageSec) ? ageSec.toFixed(0) : '?'}s vs TTL ${config.signalTtlSec}s).`);
   }
 
+  // Fresh server-side ICT recomputation owns execution levels; stale UI levels are discarded.
+  const authoritativeEntry = Number(analysis.entry);
+  const authoritativeStop = Number(analysis.stopLoss);
+  const authoritativeTarget = Number(analysis.target1);
+  if (![authoritativeEntry, authoritativeStop, authoritativeTarget].every(Number.isFinite)) {
+    return blocked('Authoritative ICT recompute did not return executable entry/SL/TP levels.');
+  }
+  entry = authoritativeEntry;
+  stopLoss = authoritativeStop;
+  targetProfit = authoritativeTarget;
+
+  const claudeAdvice = await requestIctStopAdvice({ pair, direction, entry, stopLoss, targetProfit, analysis });
+  const boundedStop = applyBoundedIctStopWidening({
+    pair, direction, entry, stopLoss, targetProfit,
+    suggestedExtraPips: claudeAdvice.suggestedExtraPips,
+    atrPips: analysis.atrPips, minRR: config.minRR,
+  });
+  if (boundedStop.adjusted) {
+    stopLoss = boundedStop.stopLoss;
+    rec(`Claude advisor widened PRE-ENTRY stop by ${boundedStop.extraPips}p within ${config.minRR}R and fixed-risk limits.`);
+  }
+  const executionRisk = Math.abs(entry - stopLoss);
+  const executionReward = Math.abs(targetProfit - entry);
+  const executionRR = executionRisk > 0 ? +(executionReward / executionRisk).toFixed(2) : 0;
+  if (executionRR < config.minRR) return blocked(`Advisor/volatility stop would reduce RR below ${config.minRR} (${executionRR}).`);
+  analysis = { ...analysis, entry, stopLoss, target1: targetProfit, rr: executionRR,
+    claudeStopAdvice: claudeAdvice, boundedStopAdjustment: boundedStop };
+
   // ── 6. Credentials / per-user client ───────────────────────────────────────
   if (!client) return blocked('Missing per-user OANDA client — credentials not ready.');
 
@@ -200,9 +248,14 @@ export async function executeIctTrade(params = {}, {
   try { account = await accountFn(); } catch (err) { return blocked(`Failed to fetch account: ${err.message}`); }
   const balanceUSD = parseFloat(account?.balance ?? 0);
   if (!balanceUSD || Number.isNaN(balanceUSD)) return blocked('Account balance is 0 — fund account before live trading.');
+  const riskAccountId =
+    client?.accountId || client?.accountID || client?.account_id ||
+    client?.config?.accountId || client?.defaults?.accountId;
+  await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });
+  await persistDailyRiskState({ accountId: riskAccountId, balanceUSD, now });
 
   // ── 8a. Daily drawdown circuit breaker (blocks NEW entries, central) ───────
-  const dailyLock = checkDailyRiskLock({ accountId: client.accountId, balanceUSD, now });
+  const dailyLock = checkDailyRiskLock({ accountId: riskAccountId, balanceUSD, now });
   if (dailyLock.tradingLocked) {
     rec(`blocked: ${dailyLock.reason}`);
     return blocked(dailyLock.reason);
@@ -216,7 +269,7 @@ export async function executeIctTrade(params = {}, {
   const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
   let openTradesForBudget = [];
   try { const openFn = getOpen || (() => getOpenTrades({ client })); openTradesForBudget = (await openFn()) || []; } catch (err) { return blocked(`Could not calculate open stop risk: ${err.message}`); }
-  const dailyBudget = reserveDailyLossBudget({ accountId: client.accountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
+  const dailyBudget = reserveDailyLossBudget({ accountId: riskAccountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
   if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
   const targetRiskUSD = dailyBudget.approvedRiskUSD;
   const sizing = computeFixedDollarSizing({
@@ -336,6 +389,12 @@ export async function executeIctTrade(params = {}, {
     return blocked(protectiveCheck.reason, { freshPrice: protectiveCheck });
   }
 
+  const freshSpreadPips = Number.isFinite(protectiveCheck.spread) ? protectiveCheck.spread / getPipSize(pair) : null;
+  const maxFreshSpreadPips = Math.max(0.1, Number(process.env.ICT_MAX_SPREAD_PIPS || process.env.FOREX_MAX_SPREAD_PIPS || 3.5));
+  if (Number.isFinite(freshSpreadPips) && freshSpreadPips > maxFreshSpreadPips) {
+    return blocked(`Fresh spread ${freshSpreadPips.toFixed(1)}p exceeds ICT maximum ${maxFreshSpreadPips.toFixed(1)}p.`);
+  }
+
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
   const dp = priceDecimalsFor(pair);
   const orderPayload = {
@@ -373,24 +432,47 @@ export async function executeIctTrade(params = {}, {
   }
   const fill = resp?.orderFillTransaction;
   if (!fill) {
+    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'no_fill');
     rec('rejected: no fill transaction (IOC found no liquidity)');
     return { success: false, blocked: false, executionState: 'REJECTED', reason: 'No fill transaction — IOC order found no liquidity.', sizing, oandaResponse: resp, executionLog: log };
   }
 
   // Filled — SL/TP attached atomically on fill. Register the shared lock.
   registerTradeLock(pair, direction);
+  markTradeOpened({ accountId, balanceUSD, now });
+  await persistDailyRiskState({ accountId, balanceUSD, now });
   const tradeId = fill.tradeOpened?.tradeID || fill.id || fill.tradeID || null;
   if (params.__reservationHash) await markExecutionOpen({ hash: params.__reservationHash, tradeId });
   const fillPrice = parseFloat(fill.price ?? entry);
   // Projected hold-time for the ICT lifecycle reassessment (recorded at open).
   const holdMinutes = estimateHoldMinutes(analysis.setupType, analysis.concepts?.killzone);
   rec(`filled tradeId=${tradeId} price=${fillPrice} units=${units} holdMinutes=${holdMinutes}`);
+  try {
+    const actualFillRisk = Math.abs(fillPrice - stopLoss);
+    const actualFillReward = Math.abs(targetProfit - fillPrice);
+    const actualFillRR = actualFillRisk > 0 ? +(actualFillReward / actualFillRisk).toFixed(2) : null;
+    recordTrade({
+      pair, direction, entry: fillPrice, stopLoss, takeProfit: targetProfit, riskReward: actualFillRR, actualFillRR,
+      confidence: analysis.confidence, entryQualityConfidence: analysis.confidence, entryTpHitConfidence: analysis.confidence,
+      entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confidence,
+      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice },
+      atrPips: analysis.atrPips, units, riskAmount: sizing.actualRiskUSD, oandaOrderId: String(tradeId),
+      entryATR: analysis.atrPips, entryExpectedHoldTimeMinutes: holdMinutes, entryRiskRewardRatio: actualFillRR,
+      entrySession: analysis.concepts?.killzone?.currentKillzone ?? 'ICT', originalRecommendedTP: targetProfit, originalRecommendedSL: stopLoss,
+    });
+  } catch (historyError) {
+    rec(`warning: ICT entry snapshot was not persisted (${historyError.message})`);
+  }
   return {
     success: true, blocked: false, executionState: 'FILLED',
     tradeId, fillPrice, units, pair, direction,
     stopLoss, takeProfit: targetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
     holdMinutes,
+    entryConfidence: analysis.confidence,
+    setupType: analysis.setupType,
+    riskModel: analysis.riskModel,
+    claudeStopAdvice: analysis.claudeStopAdvice,
     executionLog: log,
   };
 }
@@ -464,7 +546,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 85) return "SCALP";
+  if (rr >= 1.5 && confidence >= 93) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

@@ -48,11 +48,19 @@ import { closeBrokerTrade } from './oandaTrade.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 import { reassessV3OpenTrade } from './v3ActiveTradeMonitor.js';
+import { reassessIctTrade } from './ictLifecycleEngine.js';
+import { computeIctLifecycleConfidence, ictEntryConfidence, ictHoldMinutes, isIctTradeRecord } from './ictPolicy.js';
 
 const AUTO_CLOSE_ENABLED =
   String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
 
-const REASSESSMENT_INTERVAL_MS = Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 15 * 60 * 1000); // 15 min — active management cadence
+// The generic reassessor is recommendation-only. Actual authenticated broker
+// closes are centralized in /api/cron/active-trade-management, which enforces
+// the ICT 30m + HIGH reversal + near-SL policy. This prevents a second, broad
+// auto-close path from acting on scan rejection or confidence deterioration.
+const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false;
+
+const REASSESSMENT_INTERVAL_MS = Math.max(30 * 60 * 1000, Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 30 * 60 * 1000)); // 30 min — hard minimum cadence
 let _scheduler = null;
 
 function nyMinutesSinceMidnight(now = new Date()) {
@@ -101,6 +109,105 @@ function shouldAutoCloseTrade(plan = {}) {
   return false;
 }
 
+
+
+export function buildMarketAlignedRecommendation({
+  baseRecommendation = null,
+  currentConfidence = null,
+  confidenceThreshold = 70,
+  signalMisalignmentReasons = [],
+  invalidationDetected = false,
+  invalidationReason = null,
+  flowOpposes = false,
+  m15TrendReversed = false,
+  profitR = null,
+  liveAutoCloseEnabled = false,
+} = {}) {
+  const base = baseRecommendation || {};
+  const reasons = Array.isArray(signalMisalignmentReasons)
+    ? signalMisalignmentReasons.filter(Boolean)
+    : [];
+  const confidence = Number(currentConfidence);
+  const confidenceKnown = Number.isFinite(confidence);
+  const confidenceBelowThreshold = confidenceKnown && confidence < confidenceThreshold;
+  const severeConfidenceLoss = confidenceKnown && confidence < Math.max(55, confidenceThreshold - 15);
+  const signalMisaligned = reasons.length > 0;
+  const reversalStack = flowOpposes && m15TrendReversed;
+  const autoCloseReviewTriggered =
+    invalidationDetected || confidenceBelowThreshold || signalMisaligned || reversalStack;
+
+  let action = base.action || 'hold';
+  let urgency = base.urgency || 'low';
+  let recommendationConfidence = Number.isFinite(Number(base.confidence))
+    ? Number(base.confidence)
+    : 60;
+  let summary = base.unifiedSummary || base.reason || 'Hold while the original thesis remains aligned.';
+  let source = base.source || 'lifecycle';
+  let autoCloseCandidate = action === 'close';
+  let autoCloseReason = base.autoCloseReason || null;
+
+  if (invalidationDetected) {
+    action = 'close';
+    urgency = 'high';
+    recommendationConfidence = Math.max(recommendationConfidence, 92);
+    source = 'thesis_invalidation';
+    autoCloseCandidate = true;
+    autoCloseReason = `thesis_invalidation:${invalidationReason || reasons[0] || 'initial signal no longer valid'}`;
+    summary = `Close the position: the initial trade thesis is invalidated. ${invalidationReason || reasons.join(' ') || ''}`.trim();
+  } else if (severeConfidenceLoss || reversalStack) {
+    action = 'close';
+    urgency = 'high';
+    recommendationConfidence = Math.max(recommendationConfidence, 85);
+    source = severeConfidenceLoss ? 'confidence_breakdown' : 'institutional_reversal';
+    autoCloseCandidate = true;
+    autoCloseReason = severeConfidenceLoss
+      ? `confidence_below_${Math.max(55, confidenceThreshold - 15)}`
+      : 'institutional_flow_and_m15_reversal';
+    summary = `Close review is high priority: ${confidenceKnown ? `confidence is ${confidence}%` : 'confidence deteriorated'}${reasons.length ? ` and ${reasons.join('; ')}` : ''}.`;
+  } else if (confidenceBelowThreshold && signalMisaligned) {
+    action = (Number(profitR) > 0.5) ? 'tighten_sl' : 'close';
+    urgency = 'medium';
+    recommendationConfidence = Math.max(recommendationConfidence, 78);
+    source = 'confidence_and_signal_misalignment';
+    autoCloseCandidate = action === 'close';
+    autoCloseReason = autoCloseCandidate ? `confidence_below_${confidenceThreshold}_with_misalignment` : null;
+    summary = action === 'close'
+      ? `Close review: confidence fell to ${confidence}% and the live market no longer aligns with the entry thesis (${reasons.join('; ')}).`
+      : `Protect the open profit: confidence fell to ${confidence}% and the live market is misaligned (${reasons.join('; ')}). Tighten the stop rather than extending the target.`;
+  } else if (confidenceBelowThreshold) {
+    urgency = urgency === 'high' ? 'high' : 'medium';
+    recommendationConfidence = Math.max(recommendationConfidence, 72);
+    source = 'confidence_review';
+    summary = `Reassess closely: current confidence ${confidence}% is below the ${confidenceThreshold}% management threshold, but there is not yet enough contradictory market evidence to force an automatic close.`;
+  } else if (signalMisaligned) {
+    urgency = urgency === 'high' ? 'high' : 'medium';
+    recommendationConfidence = Math.max(recommendationConfidence, 70);
+    source = 'signal_misalignment_review';
+    summary = `The position needs active review because ${reasons.join('; ')}. ${summary}`;
+  }
+
+  const shouldAutoClose = Boolean(
+    liveAutoCloseEnabled && autoCloseCandidate && urgency === 'high',
+  );
+
+  return {
+    ...base,
+    action,
+    urgency,
+    confidence: Math.round(recommendationConfidence),
+    reason: summary,
+    unifiedSummary: summary,
+    source,
+    shouldAutoClose,
+    autoCloseReason: shouldAutoClose ? autoCloseReason : null,
+    autoCloseCandidate,
+    autoCloseReviewTriggered,
+    confidenceThreshold,
+    confidenceBelowThreshold,
+    signalMisaligned,
+    signalMisalignmentReasons: reasons,
+  };
+}
 
 function getPipSize(pair) {
   if (pair === 'XAU_USD' || pair === 'XAG_USD') return 0.01;
@@ -153,6 +260,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     : null;
 
   const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  const pureIctTrade = isIctTradeRecord(historyRecord || {});
   if (isPureV3TradeRecord(historyRecord || {})) {
     return reassessV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
   }
@@ -235,7 +343,9 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
   const pureV3Trade = false; // V3 trades returned before foreign analysis
   const originalSL = entryContext.originalRecommendedSL ?? currentSL;
   const originalTP = entryContext.originalRecommendedTP ?? currentTP;
-  const expectedHoldTimeMinutes = entryContext.entryExpectedHoldTimeMinutes ?? null;
+  const expectedHoldTimeMinutes = pureIctTrade
+    ? ictHoldMinutes(historyRecord || {}, entryContext.entryExpectedHoldTimeMinutes)
+    : entryContext.entryExpectedHoldTimeMinutes ?? null;
 
   // R-multiple + tpProgress
   const pipSize = getPipSize(pair);
@@ -393,6 +503,15 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
 
   // Pure V3 positions must never be re-scored by the legacy entry-confidence model.
   // Entry V3 score is only the starting probability; there is deliberately no floor.
+  const ictLifecycle = pureIctTrade
+    ? reassessIctTrade({
+        pair, direction: side, entryPrice, currentPrice, target1: currentTP ?? originalTP,
+        candles: m5Candles, now: new Date(), openedAtMs: openTimeMs, holdMinutes: expectedHoldTimeMinutes,
+        lastReassessMs: historyRecord?.lastReassessedAt ? Date.parse(historyRecord.lastReassessedAt) : null,
+      })
+    : null;
+  const lockedIctEntryConfidence = pureIctTrade ? ictEntryConfidence(historyRecord || {}, 93) : null;
+
   const liveV3Confidence = pureV3Trade
     ? computeLiveV3TpHitConfidence({
         side,
@@ -418,7 +537,9 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
         trendWeakeningSeverity: trendWeakening.trendWeakeningSeverity,
       })
     : null;
-  const currentConfidence = liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
+  let currentConfidence = pureIctTrade
+    ? lockedIctEntryConfidence
+    : liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
 
   if (
     pureV3Trade &&
@@ -432,6 +553,52 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
       `(${liveV3Confidence.state}); entry V3 score is not used as a post-entry floor.`
     );
   }
+
+  if (pureIctTrade && ictLifecycle) {
+    if (!ictLifecycle.pastHold) {
+      recommendedAction = 'HOLD';
+      managementReasons.unshift(
+        `ICT hold protection: preserving qualified ${lockedIctEntryConfidence}% entry confidence until ` +
+        `${expectedHoldTimeMinutes} minutes; scanner requalification and legacy confidence are ignored.`
+      );
+    } else if (ictLifecycle.reassessDue) {
+      const actionMap = { CLOSE: 'EXIT_INVALIDATED', PARTIAL_CLOSE: 'PARTIAL_EXIT',
+        MOVE_BREAKEVEN: 'MOVE_SL_TO_BREAKEVEN', TIGHTEN_STOP: 'TRAIL_SL', HOLD: 'HOLD' };
+      recommendedAction = actionMap[ictLifecycle.action] || 'HOLD';
+      managementReasons.unshift(...ictLifecycle.reasons);
+    } else {
+      recommendedAction = 'HOLD';
+      managementReasons.unshift(...ictLifecycle.reasons);
+    }
+    currentConfidence = computeIctLifecycleConfidence({
+      entryConfidence: lockedIctEntryConfidence, minutesElapsed, holdMinutes: expectedHoldTimeMinutes,
+      lifecycleAction: ictLifecycle.action, profitR, tpProgress,
+    });
+  }
+
+
+  const confidenceReviewThreshold = Math.max(
+    1,
+    Number(process.env.ACTIVE_TRADE_CLOSE_REVIEW_CONFIDENCE || 70),
+  );
+  const initialConfidence = Number.isFinite(Number(entryContext.entryTpHitConfidence))
+    ? Number(entryContext.entryTpHitConfidence)
+    : Number.isFinite(Number(entryContext.entryQualityConfidence))
+      ? Number(entryContext.entryQualityConfidence)
+      : null;
+  const alignmentDrop = Number.isFinite(Number(entryContext.entryMtfAlignmentScore))
+    ? Math.max(0, Number(entryContext.entryMtfAlignmentScore) - Number(alignment.timeframeAlignmentScore || 0))
+    : 0;
+  const mtfAlignmentDrop = Number.isFinite(Number(entryContext.entryMtfAlignmentScore))
+    ? Math.max(0, Number(entryContext.entryMtfAlignmentScore) - Number(mtfAuthority.multiTimeframeAlignmentScore || 0))
+    : 0;
+  const signalMisalignmentReasons = [];
+  if (mtfAuthority.conflict) signalMisalignmentReasons.push('multi-timeframe direction is conflicting');
+  if (flowOpposes) signalMisalignmentReasons.push('institutional flow opposes the open position');
+  if (m15TrendReversed) signalMisalignmentReasons.push('the M15 trend reversed against the position');
+  if (alignmentDrop >= 15) signalMisalignmentReasons.push(`alignment fell ${Math.round(alignmentDrop)} points from entry`);
+  if (mtfAlignmentDrop >= 15) signalMisalignmentReasons.push(`MTF alignment fell ${Math.round(mtfAlignmentDrop)} points from entry`);
+  if (!marketStateAllowed) signalMisalignmentReasons.push(`current market state ${marketState.marketState} is outside the entry profile`);
 
   const originalSlPips = Number.isFinite(originalSL)
     ? Math.abs(entryPrice - originalSL) / pipSize
@@ -474,6 +641,35 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
   });
   console.log(lifecycle.logLine);
 
+  const lifecycleRecommendation = buildMarketAlignedRecommendation({
+    baseRecommendation: lifecycle.recommendation,
+    currentConfidence,
+    confidenceThreshold: confidenceReviewThreshold,
+    signalMisalignmentReasons,
+    invalidationDetected: invalidation.invalidationDetected,
+    invalidationReason: invalidation.invalidationReason,
+    flowOpposes,
+    m15TrendReversed,
+    profitR,
+    liveAutoCloseEnabled: AUTO_CLOSE_ENABLED,
+  });
+  const autoCloseAnalysis = {
+    evaluated: lifecycleRecommendation.autoCloseReviewTriggered,
+    candidate: lifecycleRecommendation.autoCloseCandidate,
+    enabled: AUTO_CLOSE_ENABLED,
+    shouldAutoClose: lifecycleRecommendation.shouldAutoClose,
+    threshold: confidenceReviewThreshold,
+    triggers: [
+      ...(lifecycleRecommendation.confidenceBelowThreshold
+        ? [`confidence ${Math.round(currentConfidence)}% below ${confidenceReviewThreshold}%`]
+        : []),
+      ...signalMisalignmentReasons,
+      ...(invalidation.invalidationDetected
+        ? [invalidation.invalidationReason || 'trade thesis invalidated']
+        : []),
+    ],
+  };
+
   return {
     tradeId: String(oandaTrade.id),
     instrument: pair,
@@ -490,6 +686,9 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     profitRMultiple: profitR,
     distanceToTP: distToTpPips,
     distanceToSL: distToSlPips,
+    currentStopLoss: Number.isFinite(currentSL) ? currentSL : null,
+    originalStopLoss: Number.isFinite(originalSL) ? originalSL : null,
+    initialRiskPips: originalSlPips,
     marketState: marketState.marketState,
     marketStateScore: marketState.marketStateScore,
     candleStrengthScore: candleStrength.candleStrengthScore,
@@ -514,11 +713,40 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     classicReviewAction: classification.reviewAction,
     currentAlignmentScore: alignment.timeframeAlignmentScore,
     currentConfidence,
-    confidenceModel: pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
+    initialConfidence,
+    confidenceReviewThreshold,
+    confidenceBelowReviewThreshold: lifecycleRecommendation.confidenceBelowThreshold,
+    signalMisaligned: lifecycleRecommendation.signalMisaligned,
+    signalMisalignmentReasons,
+    institutionalFlow: {
+      detected: !!institutionalFlow?.detected,
+      direction: institutionalFlow?.direction || 'neutral',
+      aligned: !!flowMatchesDirection,
+      opposes: !!flowOpposes,
+      reason: institutionalFlow?.reason || null,
+      signals: Array.isArray(institutionalFlow?.signals) ? institutionalFlow.signals.slice(0, 5) : [],
+    },
+    marketMovement: {
+      currentPrice: +currentPrice.toFixed(5),
+      entryPrice: +entryPrice.toFixed(5),
+      profitPips: +profitPipsNow.toFixed(1),
+      profitR,
+      m15Trend: momentum.m15Trend || 'neutral',
+      candleStrengthScore: candleStrength.candleStrengthScore,
+      velocityScore: lifecycle.velocityScore,
+      momentumStatus: lifecycle.momentumStatus,
+    },
+    autoCloseAnalysis,
+    confidenceModel: pureIctTrade
+      ? 'ict_entry_locked_until_hold_then_ict_lifecycle'
+      : pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
     entryTpHitConfidence: entryContext.entryTpHitConfidence ?? null,
     entryQualityConfidence: entryContext.entryQualityConfidence ?? null,
     liveTpConfidence: liveV3Confidence,
     minutesElapsed,
+    expectedHoldTimeMinutes,
+    entryIctConfidence: lockedIctEntryConfidence,
+    ictLifecycle,
     tpProgress: +tpProgress.toFixed(2),
     lastReassessedAt: reassessedAt,
     nextReassessmentDueAt: new Date(Date.now() + REASSESSMENT_INTERVAL_MS).toISOString(),
@@ -538,7 +766,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     dynamicTrail:        lifecycle.dynamicTrail,
     trendExhaustion:     lifecycle.trendExhaustion,
     capitalEfficiency:   lifecycle.capitalEfficiency,
-    lifecycleRecommendation: lifecycle.recommendation,
+    lifecycleRecommendation,
     detail: {
       trailing, partial, tpReduction, profitProtection,
       invalidation, volatilityCollapse, trendWeakening,
@@ -610,7 +838,7 @@ export async function reassessActiveTrades(options = {}) {
 
   const autoCloseResults = [];
 
-  if (AUTO_CLOSE_ENABLED && isPostEntryManagementWindow(new Date())) {
+  if (DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED && AUTO_CLOSE_ENABLED && isPostEntryManagementWindow(new Date())) {
     if (!client) {
       console.warn('[REASSESSOR_AUTO_CLOSE] skipped — missing per-request client');
     } else {
@@ -668,10 +896,10 @@ export async function reassessActiveTrades(options = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PART 10 — 15-MINUTE SCHEDULER (env-guarded, hot-reload-safe)
+// PART 10 — 30-MINUTE SCHEDULER (env-guarded, hot-reload-safe)
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
- * Start the 15-min reassessment loop. Idempotent — calling twice doesn't
+ * Start the 30-min reassessment loop. Idempotent — calling twice doesn't
  * create duplicate intervals. The env guard ENABLE_ACTIVE_TRADE_REASSESSMENT
  * MUST be 'true' or the scheduler is a no-op.
  */
@@ -684,7 +912,7 @@ export function startReassessmentScheduler({ intervalMs = REASSESSMENT_INTERVAL_
     console.log('[REASSESSOR] Scheduler already running — skipping duplicate start');
     return { started: false, reason: 'already_running' };
   }
-  console.log(`[REASSESSOR] Starting 15-min active-trade reassessment scheduler (interval ${intervalMs}ms)`);
+  console.log(`[REASSESSOR] Starting 30-min active-trade reassessment scheduler (interval ${intervalMs}ms)`);
   _scheduler = setInterval(() => {
     reassessActiveTrades()
       .then(res => console.log(`[REASSESSOR] ✓ Reassessed ${res.meta.totalActive} trade(s)`))

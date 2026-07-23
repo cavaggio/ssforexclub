@@ -2,6 +2,7 @@ import { analyzePprPair, pprConfig } from './pprEngine.js';
 import { evaluatePprExecutionPolicy } from './pprExecutionPolicy.js';
 import { executeTrade } from './oandaTrade.js';
 import { pprRuntimeConfig } from './pprEnv.js';
+import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
 
 /**
  * PPR owns its final refresh and confirmation. The shared OANDA executor is used
@@ -22,12 +23,22 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
   if (fresh.status !== 'qualified' || !fresh.signal) {
     return { allowed: false, reason: `Fresh PPR confirmation failed: ${fresh.reason || fresh.status || 'unknown'}`, fresh, runtime };
   }
-  if (fresh.signal.direction !== originalDirection) {
-    return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${fresh.signal.direction}`, fresh, runtime };
+  const studiedSignal = await applyStoredStudyCalibration(fresh.signal, { client, engine: 'ppr' });
+  if (studiedSignal.direction !== originalDirection) {
+    return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${studiedSignal.direction}`, fresh, runtime };
   }
 
   const config = pprConfig();
-  const policy = evaluatePprExecutionPolicy(fresh.signal, {
+  if (!(Number(studiedSignal.confidence) >= config.minConfidence)) {
+    return {
+      allowed: false,
+      reason: `PPR confidence below threshold after daily-study calibration (${studiedSignal.confidence} < ${config.minConfidence})`,
+      fresh,
+      studiedSignal,
+      runtime,
+    };
+  }
+  const policy = evaluatePprExecutionPolicy(studiedSignal, {
     minRR: config.minRR,
     maxEntryDistancePips: config.maxEntryDistancePips,
   });
@@ -39,7 +50,7 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
     `manipulations=${policy.manipulationTypes.join('+')} distance=${policy.distancePips}p rr=${policy.rr} ` +
     `engineMode=${runtime.engineMode} autoExecution=${runtime.aiAutoExecutionEnabled} autoManage=${runtime.aiAutoManageEnabled}`,
   );
-  return { allowed: true, signal: fresh.signal, policy, runtime };
+  return { allowed: true, signal: studiedSignal, policy, runtime };
 }
 
 export async function executePprTrade(candidate, {
@@ -75,7 +86,7 @@ export async function executePprTrade(candidate, {
     environment: client?.environment || refreshed.signal.environment,
     pprRuntime: refreshed.runtime,
     ...(Number.isFinite(authoritativeTargetRiskUSD) && authoritativeTargetRiskUSD > 0
-      ? { targetRiskUSD: authoritativeTargetRiskUSD, riskPercent: 1.25 }
+      ? { targetRiskUSD: authoritativeTargetRiskUSD, riskPercent: 1 }
       : {}),
   };
   const result = await executeTrade(signal, {

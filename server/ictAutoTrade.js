@@ -12,12 +12,21 @@
 
 import { analyzeICTPairs, ictExecConfig } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
+import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
 }
 
-function buildIctWatchState(analyses = [], minConfidence = 85) {
+export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
+  const confidence = Number(analysis?.confidence);
+  const rr = Number(analysis?.rr);
+  return analysis?.signal !== 'none' &&
+    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&
+    Number.isFinite(rr) && rr >= cfg.minRR;
+}
+
+function buildIctWatchState(analyses = [], minConfidence = 93) {
   const nearQualifiedPairs = new Set();
   const hotPairs = new Set();
   const lateEntryPairs = new Set();
@@ -68,7 +77,15 @@ function buildIctWatchState(analyses = [], minConfidence = 85) {
   };
 }
 
-export async function runAutoAiForUser({ client, now = new Date(), runId = null, scanMode = 'full', pairs = null } = {}) {
+export async function runAutoAiForUser({
+  client,
+  now = new Date(),
+  runId = null,
+  scanMode = 'full',
+  pairs = null,
+  executionAllowed = true,
+  executionBlockedReason = null,
+} = {}) {
   const cfg = ictExecConfig();
   const tag = `[AUTO_AI][ICT][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
@@ -76,13 +93,38 @@ export async function runAutoAiForUser({ client, now = new Date(), runId = null,
   const scanPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
   log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
 
-  const { analyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });
-  const qualified = analyses.filter((a) => a.signal !== 'none' && a.confidence >= cfg.minConfidence);
+  if (scanMode === 'daily_study') {
+    return runDailyMarketStudy({ client, engine: 'ict', pairs: scanPairs, now });
+  }
+
+  const { analyses: rawAnalyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });
+  const analyses = await Promise.all(rawAnalyses.map((item) =>
+    applyStoredStudyCalibration(item, { client, engine: 'ict' })
+  ));
+  const qualified = analyses.filter((analysis) => isIctAutoQualified(analysis, cfg));
   const watchState = buildIctWatchState(analyses, cfg.minConfidence);
 
   if (!qualified.length) {
     log(`scan complete pairs=${analyses.length} qualified=0 executed=0 skipped=0`);
     return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], ...watchState };
+  }
+
+  if (executionAllowed === false) {
+    const reason = executionBlockedReason || 'ICT scan-only window: new orders are not allowed yet';
+    const skipped = qualified.map((analysis) => ({
+      pair: analysis.pair,
+      direction: analysis.signal === 'buy' ? 'long' : 'short',
+      reason,
+    }));
+    log(`scan-only gate active qualified=${qualified.length} executed=0 reason="${reason}"`);
+    return {
+      scanned: analyses.length,
+      qualified: qualified.length,
+      executed: [],
+      skipped,
+      executionAllowed: false,
+      ...watchState,
+    };
   }
 
   const executed = [];
@@ -240,7 +282,7 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 85 && rr >= 1.5) {
+  if (confidence >= 93 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
   }
 

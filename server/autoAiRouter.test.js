@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveAutoEngine, runAutoForUser } from './autoAiRouter.js';
 
-const INSIDE_EXECUTION_WINDOW = new Date('2026-07-13T13:00:00Z'); // Monday 09:00 ET
+const INSIDE_ALL_EXECUTION_WINDOWS = new Date('2026-07-13T13:00:00Z'); // Monday 09:00 ET
 const PRE_ENTRY_SCAN_WINDOW = new Date('2026-07-13T06:05:00Z'); // Monday 02:05 ET
 const ENGINES = ['ict', 'v3', 'ppr'];
 
@@ -16,6 +16,17 @@ function runners(calls) {
     runV3: make('v3'),
     runPpr: make('ppr'),
   };
+}
+
+async function routeAt(engine, now) {
+  const calls = [];
+  const result = await runAutoForUser({
+    client: { accountId: 'A', environment: 'live' },
+    engine,
+    now,
+    ...runners(calls),
+  });
+  return { calls, result };
 }
 
 test('engine select: disabled toggle → null (nothing runs)', () => {
@@ -37,15 +48,9 @@ test('engine select: missing/invalid engine defaults safely to ICT; missing togg
   assert.equal(resolveAutoEngine({ autoAiEngine: 'ppr' }), null);
 });
 
-test('routing: each selection calls only its own engine after 02:15 ET', async () => {
+test('routing: each selection calls only its own engine during its execution window', async () => {
   for (const engine of ENGINES) {
-    const calls = [];
-    const result = await runAutoForUser({
-      client: { accountId: 'A', environment: 'live' },
-      engine,
-      now: INSIDE_EXECUTION_WINDOW,
-      ...runners(calls),
-    });
+    const { calls, result } = await routeAt(engine, INSIDE_ALL_EXECUTION_WINDOWS);
     assert.deepEqual(calls.map((call) => call.engine), [engine]);
     assert.equal(calls[0].args.executionAllowed, true);
     assert.equal(result.engine, engine);
@@ -53,37 +58,64 @@ test('routing: each selection calls only its own engine after 02:15 ET', async (
   }
 });
 
-test('routing: 02:00–02:14 scans only the selected engine and blocks order submission', async () => {
+test('routing: all engines scan from 02:00 ET without submitting early orders', async () => {
   for (const engine of ENGINES) {
+    const { calls, result } = await routeAt(engine, PRE_ENTRY_SCAN_WINDOW);
+    assert.deepEqual(calls.map((call) => call.engine), [engine]);
+    assert.equal(calls[0].args.executionAllowed, false);
+    assert.equal(result.executionAllowed, false);
+  }
+});
+
+test('V3 begins execution at 02:15 ET', async () => {
+  const before = await routeAt('v3', new Date('2026-07-13T06:14:00Z'));
+  const open = await routeAt('v3', new Date('2026-07-13T06:15:00Z'));
+  assert.equal(before.result.executionAllowed, false);
+  assert.match(before.calls[0].args.executionBlockedReason, /02:15/);
+  assert.equal(open.result.executionAllowed, true);
+});
+
+test('PPR begins execution at 03:00 ET', async () => {
+  const before = await routeAt('ppr', new Date('2026-07-13T06:59:00Z'));
+  const open = await routeAt('ppr', new Date('2026-07-13T07:00:00Z'));
+  assert.equal(before.result.executionAllowed, false);
+  assert.match(before.calls[0].args.executionBlockedReason, /03:00/);
+  assert.equal(open.result.executionAllowed, true);
+});
+
+test('ICT begins execution at 05:00 ET', async () => {
+  const before = await routeAt('ict', new Date('2026-07-13T08:59:00Z'));
+  const open = await routeAt('ict', new Date('2026-07-13T09:00:00Z'));
+  assert.equal(before.result.executionAllowed, false);
+  assert.match(before.calls[0].args.executionBlockedReason, /05:00/);
+  assert.equal(open.result.executionAllowed, true);
+});
+
+test('daily study can run at 17:00 ET but can never submit an order', async () => {
+  for (const engine of ['ict', 'ppr']) {
     const calls = [];
     const result = await runAutoForUser({
       client: { accountId: 'A', environment: 'live' },
       engine,
-      now: PRE_ENTRY_SCAN_WINDOW,
+      now: new Date('2026-07-13T21:05:00Z'),
+      scanMode: 'daily_study',
       ...runners(calls),
     });
     assert.deepEqual(calls.map((call) => call.engine), [engine]);
     assert.equal(calls[0].args.executionAllowed, false);
-    assert.match(calls[0].args.executionBlockedReason, /02:15/);
-    assert.equal(result.engine, engine);
+    assert.equal(calls[0].args.executionBlockedReason, 'daily_market_study_never_submits_orders');
     assert.equal(result.executionAllowed, false);
   }
 });
 
 test('routing: never runs more than one engine in one call', async () => {
   for (const engine of ENGINES) {
-    const calls = [];
-    await runAutoForUser({
-      client: { accountId: 'A', environment: 'live' },
-      engine,
-      now: INSIDE_EXECUTION_WINDOW,
-      ...runners(calls),
-    });
+    const { calls } = await routeAt(engine, INSIDE_ALL_EXECUTION_WINDOWS);
     assert.equal(calls.length, 1, `engine ${engine} must call exactly one path`);
   }
 });
 
-test('routing: blocks all engines outside the 02:00–10:00 scan window and on weekends', async () => {
+test('routing: blocks normal scans outside the 02:00–10:00 window and on weekends', async () => {
   for (const now of [
     new Date('2026-07-13T14:00:00Z'), // Monday 10:00 ET
     new Date('2026-07-18T13:00:00Z'), // Saturday 09:00 ET

@@ -1,0 +1,106 @@
+name: Daily bot policy validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Apply generated-source policy
+        id: apply_policy
+        continue-on-error: true
+        shell: bash
+        run: npm run apply:v3-entry >/tmp/daily-policy-apply.log 2>&1
+      - name: Capture generated source
+        if: always()
+        shell: bash
+        run: |
+          git diff --name-only > /tmp/generated-files.txt
+          git diff > /tmp/generated-source.patch
+          if [ -s /tmp/generated-files.txt ]; then
+            tar -czf /tmp/generated-source-files.tgz -T /tmp/generated-files.txt
+          else
+            tar -czf /tmp/generated-source-files.tgz --files-from /dev/null
+          fi
+      - name: Upload generated-source diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-policy-generated-source
+          path: |
+            /tmp/daily-policy-apply.log
+            /tmp/generated-files.txt
+            /tmp/generated-source.patch
+            /tmp/generated-source-files.tgz
+          if-no-files-found: error
+          retention-days: 3
+      - name: Stop on generated-source failure
+        if: steps.apply_policy.outcome == 'failure'
+        run: |
+          tail -60 /tmp/daily-policy-apply.log
+          exit 1
+      - name: Verify generated source is synchronized
+        shell: bash
+        run: |
+          if ! git diff --quiet; then
+            echo 'Generated source differs from the committed source:'
+            cat /tmp/generated-files.txt
+            exit 1
+          fi
+      - name: Syntax check policy modules
+        run: |
+          node --check scripts/apply_daily_ict_policy.mjs
+          node --check scripts/apply_daily_bot_policy.mjs
+          node --check scripts/apply_daily_risk_persistence.mjs
+          node --check server/autoAiWindow.js
+          node --check server/autoAiRouter.js
+          node --check server/riskManager.js
+          node --check server/dailyMarketStudy.js
+          node --check server/ictAutoScheduler.js
+          node --check server/ictAutoTrade.js
+          node --check server/pprAutoTrade.js
+          node --check server/pprExecution.js
+          node --check server/ictExecution.js
+          node --check server/oandaTrade.js
+      - name: Run focused policy tests
+        id: focused_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          node --test \
+            server/autoAiRouter.test.js \
+            server/ictAutoScheduler.test.js \
+            server/ictWatchlist.test.js \
+            server/dailyMarketStudy.test.js \
+            server/riskManager.test.js \
+            >/tmp/daily-policy-tests.log 2>&1
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-policy-test-log
+          path: /tmp/daily-policy-tests.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Stop on focused test failure
+        if: steps.focused_tests.outcome == 'failure'
+        run: |
+          tail -120 /tmp/daily-policy-tests.log
+          exit 1

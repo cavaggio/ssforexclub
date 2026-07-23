@@ -8,7 +8,7 @@ import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type ScanMode = 'full' | 'near_recheck' | 'hot_watch';
+type ScanMode = 'full' | 'near_recheck' | 'hot_watch' | 'daily_study';
 type AutoAiEngine = 'ict' | 'v3' | 'ppr';
 type EngineWatchState = {
   nearQualifiedPairs: Set<string>;
@@ -35,7 +35,8 @@ function inScanWindow(now = new Date()) {
 
 function normalizeMode(value: unknown): ScanMode {
   const mode = String(value || 'full').toLowerCase();
-  return mode === 'near_recheck' || mode === 'hot_watch' ? mode : 'full';
+  if (mode === 'near_recheck' || mode === 'hot_watch' || mode === 'daily_study') return mode;
+  return 'full';
 }
 
 function normalizeEngine(value: unknown): AutoAiEngine {
@@ -119,20 +120,27 @@ export async function POST(req: Request) {
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
-  if (!inScanWindow()) {
-    return NextResponse.json({ ok: true, skipped: 'outside_ny_scan_window_02:00-10:00' });
-  }
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch {}
 
+  const scanMode = normalizeMode(body.scanMode);
+  if (scanMode !== 'daily_study' && !inScanWindow()) {
+    return NextResponse.json({ ok: true, skipped: 'outside_ny_scan_window_02:00-10:00' });
+  }
+
   const runId = typeof body.runId === 'string'
     ? body.runId
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const scanMode = normalizeMode(body.scanMode);
   const pairs = normalizePairs(body.pairs);
   const engineFilter = requestedEngine(body.engine);
 
+  if (scanMode === 'daily_study' && (!engineFilter || engineFilter === 'v3')) {
+    return NextResponse.json({
+      ok: false,
+      error: 'Daily market study requires engine ict or ppr.',
+    }, { status: 400 });
+  }
   if ((scanMode === 'near_recheck' || scanMode === 'hot_watch') && !engineFilter) {
     return NextResponse.json({
       ok: false,
@@ -166,8 +174,11 @@ export async function POST(req: Request) {
   let countMismatches = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
-    const selectedEngine = normalizeEngine(row.auto_ai_engine);
-    if (engineFilter && selectedEngine !== engineFilter) continue;
+    const configuredEngine = normalizeEngine(row.auto_ai_engine);
+    const selectedEngine = scanMode === 'daily_study' && engineFilter
+      ? engineFilter
+      : configuredEngine;
+    if (scanMode !== 'daily_study' && engineFilter && configuredEngine !== engineFilter) continue;
     enabledEngines.add(selectedEngine);
 
     try {
@@ -196,7 +207,7 @@ export async function POST(req: Request) {
         environment: resolved.activeEnvironment,
         runId: `${runId}-${selectedEngine}`,
         scanMode,
-        pairs: engineFilter ? pairs : [],
+        pairs: scanMode === 'daily_study' ? [] : engineFilter ? pairs : [],
         engine: selectedEngine,
       });
 
@@ -321,7 +332,8 @@ export async function POST(req: Request) {
     hotPairs: aggregateHot,
     lateEntryPairs: aggregateLate,
     scanWindow: '02:00-10:00 America/New_York, Monday-Friday',
-    executionWindow: '02:15-10:00 America/New_York, Monday-Friday',
+    executionWindow: 'V3 02:15, PPR 03:00, ICT 05:00 through 10:00 America/New_York, Monday-Friday',
+    dailyStudyWindow: '17:00-17:15 America/New_York, Monday-Friday',
     results,
   });
 }
