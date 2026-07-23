@@ -174,8 +174,11 @@ export async function POST(req: Request) {
   let countMismatches = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
-    const selectedEngine = normalizeEngine(row.auto_ai_engine);
-    if (engineFilter && selectedEngine !== engineFilter) continue;
+    const configuredEngine = normalizeEngine(row.auto_ai_engine);
+    const selectedEngine = scanMode === 'daily_study' && engineFilter
+      ? engineFilter
+      : configuredEngine;
+    if (scanMode !== 'daily_study' && engineFilter && configuredEngine !== engineFilter) continue;
     enabledEngines.add(selectedEngine);
 
     try {
