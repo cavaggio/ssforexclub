@@ -4,6 +4,7 @@ import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
 import { logTradeEvent } from '@/lib/tradeLogs';
 import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
+import { recordSignalLearningCycle } from '@/lib/signalLearning';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -172,6 +173,8 @@ export async function POST(req: Request) {
   let executed = 0;
   let skipped = 0;
   let countMismatches = 0;
+  let learningObservations = 0;
+  let learningOutcomes = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const configuredEngine = normalizeEngine(row.auto_ai_engine);
@@ -220,7 +223,18 @@ export async function POST(req: Request) {
       const accounting = scanAccounting(payload);
       const executedList = Array.isArray(payload.executed) ? payload.executed : [];
       const state = watchStates[selectedEngine];
+      const learning = await recordSignalLearningCycle({
+        userId: row.user_id,
+        brokerAccountId: credentials.accountId,
+        environment: resolved.activeEnvironment,
+        engine: selectedEngine,
+        scanMode,
+        runId: `${runId}-${selectedEngine}`,
+        payload,
+      });
 
+      learningObservations += learning.observationsWritten;
+      learningOutcomes += learning.outcomesWritten;
       scanned += accounting.scanned;
       qualified += accounting.qualified;
       watching += accounting.watching;
@@ -241,7 +255,8 @@ export async function POST(req: Request) {
         `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] selectedEngineOnly=true ` +
         `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
         `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
-        `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length}`,
+        `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length} ` +
+        `learningObservations=${learning.observationsWritten} learningOutcomes=${learning.outcomesWritten}`,
       );
 
       for (const item of executedList) {
@@ -274,6 +289,10 @@ export async function POST(req: Request) {
             engine: selectedEngine,
             executionMode: 'selected_engine_only',
             accounting,
+            learning: {
+              observationCapture: learning.ok,
+              migrationRequired: learning.migrationRequired === true,
+            },
             item,
           },
           edge: edgeSnapshotFromSignal(signal),
@@ -287,6 +306,7 @@ export async function POST(req: Request) {
         executionMode: 'selected_engine_only',
         accounting,
         executionAllowed: payload.executionAllowed === true,
+        learning,
         result: payload,
       });
     } catch (err) {
@@ -307,7 +327,8 @@ export async function POST(req: Request) {
   console.log(
     `[AUTO_AI][SUMMARY][runId=${runId}] selectedEngineOnly=true engineFilter=${engineFilter ?? 'none'} ` +
     `users=${results.length} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
-    `rejected=${rejected} executed=${executed} skipped=${skipped}`,
+    `rejected=${rejected} executed=${executed} skipped=${skipped} ` +
+    `learningObservations=${learningObservations} learningOutcomes=${learningOutcomes}`,
   );
 
   return NextResponse.json({
@@ -325,6 +346,8 @@ export async function POST(req: Request) {
     countMismatches,
     executed,
     skipped,
+    learningObservations,
+    learningOutcomes,
     executionMode: 'selected_engine_only',
     enabledEngines: [...enabledEngines],
     engineWatchStates,

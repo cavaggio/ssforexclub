@@ -191,9 +191,15 @@ export async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {
       source: 'railway-scheduler', runId, scanMode: 'daily_study', pairs: [], engine,
     }, `[DAILY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));
   }
-  const ok = results.every((result) => result.ok);
+  const studiesOk = results.every((result) => result.ok);
+  const learning = studiesOk
+    ? await post(nextUrl, secret, '/api/cron/edge-learning-refresh', {
+        source: 'railway-scheduler', dayKey,
+      }, `[EDGE_LEARNING][dayKey=${dayKey}]`)
+    : { ok: false, skipped: true, reason: 'daily_market_study_failed' };
+  const ok = studiesOk && learning.ok;
   if (ok) lastDailyStudyDateKey = dayKey;
-  return { ok, dayKey, results };
+  return { ok, dayKey, results, learning };
 }
 
 function applyReturnedWatchState(engine, returned, scanMode, scannedPairs) {
