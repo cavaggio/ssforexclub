@@ -59,16 +59,25 @@ jobs:
       - name: Verify generated source is synchronized
         shell: bash
         run: |
-          if ! git diff --quiet; then
-            echo 'Generated source differs from the committed source:'
-            cat /tmp/generated-files.txt
+          # server/index.js is intentionally runtime-generated because Railway starts
+          # through runtime_execution_start.mjs while Vercel applies the same policy
+          # during prebuild. Permit only that file to differ, and verify the exact
+          # authoritative execution gate is what the generator produced.
+          unexpected="$(git diff --name-only | grep -v '^server/index.js$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo 'Unexpected generated source differs from the committed source:'
+            printf '%s\n' "$unexpected"
             exit 1
           fi
+          grep -F "import { analyzeICTPairs, ICT_MODE, isIctExecutionEnabled } from './ictEngine.js';" server/index.js
+          grep -F 'const ictExecutionEnabled = isIctExecutionEnabled();' server/index.js
       - name: Syntax check policy modules
         run: |
           node --check scripts/apply_daily_ict_policy.mjs
           node --check scripts/apply_daily_bot_policy.mjs
           node --check scripts/apply_daily_risk_persistence.mjs
+          node --check scripts/apply_signal_forensics_alignment_v3.mjs
+          node --check scripts/cleanup_signal_forensics_alignment.mjs
           node --check server/autoAiWindow.js
           node --check server/autoAiRouter.js
           node --check server/riskManager.js
@@ -90,6 +99,7 @@ jobs:
             server/ictWatchlist.test.js \
             server/dailyMarketStudy.test.js \
             server/riskManager.test.js \
+            server/signalForensicsAlignment.contract.test.js \
             >/tmp/daily-policy-tests.log 2>&1
       - name: Upload focused test log
         if: always()

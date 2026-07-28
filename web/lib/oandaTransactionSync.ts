@@ -30,6 +30,32 @@ type CloseEvent = {
   raw: OandaTransaction;
 };
 
+type CloseDiagnostic = {
+  transactionId: string;
+  tradeId: string | null;
+  instrument: string | null;
+  side: 'long' | 'short' | null;
+  reason: string;
+  closeReason: string;
+  time: string | null;
+  price: number | null;
+  unitsClosed: number | null;
+  realizedPL: number | null;
+  fullyClosed: boolean;
+  reservationState: 'released' | 'loss_locked' | null;
+  logged: boolean;
+};
+
+export function maskBrokerAccountForLog(id: string): string {
+  const value = String(id || '');
+  const parts = value.split('-').filter(Boolean);
+  if (parts.length >= 3) {
+    const core = parts.at(-2) || '';
+    return parts[0] + '…' + core.slice(-4) + '…' + (parts.at(-1) || '');
+  }
+  return value.length > 6 ? value.slice(0, 3) + '…' + value.slice(-4) : '***';
+}
+
 function numeric(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -321,6 +347,7 @@ function closeEventsFromTransaction(tx: OandaTransaction): CloseEvent[] {
 export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
   ok: boolean;
   accountId: string;
+  accountLabel: string;
   environment: Env;
   fetched: number;
   closeEvents: number;
@@ -329,12 +356,10 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
   reservationsReleased: number;
   reservationsLossLocked: number;
   lastTransactionId: string | null;
+  closeDetails: CloseDiagnostic[];
   error?: string;
 }> {
-  const maskedAccount =
-    args.brokerAccountId.length > 6
-      ? `${args.brokerAccountId.slice(0, 3)}…${args.brokerAccountId.slice(-3)}`
-      : '***';
+  const maskedAccount = maskBrokerAccountForLog(args.brokerAccountId);
 
   const tag = `[OANDA_TX_SYNC] user=${args.userId.slice(0, 6)} account=${maskedAccount} env=${args.environment}`;
 
@@ -347,6 +372,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
     let closeEvents = 0;
     let reservationsReleased = 0;
     let reservationsLossLocked = 0;
+    const closeDetails: CloseDiagnostic[] = [];
 
     for (const tx of transactions) {
       const events = closeEventsFromTransaction(tx);
@@ -390,8 +416,9 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
         if (result.ok) logged += 1;
         else failed += 1;
 
+        let reservationState: 'released' | 'loss_locked' | null = null;
         if (result.ok && event.fullyClosed && event.tradeId) {
-          const reservationState = await updateExecutionReservationAfterClose({
+          reservationState = await updateExecutionReservationAfterClose({
             tradeId: event.tradeId,
             closeReason,
             fullyClosed: event.fullyClosed,
@@ -399,6 +426,24 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
           if (reservationState === 'released') reservationsReleased += 1;
           if (reservationState === 'loss_locked') reservationsLossLocked += 1;
         }
+
+        const diagnostic: CloseDiagnostic = {
+          transactionId: event.transactionId,
+          tradeId: event.tradeId,
+          instrument: event.instrument,
+          side: event.side,
+          reason: event.reason,
+          closeReason,
+          time: event.time,
+          price: event.price,
+          unitsClosed: event.unitsClosed,
+          realizedPL: pnl,
+          fullyClosed: event.fullyClosed,
+          reservationState,
+          logged: result.ok,
+        };
+        closeDetails.push(diagnostic);
+        console.log(tag + ' close=' + JSON.stringify(diagnostic));
       }
     }
 
@@ -416,6 +461,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
     return {
       ok: true,
       accountId: args.brokerAccountId,
+      accountLabel: maskedAccount,
       environment: args.environment,
       fetched: transactions.length,
       closeEvents,
@@ -424,6 +470,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
       reservationsReleased,
       reservationsLossLocked,
       lastTransactionId: nextLast ?? null,
+      closeDetails,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -432,6 +479,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
     return {
       ok: false,
       accountId: args.brokerAccountId,
+      accountLabel: maskedAccount,
       environment: args.environment,
       fetched: 0,
       closeEvents: 0,
@@ -440,6 +488,7 @@ export async function syncOandaTransactionsForUser(args: SyncArgs): Promise<{
       reservationsReleased: 0,
       reservationsLossLocked: 0,
       lastTransactionId: null,
+      closeDetails: [],
       error: message,
     };
   }
