@@ -31,6 +31,15 @@ function keyOf(accountId, engine, pair) {
   return `${accountId}:${engine}:${pair}`;
 }
 
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function finiteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function finiteCandle(candle) {
   if (!candle || typeof candle !== 'object') return null;
   const open = Number(candle.open);
@@ -225,6 +234,91 @@ async function fetchStudyCandles(pair, client) {
   return Object.fromEntries(specs.map(([name], index) => [name, values[index]]));
 }
 
+export function pprStudyAnalysisTime(now = new Date()) {
+  const source = now instanceof Date ? now : new Date(now);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit',
+  }).formatToParts(source);
+  const read = (type) => Number(parts.find((part) => part.type === type)?.value || 0);
+  const currentMinutes = (read('hour') % 24) * 60 + read('minute');
+  const studyCutoffMinutes = 9 * 60 + 59;
+  return new Date(source.getTime() + (studyCutoffMinutes - currentMinutes) * 60_000);
+}
+
+export function dailyStudyLearningCandidate(study = {}) {
+  const engineAnalysis = object(study.engine_analysis ?? study.engineAnalysis);
+  const signal = object(engineAnalysis.signal);
+  const analysis = { ...engineAnalysis, ...signal };
+  const concepts = object(analysis.concepts);
+  const htf = object(analysis.htf);
+  const session = object(analysis.session);
+  const direction = analysis.direction || analysis.ictBias || study.day_direction || null;
+  const entry = finiteNumber(
+    analysis.entry ?? analysis.entryPrice ?? analysis.currentPrice ?? analysis.fillPrice ?? study.day_close,
+  );
+  const stopLoss = finiteNumber(analysis.stopLoss ?? analysis.sl ?? analysis.structuralStop);
+  const takeProfit = finiteNumber(
+    analysis.takeProfit ?? analysis.target1 ?? analysis.targetProfit ?? analysis.tp ?? analysis.target,
+  );
+  const expectedRR = finiteNumber(analysis.expectedRR ?? analysis.rr ?? analysis.riskReward);
+  const confidence = finiteNumber(analysis.confidence ?? analysis.entryQualityConfidence ?? analysis.score);
+  const rejectionReasons = Array.isArray(analysis.rejectionReasons) ? analysis.rejectionReasons : [];
+  const missingConfirmations = Array.isArray(analysis.missingConfirmations)
+    ? analysis.missingConfirmations
+    : Array.isArray(concepts.missingConfluence)
+      ? concepts.missingConfluence
+      : [];
+
+  return {
+    pair: String(study.pair || '').toUpperCase(),
+    engine: String(study.engine || '').toLowerCase(),
+    status: 'market_study',
+    direction,
+    entry,
+    entryPrice: entry,
+    currentPrice: entry,
+    stopLoss,
+    takeProfit,
+    expectedRR,
+    rr: expectedRR,
+    confidence,
+    spreadPips: finiteNumber(analysis.spreadPips ?? object(analysis.pricing).spreadPips),
+    atrPips: finiteNumber(analysis.atrPips),
+    session: session.name || analysis.currentKillzone || 'daily_study',
+    dailyDirection: study.day_direction || null,
+    h4Direction: analysis.h4Direction || htf.h4Bias || null,
+    volatilityState: analysis.volatilityState || null,
+    institutionalFlow: study.institutional_flow || null,
+    conceptsDetected: Array.isArray(analysis.conceptsDetected) ? analysis.conceptsDetected : [],
+    missingConfirmations,
+    reason: analysis.reason || rejectionReasons.join('; ') || null,
+    analysis: {
+      ...analysis,
+      direction,
+      status: 'market_study',
+      dailyDirection: study.day_direction || null,
+      h4Direction: analysis.h4Direction || htf.h4Bias || null,
+      institutionalFlow: study.institutional_flow || null,
+      studyMode: true,
+    },
+    dailyStudyContext: {
+      studyDate: study.study_date || null,
+      studiedAt: study.studied_at || null,
+      dayDirection: study.day_direction || null,
+      dayOpen: finiteNumber(study.day_open),
+      dayHigh: finiteNumber(study.day_high),
+      dayLow: finiteNumber(study.day_low),
+      dayClose: finiteNumber(study.day_close),
+      priorDayHigh: finiteNumber(study.prior_day_high),
+      priorDayLow: finiteNumber(study.prior_day_low),
+      institutionalFlow: study.institutional_flow || null,
+      untestedDailyZones: Array.isArray(study.untested_daily_zones) ? study.untested_daily_zones : [],
+      untestedH4Zones: Array.isArray(study.untested_h4_zones) ? study.untested_h4_zones : [],
+    },
+    featureSnapshot: study.feature_snapshot || {},
+  };
+}
+
 async function studyPair({ client, engine, pair, now }) {
   const candles = await fetchStudyCandles(pair, client);
   const metrics = dayMetrics(candles.daily);
@@ -233,7 +327,17 @@ async function studyPair({ client, engine, pair, now }) {
   if (engine === 'ict') {
     engineAnalysis = analyzeICTPair({ pair, candles, peers: {}, now });
   } else {
-    engineAnalysis = await analyzePprPair({ pair, client, now });
+    const analysisNow = pprStudyAnalysisTime(now);
+    engineAnalysis = await analyzePprPair({ pair, client, now: analysisNow });
+    engineAnalysis = {
+      ...engineAnalysis,
+      studyMode: true,
+      studyClock: {
+        observedAt: now.toISOString(),
+        analysisAt: analysisNow.toISOString(),
+        reason: 'PPR daily study evaluates the full engine at the final eligible minute without enabling execution.',
+      },
+    };
   }
   const row = {
     account_id: accountIdOf(client),
@@ -282,15 +386,17 @@ export async function runDailyMarketStudy({ client, engine, pairs = null, now = 
       errors.push({ pair, error: error?.message || String(error) });
     }
   }
+  const learningResults = studies.map(dailyStudyLearningCandidate);
   console.log(
     `[DAILY_STUDY][${normalizedEngine.toUpperCase()}] account=${accountIdOf(client)} ` +
-    `studied=${studies.length} errors=${errors.length}`,
+    `studied=${studies.length} learningCandidates=${learningResults.length} errors=${errors.length}`,
   );
   return {
     engine: normalizedEngine,
     scanMode: 'daily_study',
     studied: studies.length,
     studies,
+    results: learningResults,
     errors,
     executed: [],
     executionAllowed: false,
