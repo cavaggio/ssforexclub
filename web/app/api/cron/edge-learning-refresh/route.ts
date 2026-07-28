@@ -24,6 +24,7 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch {}
   const requestedUser = typeof body.userId === 'string' ? body.userId : null;
   const requestedEngine = typeof body.engine === 'string' ? engineOf(body.engine) : null;
+  const engines: readonly Engine[] = requestedEngine ? [requestedEngine] : ENGINES;
 
   try {
     let query = getServerSupabase()
@@ -36,37 +37,81 @@ export async function POST(req: Request) {
 
     const results: Record<string, unknown>[] = [];
     for (const row of data || []) {
-      const engine = requestedEngine || engineOf(row.auto_ai_engine);
+      let resolved;
       try {
-        const resolved = await resolveActiveBrokerForUser(row.user_id);
-        if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials) {
-          results.push({ userId: row.user_id, engine, ok: false, skipped: resolved.brokerCredentialStatus, reason: resolved.reason });
-          continue;
-        }
-        const credentials = await resolved.getCredentials();
-        if (!credentials?.accountId) {
-          results.push({ userId: row.user_id, engine, ok: false, skipped: 'decrypt_failed' });
-          continue;
-        }
-        const refreshed = await refreshPairPlaybooksForAccount({
-          userId: row.user_id,
-          brokerAccountId: credentials.accountId,
-          engine,
-        });
-        results.push({ userId: row.user_id, accountId: credentials.accountId, engine, ...refreshed });
+        resolved = await resolveActiveBrokerForUser(row.user_id);
       } catch (userError) {
-        results.push({
-          userId: row.user_id,
-          engine,
-          ok: false,
-          error: userError instanceof Error ? userError.message : String(userError),
-        });
+        for (const engine of engines) {
+          results.push({
+            userId: row.user_id,
+            engine,
+            ok: false,
+            error: userError instanceof Error ? userError.message : String(userError),
+          });
+        }
+        continue;
+      }
+
+      if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials) {
+        for (const engine of engines) {
+          results.push({
+            userId: row.user_id,
+            engine,
+            ok: false,
+            skipped: resolved.brokerCredentialStatus,
+            reason: resolved.reason,
+          });
+        }
+        continue;
+      }
+
+      let credentials;
+      try {
+        credentials = await resolved.getCredentials();
+      } catch (credentialError) {
+        for (const engine of engines) {
+          results.push({
+            userId: row.user_id,
+            engine,
+            ok: false,
+            skipped: 'decrypt_failed',
+            error: credentialError instanceof Error ? credentialError.message : String(credentialError),
+          });
+        }
+        continue;
+      }
+
+      if (!credentials?.accountId) {
+        for (const engine of engines) {
+          results.push({ userId: row.user_id, engine, ok: false, skipped: 'decrypt_failed' });
+        }
+        continue;
+      }
+
+      for (const engine of engines) {
+        try {
+          const refreshed = await refreshPairPlaybooksForAccount({
+            userId: row.user_id,
+            brokerAccountId: credentials.accountId,
+            engine,
+          });
+          results.push({ userId: row.user_id, accountId: credentials.accountId, engine, ...refreshed });
+        } catch (userError) {
+          results.push({
+            userId: row.user_id,
+            engine,
+            ok: false,
+            error: userError instanceof Error ? userError.message : String(userError),
+          });
+        }
       }
     }
 
     return NextResponse.json({
       ok: results.every((result) => result.ok === true || Boolean(result.skipped)),
-      users: results.length,
+      users: (data || []).length,
+      refreshes: results.length,
+      engines: [...engines],
       liveThresholdsChanged: false,
       results,
     });
