@@ -16,6 +16,21 @@ REASSESSOR = ROOT / "server" / "oandaActiveTradeReassessor.js"
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     if new in text:
         return text
+    # Later strategy-specific lifecycle passes may insert bounded logic inside
+    # these generated blocks. Treat the durable markers as synchronized rather
+    # than requiring the original block to remain byte-for-byte contiguous.
+    if label == "authoritative final decision" and all(marker in text for marker in (
+        "const lifecycleRecommendation = buildMarketAlignedRecommendation",
+        "const autoCloseAnalysis = {",
+    )):
+        return text
+    if label == "reassessment evidence payload" and all(marker in text for marker in (
+        "confidenceReviewThreshold,",
+        "autoCloseAnalysis,",
+        "institutionalFlow: {",
+        "marketMovement: {",
+    )):
+        return text
     if old not in text:
         raise RuntimeError(f"Reassessment decision marker missing: {label}")
     return text.replace(old, new, 1)
