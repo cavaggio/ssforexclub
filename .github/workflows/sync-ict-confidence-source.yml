@@ -1,0 +1,58 @@
+name: Sync ICT confidence generated source
+
+on:
+  push:
+    branches:
+      - fix/ict-target-confidence-alignment
+    paths:
+      - '.github/workflows/sync-ict-confidence-source.yml'
+      - 'scripts/apply_ict_confidence_alignment.mjs'
+      - 'server/ictTargetConfidence.js'
+      - 'package.json'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/ict-target-confidence-alignment
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts >/dev/null
+
+      - name: Apply authoritative generated-source pipeline
+        run: npm run apply:v3-entry
+
+      - name: Commit synchronized runtime files
+        shell: bash
+        run: |
+          generated=(
+            server/ictEngine.js
+            server/ictExecution.js
+            server/oandaActiveTradeMonitor.js
+            server/oandaActiveTradeReassessor.js
+          )
+          git add "${generated[@]}"
+          if git diff --cached --quiet; then
+            echo 'Generated ICT source is already synchronized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Synchronize ICT target-confidence runtime [skip source sync]'
+          git push origin HEAD:fix/ict-target-confidence-alignment
