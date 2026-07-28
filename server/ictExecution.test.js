@@ -18,9 +18,13 @@ const validParams = () => ({
 });
 
 const goodAnalysis = (over = {}) => async () => ({
-  signal: 'buy', confidence: 95, rr: 2.5, signalId: freshId(),
-  entry: 1.1000, stopLoss: 1.0980, target1: 1.1040,
-  atrPips: 10, setupType: 'ICT 2022 Model', conceptsDetected: [], concepts: {},
+  signal: 'buy', confidence: 95, targetHitConfidence: 95, confluenceScore: 95,
+  rr: 2.5, signalId: freshId(),
+  entry: 1.1000, idealEntry: 1.1000, entryZoneLow: 1.0998, entryZoneHigh: 1.1002,
+  entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
+  atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
+  minimumRR: 1.5, targetAdjustedToMinRR: false,
+  setupType: 'ICT 2022 Model', conceptsDetected: [], concepts: {},
   ...over,
 });
 const goodAccount = async () => ({ balance: '10000', marginRate: '0.03', marginAvailable: '9000' });

@@ -653,6 +653,27 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     profitR,
     liveAutoCloseEnabled: AUTO_CLOSE_ENABLED,
   });
+  if (pureIctTrade && ictLifecycle) {
+    const actionMap = {
+      CLOSE: 'close', PARTIAL_CLOSE: 'partial_close', MOVE_BREAKEVEN: 'tighten_sl',
+      TIGHTEN_STOP: 'tighten_sl', HOLD: 'hold',
+    };
+    const ictAction = actionMap[ictLifecycle.action] || 'hold';
+    lifecycleRecommendation.action = ictAction;
+    lifecycleRecommendation.urgency = ictLifecycle.action === 'CLOSE'
+      ? 'high'
+      : ictLifecycle.action === 'HOLD' ? 'low' : 'medium';
+    lifecycleRecommendation.confidence = currentConfidence;
+    lifecycleRecommendation.reason = (ictLifecycle.reasons || ['ICT entry thesis remains active.']).join(' ');
+    lifecycleRecommendation.unifiedSummary = lifecycleRecommendation.reason;
+    lifecycleRecommendation.source = 'ict_target_hit_lifecycle';
+    lifecycleRecommendation.shouldAutoClose = false;
+    lifecycleRecommendation.autoCloseCandidate = ictLifecycle.action === 'CLOSE';
+    lifecycleRecommendation.autoCloseReviewTriggered = ictLifecycle.action === 'CLOSE';
+    lifecycleRecommendation.confidenceBelowThreshold = currentConfidence < confidenceReviewThreshold;
+    lifecycleRecommendation.signalMisaligned = ictLifecycle.action === 'CLOSE';
+    lifecycleRecommendation.signalMisalignmentReasons = ictLifecycle.action === 'CLOSE' ? ictLifecycle.reasons : [];
+  }
   const autoCloseAnalysis = {
     evaluated: lifecycleRecommendation.autoCloseReviewTriggered,
     candidate: lifecycleRecommendation.autoCloseCandidate,
@@ -717,7 +738,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     confidenceReviewThreshold,
     confidenceBelowReviewThreshold: lifecycleRecommendation.confidenceBelowThreshold,
     signalMisaligned: lifecycleRecommendation.signalMisaligned,
-    signalMisalignmentReasons,
+    signalMisalignmentReasons: pureIctTrade ? (lifecycleRecommendation.signalMisalignmentReasons || []) : signalMisalignmentReasons,
     institutionalFlow: {
       detected: !!institutionalFlow?.detected,
       direction: institutionalFlow?.direction || 'neutral',
