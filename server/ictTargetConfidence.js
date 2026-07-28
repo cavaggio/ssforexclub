@@ -64,7 +64,7 @@ export function computeIctTargetHitConfidence({
     weighted,
     timingScore,
     geometryScore,
-    confluence + 3,
+    confluence,
   )));
 
   const blockers = [];
