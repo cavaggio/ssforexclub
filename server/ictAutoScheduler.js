@@ -77,6 +77,34 @@ function addTimer(timer) {
   timers.push(timer);
 }
 
+export function buildOandaSyncDiagnosticLines(text, tag = '[OANDA_TX_SYNC]') {
+  let data;
+  try { data = JSON.parse(text); } catch { return []; }
+  const lines = [];
+  for (const result of Array.isArray(data?.results) ? data.results : []) {
+    const sync = result?.sync;
+    if (!sync || typeof sync !== 'object') continue;
+    const user = String(result?.user || '***');
+    const account = String(sync.accountLabel || '***');
+    lines.push(
+      tag + '[ACCOUNT] user=' + user + ' account=' + account + ' env=' + (sync.environment || 'unknown') +
+      ' fetched=' + (sync.fetched ?? 0) + ' closeEvents=' + (sync.closeEvents ?? 0) +
+      ' logged=' + (sync.logged ?? 0) + ' failed=' + (sync.failed ?? 0) +
+      ' released=' + (sync.reservationsReleased ?? 0) + ' lossLocked=' + (sync.reservationsLossLocked ?? 0)
+    );
+    for (const close of Array.isArray(sync.closeDetails) ? sync.closeDetails : []) {
+      lines.push(
+        tag + '[CLOSE] user=' + user + ' account=' + account + ' tradeId=' + (close.tradeId ?? 'unknown') +
+        ' pair=' + (close.instrument ?? 'unknown') + ' side=' + (close.side ?? 'unknown') +
+        ' reason=' + (close.closeReason ?? close.reason ?? 'unknown') + ' pnl=' + (close.realizedPL ?? 'unknown') +
+        ' exit=' + (close.price ?? 'unknown') + ' units=' + (close.unitsClosed ?? 'unknown') +
+        ' reservation=' + (close.reservationState ?? 'none') + ' logged=' + (close.logged === true)
+      );
+    }
+  }
+  return lines;
+}
+
 async function post(nextUrl, secret, path, body, tag) {
   const url = `${String(nextUrl).replace(/\/$/, '')}${path}`;
   try {
@@ -87,6 +115,9 @@ async function post(nextUrl, secret, path, body, tag) {
     });
     const text = await response.text();
     console.log(`${tag} status=${response.status} ${text.slice(0, 300)}`);
+    if (tag.startsWith('[OANDA_TX_SYNC]')) {
+      for (const line of buildOandaSyncDiagnosticLines(text, tag)) console.log(line);
+    }
     return { ok: response.ok, status: response.status, body: text };
   } catch (error) {
     console.log(`${tag} unreachable: ${error?.message || error}`);
