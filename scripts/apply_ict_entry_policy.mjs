@@ -10,6 +10,12 @@ const EXECUTION = path.join(ROOT, 'server', 'ictExecution.js');
 
 function replaceRequired(text, pattern, replacement, label) {
   if (text.includes(replacement)) return text;
+  if (
+    label === 'execution response' &&
+    text.includes('entryConfidence: analysis.targetHitConfidence ?? analysis.confidence') &&
+    text.includes('setupType: analysis.setupType') &&
+    text.includes('riskModel: analysis.riskModel')
+  ) return text;
   const next = text.replace(pattern, replacement);
   if (next === text) throw new Error(`ICT entry-policy marker missing: ${label}`);
   return next;
@@ -17,6 +23,18 @@ function replaceRequired(text, pattern, replacement, label) {
 
 function insertAfter(text, anchor, addition, label) {
   if (text.includes(addition.trim())) return text;
+  if (
+    label === 'execution imports' &&
+    text.includes("import { applyBoundedIctStopWidening } from './ictPolicy.js';") &&
+    text.includes("import { requestIctStopAdvice } from './ictClaudeAdvisor.js';") &&
+    text.includes("import { recordTrade } from './oandaTradeHistory.js';")
+  ) return text;
+  if (
+    label === 'entry snapshot' &&
+    text.includes('recordTrade({') &&
+    text.includes("entryStrategy: 'ICT'") &&
+    text.includes('entryTpHitConfidence:')
+  ) return text;
   if (!text.includes(anchor)) throw new Error(`ICT entry-policy anchor missing: ${label}`);
   return text.replace(anchor, `${anchor}${addition}`);
 }
