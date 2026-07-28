@@ -42,6 +42,7 @@ import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { applyBoundedIctStopWidening } from './ictPolicy.js';
+import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';
 import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
 import { recordTrade } from './oandaTradeHistory.js';
 
@@ -395,6 +396,32 @@ export async function executeIctTrade(params = {}, {
     return blocked(`Fresh spread ${freshSpreadPips.toFixed(1)}p exceeds ICT maximum ${maxFreshSpreadPips.toFixed(1)}p.`);
   }
 
+  const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
+  const finalTargetConfidence = repriceIctTargetHitConfidence({
+    analysis,
+    pair,
+    direction,
+    executablePrice,
+    spreadPips: freshSpreadPips,
+    maxSpreadPips: maxFreshSpreadPips,
+    minConfidence: config.minConfidence,
+  });
+  if (!finalTargetConfidence.eligible || finalTargetConfidence.confidence < config.minConfidence) {
+    return blocked(
+      `Final executable-price target-hit confirmation rejected: ${finalTargetConfidence.blockers.join('; ') || 'confidence gate failed'}.`,
+      { finalTargetConfidence },
+    );
+  }
+  entry = executablePrice;
+  analysis = {
+    ...analysis,
+    entry,
+    rr: finalTargetConfidence.actualRR,
+    confidence: finalTargetConfidence.confidence,
+    targetHitConfidence: finalTargetConfidence.confidence,
+    targetConfidence: finalTargetConfidence,
+  };
+
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
   const dp = priceDecimalsFor(pair);
   const orderPayload = {
@@ -453,9 +480,11 @@ export async function executeIctTrade(params = {}, {
     const actualFillRR = actualFillRisk > 0 ? +(actualFillReward / actualFillRisk).toFixed(2) : null;
     recordTrade({
       pair, direction, entry: fillPrice, stopLoss, takeProfit: targetProfit, riskReward: actualFillRR, actualFillRR,
-      confidence: analysis.confidence, entryQualityConfidence: analysis.confidence, entryTpHitConfidence: analysis.confidence,
-      entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confidence,
-      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice },
+      confidence: analysis.targetHitConfidence ?? analysis.confidence,
+      entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? analysis.confidence,
+      entryTpHitConfidence: analysis.targetHitConfidence ?? analysis.confidence,
+      entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confluenceScore ?? analysis.confidence,
+      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence },
       atrPips: analysis.atrPips, units, riskAmount: sizing.actualRiskUSD, oandaOrderId: String(tradeId),
       entryATR: analysis.atrPips, entryExpectedHoldTimeMinutes: holdMinutes, entryRiskRewardRatio: actualFillRR,
       entrySession: analysis.concepts?.killzone?.currentKillzone ?? 'ICT', originalRecommendedTP: targetProfit, originalRecommendedSL: stopLoss,
@@ -469,7 +498,9 @@ export async function executeIctTrade(params = {}, {
     stopLoss, takeProfit: targetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
     holdMinutes,
-    entryConfidence: analysis.confidence,
+    entryConfidence: analysis.targetHitConfidence ?? analysis.confidence,
+    entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? null,
+    targetConfidence: analysis.targetConfidence ?? null,
     setupType: analysis.setupType,
     riskModel: analysis.riskModel,
     claudeStopAdvice: analysis.claudeStopAdvice,

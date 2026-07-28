@@ -21,6 +21,9 @@ import {
 import { findTradeByBrokerOrderId } from './oandaTradeHistory.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 import { analyzeV3OpenTrade } from './v3ActiveTradeMonitor.js';
+import { reassessIctTrade } from './ictLifecycleEngine.js';
+import { computeIctLifecycleConfidence, ictEntryConfidence, ictHoldMinutes, isIctTradeRecord } from './ictPolicy.js';
+import { ictProbabilitiesFromConfidence } from './ictTargetConfidence.js';
 
 function getPipSize(pair) {
   if (pair.includes('JPY'))                      return 0.01;
@@ -74,6 +77,7 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     : null;
 
   const historyRecord = findTradeByBrokerOrderId(String(oandaTrade.id));
+  const pureIctTrade = isIctTradeRecord(historyRecord || {});
   if (isPureV3TradeRecord(historyRecord || {})) {
     return analyzeV3OpenTrade(oandaTrade, { client, historyRecord, now: new Date() });
   }
@@ -160,15 +164,55 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
         m15TrendReversed,
       })
     : null;
-  const currentConfidence = liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
 
-  // Live probabilities given current alignment + R:R-to-go
+  const expectedHoldTimeMinutes = pureIctTrade ? ictHoldMinutes(historyRecord || {}) : null;
+  const ictLifecycle = pureIctTrade
+    ? reassessIctTrade({
+        pair,
+        direction: side,
+        entryPrice,
+        currentPrice,
+        target1: takeProfit,
+        candles: m5Candles,
+        now: new Date(),
+        openedAtMs: openTimeMs,
+        holdMinutes: expectedHoldTimeMinutes,
+        lastReassessMs: historyRecord?.lastReassessedAt ? Date.parse(historyRecord.lastReassessedAt) : null,
+      })
+    : null;
+  const entryIctConfidence = pureIctTrade ? ictEntryConfidence(historyRecord || {}, 93) : null;
+  const originalStop = Number(historyRecord?.originalRecommendedSL ?? stopLoss);
+  const initialRiskPips = Number.isFinite(originalStop) ? Math.abs(entryPrice - originalStop) / pipSize : null;
+  const profitR = initialRiskPips && initialRiskPips > 0 ? classification.unrealizedPips / initialRiskPips : 0;
+  const currentConfidence = pureIctTrade
+    ? computeIctLifecycleConfidence({
+        entryConfidence: entryIctConfidence,
+        minutesElapsed,
+        holdMinutes: expectedHoldTimeMinutes,
+        lifecycleAction: ictLifecycle?.action,
+        profitR,
+        tpProgress: classification.tpProgress,
+      })
+    : liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;
+
   const remainingRR = (stopLoss != null && takeProfit != null && currentPrice !== entryPrice)
     ? Math.abs((takeProfit - currentPrice) / (currentPrice - stopLoss))
     : 1.5;
-  const probs = computeTradeProbabilities({
-    alignment, macro, structure, momentum, riskReward: remainingRR,
-  });
+  const probs = pureIctTrade
+    ? ictProbabilitiesFromConfidence(currentConfidence)
+    : computeTradeProbabilities({ alignment, macro, structure, momentum, riskReward: remainingRR });
+  const ictExitRecommendation = ictLifecycle?.action === 'CLOSE'
+    ? 'EXIT_NOW'
+    : ictLifecycle?.action === 'PARTIAL_CLOSE'
+      ? 'PARTIAL_EXIT'
+      : ictLifecycle?.action === 'TIGHTEN_STOP'
+        ? 'HOLD_WITH_CAUTION'
+        : 'HOLD';
+  const ictTradeState = ictLifecycle?.action === 'CLOSE'
+    ? 'REVERSAL_RISK'
+    : ictLifecycle?.pastHold && ictLifecycle?.action !== 'HOLD'
+      ? 'MANAGEMENT_DUE'
+      : 'THESIS_ACTIVE';
 
   return {
     tradeId: String(oandaTrade.id),
@@ -188,11 +232,13 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     tpProgress: classification.tpProgress,
     currentAlignmentScore: alignment.timeframeAlignmentScore,
     currentConfidence,
-    tradeState: pureV3Trade ? liveV3Confidence.state : classification.tradeState,
-    exitRecommendation: pureV3Trade ? liveV3Confidence.exitRecommendation : classification.exitRecommendation,
-    exitReason: pureV3Trade
-      ? `V3 live TP-hit confidence ${liveV3Confidence.tpHitConfidence}% (${liveV3Confidence.state})`
-      : classification.exitReason,
+    tradeState: pureIctTrade ? ictTradeState : pureV3Trade ? liveV3Confidence.state : classification.tradeState,
+    exitRecommendation: pureIctTrade ? ictExitRecommendation : pureV3Trade ? liveV3Confidence.exitRecommendation : classification.exitRecommendation,
+    exitReason: pureIctTrade
+      ? (ictLifecycle?.reasons || ['ICT entry thesis remains active.']).join(' ')
+      : pureV3Trade
+        ? `V3 live TP-hit confidence ${liveV3Confidence.tpHitConfidence}% (${liveV3Confidence.state})`
+        : classification.exitReason,
     timeDecayRisk: classification.timeDecayRisk,
     updatedHoldWindow: {
       minMinutes: updatedHoldWindow.minMinutes,
@@ -201,10 +247,13 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
     },
     tpProbability: pureV3Trade ? liveV3Confidence.tpProbability : probs.tpProbability,
     slProbability: pureV3Trade ? liveV3Confidence.slProbability : probs.slProbability,
-    confidenceModel: pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
+    confidenceModel: pureIctTrade ? 'ict_target_hit_lifecycle' : pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',
     entryTpHitConfidence: historyRecord?.entryTpHitConfidence ?? null,
     entryQualityConfidence: historyRecord?.entryQualityConfidence ?? null,
     liveTpConfidence: liveV3Confidence,
+    entryIctConfidence,
+    expectedHoldTimeMinutes,
+    ictLifecycle,
     macroOpposes: classification.macroOpposes,
     conflictingTfCount: classification.conflictingTfCount,
     alignmentDropped: classification.alignmentDropped,
