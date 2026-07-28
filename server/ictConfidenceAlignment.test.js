@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   computeIctTargetHitConfidence,
   repriceIctTargetHitConfidence,
+  ictProbabilitiesFromConfidence,
 } from './ictTargetConfidence.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -30,6 +31,22 @@ test('current, fresh, natural-liquidity ICT scalp can clear the target-hit floor
   assert.equal(result.eligible, true);
   assert.ok(result.confidence >= 93);
   assert.equal(result.model, 'ict_current_entry_target_before_stop_v1');
+});
+
+test('missing trigger age is not silently converted to a fresh zero-age trigger', () => {
+  const result = computeIctTargetHitConfidence({
+    confluenceScore: 100,
+    freshImpulse: true,
+    triggerAgeBars: null,
+    entryDriftAtr: 0,
+    rewardConsumedFraction: 0,
+    priceInsideEntryZone: true,
+    actualRR: 2,
+    minConfidence: 93,
+  });
+
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.some((reason) => reason.includes('not timestamped')));
 });
 
 test('raw confluence cannot hide a late, stale, already-consumed scalp entry', () => {
@@ -98,6 +115,13 @@ test('fresh bid/ask repricing can reject a scanner-qualified setup before fill',
 
   assert.equal(result.eligible, false);
   assert.ok(result.blockers.some((reason) => reason.includes('drifted') || reason.includes('consumed')));
+});
+
+test('ICT TP and SL probabilities are decimal ratios expected by the dashboard', () => {
+  assert.deepEqual(ictProbabilitiesFromConfidence(95), {
+    tpProbability: 0.95,
+    slProbability: 0.05,
+  });
 });
 
 test('generated runtime source uses one ICT target-hit model across scan, fill, open trade, and reassess', () => {
