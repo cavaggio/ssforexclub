@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildIctWatchState,
@@ -130,7 +131,7 @@ test('Railway transaction diagnostics emit account and close attribution without
 });
 
 test('build source preserves one ICT confidence model from signal through Open Trade', () => {
-  const root = resolve(import.meta.dirname, '..');
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const indexSource = readFileSync(resolve(root, 'server/index.js'), 'utf8');
   const engineSource = readFileSync(resolve(root, 'server/ictEngine.js'), 'utf8');
   const monitorSource = readFileSync(resolve(root, 'server/oandaActiveTradeMonitor.js'), 'utf8');
@@ -141,5 +142,5 @@ test('build source preserves one ICT confidence model from signal through Open T
   assert.match(monitorSource, /confidenceModel: pureIctTrade \? 'ict_target_hit_lifecycle'/);
   assert.match(monitorSource, /ictProbabilitiesFromConfidence\(currentConfidence\)/);
   assert.match(syncSource, /closeDetails: CloseDiagnostic\[\]/);
-  assert.match(syncSource, /console\.log\(`\$\{tag\} close=\$\{JSON\.stringify\(diagnostic\)\}`\);/);
+  assert.match(syncSource, /console\.log\(tag \+ ' close=' \+ JSON\.stringify\(diagnostic\)\);/);
 });
