@@ -161,6 +161,9 @@ export function repriceIctTargetHitConfidence({
 }
 
 export function ictProbabilitiesFromConfidence(confidence) {
-  const tpProbability = Math.round(clamp(finite(confidence, 0)));
-  return { tpProbability, slProbability: 100 - tpProbability };
+  const tpPercent = Math.round(clamp(finite(confidence, 0)));
+  return {
+    tpProbability: tpPercent / 100,
+    slProbability: (100 - tpPercent) / 100,
+  };
 }
