@@ -6,7 +6,7 @@ import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime
 import './apply_daily_ict_policy.mjs';
 import './apply_daily_bot_policy.mjs';
 import './apply_daily_risk_persistence.mjs';
-import './apply_signal_forensics_alignment.mjs';
+import './apply_signal_forensics_alignment_v2.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
