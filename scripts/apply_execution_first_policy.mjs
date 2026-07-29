@@ -113,9 +113,18 @@ patchFile(
   ['Timing diagnostics remain visible but do not veto a valid current-price scalp.'],
 );
 
+const ROUTE_MARKERS = [
+  'const selectedEngines: AutoAiEngine[]',
+  'for (const selectedEngine of selectedEngines)',
+  'allEnginesActive=true',
+  "executionMode: 'all_enabled_engines'",
+  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+];
+
 patchFile(
   'web/app/api/cron/auto-ai-trading-extended/route.ts',
   (source) => {
+    if (ROUTE_MARKERS.every((marker) => source.includes(marker))) return source;
     let out = source;
     out = replaceOnce(
       out,
@@ -144,13 +153,7 @@ patchFile(
     );
     return out;
   },
-  [
-    'const selectedEngines: AutoAiEngine[]',
-    'for (const selectedEngine of selectedEngines)',
-    'allEnginesActive=true',
-    "executionMode: 'all_enabled_engines'",
-    "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
-  ],
+  ROUTE_MARKERS,
 );
 
 console.log('[EXECUTION_FIRST] current-price scalp execution policy applied');
