@@ -112,4 +112,44 @@ patchFile(
   ['Timing diagnostics remain visible but do not veto a valid current-price scalp.'],
 );
 
+patchFile(
+  'web/app/api/cron/auto-ai-trading-extended/route.ts',
+  (source) => {
+    let out = source;
+    out = replaceOnce(
+      out,
+      `    const configuredEngine = normalizeEngine(row.auto_ai_engine);\n    const selectedEngine = scanMode === 'daily_study' && engineFilter\n      ? engineFilter\n      : configuredEngine;\n    if (scanMode !== 'daily_study' && engineFilter && configuredEngine !== engineFilter) continue;\n    enabledEngines.add(selectedEngine);`,
+      `    const configuredEngine = normalizeEngine(row.auto_ai_engine);\n    const selectedEngines: AutoAiEngine[] = scanMode === 'daily_study' && engineFilter\n      ? [engineFilter]\n      : engineFilter\n        ? [engineFilter]\n        : [...AUTO_AI_ENGINES];\n    const selectedEngine = selectedEngines[0] ?? configuredEngine;\n    enabledEngines.add(selectedEngine);`,
+      'all-engine route selection',
+    );
+    out = replaceOnce(
+      out,
+      `      const result = await callInternalEndpoint('/api/internal/oanda/auto', {`,
+      `      for (const selectedEngine of selectedEngines) {\n        enabledEngines.add(selectedEngine);\n\n      const result = await callInternalEndpoint('/api/internal/oanda/auto', {`,
+      'all-engine route loop start',
+    );
+    out = replaceOnce(
+      out,
+      `        result: payload,\n      });\n    } catch (err) {`,
+      `        result: payload,\n      });\n      }\n    } catch (err) {`,
+      'all-engine route loop end',
+    );
+    out = out.replaceAll('selectedEngineOnly=true', 'allEnginesActive=true');
+    out = out.replaceAll('selected-engine run', 'all-engine run');
+    out = out.replaceAll("'selected_engine_only'", "'all_enabled_engines'");
+    out = out.replace(
+      "executionWindow: 'V3 02:15, PPR 03:00, ICT 05:00 through 10:00 America/New_York, Monday-Friday',",
+      "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday',",
+    );
+    return out;
+  },
+  [
+    'const selectedEngines: AutoAiEngine[]',
+    'for (const selectedEngine of selectedEngines)',
+    'allEnginesActive=true',
+    "executionMode: 'all_enabled_engines'",
+    "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+  ],
+);
+
 console.log('[EXECUTION_FIRST] current-price scalp execution policy applied');
