@@ -79,6 +79,7 @@ patchFile(
       /  const weighted = \(confluence \* 0\.5\) \+ \(timingScore \* 0\.3\) \+ \(geometryScore \* 0\.2\);\n  const confidence = Math\.round\(clamp\(Math\.min\(\n    weighted,\n    timingScore,\n    geometryScore,\n    confluence,\n  \)\)\);/,
       "  const weighted = (confluence * 0.75) + (geometryScore * 0.25);\n  const confidence = Math.round(clamp(Math.min(weighted, geometryScore, confluence)));",
     );
+    out = out.replace('  if (targetAdjusted) geometryScore -= 22;\n', '');
     out = out.replace("  if (!freshImpulse) blockers.push('no fresh 5M impulse/structure trigger');\n", '');
     out = out.replace("  if (age == null || age > 1) blockers.push(`entry trigger is ${age == null ? 'not timestamped' : `${age} bars old`}`);\n", '');
     out = out.replace("  if (drift > 0.35) blockers.push(`market entry drifted ${drift.toFixed(2)} ATR from the ideal entry`);\n", '');
