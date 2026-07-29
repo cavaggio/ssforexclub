@@ -52,29 +52,17 @@ export function computeIctTargetHitConfidence({
   let geometryScore = 100;
   if (rr < rrFloor) geometryScore = 0;
   else if (rr < rrFloor + 0.15) geometryScore -= 5;
-  if (targetAdjusted) geometryScore -= 22;
   if (spread > spreadLimit * 0.5) {
     geometryScore -= Math.min(35, ((spread / spreadLimit) - 0.5) * 50);
   }
   if (spread > spreadLimit) geometryScore = 0;
   geometryScore = clamp(geometryScore);
 
-  const weighted = (confluence * 0.5) + (timingScore * 0.3) + (geometryScore * 0.2);
-  const confidence = Math.round(clamp(Math.min(
-    weighted,
-    timingScore,
-    geometryScore,
-    confluence,
-  )));
+  const weighted = (confluence * 0.75) + (geometryScore * 0.25);
+  const confidence = Math.round(clamp(Math.min(weighted, geometryScore, confluence)));
 
   const blockers = [];
-  if (!freshImpulse) blockers.push('no fresh 5M impulse/structure trigger');
-  if (age == null || age > 1) blockers.push(`entry trigger is ${age == null ? 'not timestamped' : `${age} bars old`}`);
-  if (drift > 0.35) blockers.push(`market entry drifted ${drift.toFixed(2)} ATR from the ideal entry`);
-  if (consumed > 0.20) blockers.push(`${Math.round(consumed * 100)}% of the target move was already consumed`);
-  if (!priceInsideEntryZone) blockers.push('current market price is outside the valid entry zone');
   if (rr < rrFloor) blockers.push(`executable R:R ${rr.toFixed(2)} is below ${rrFloor.toFixed(2)}`);
-  if (targetAdjusted) blockers.push('nearest natural liquidity target did not provide the minimum R:R');
   if (spread > spreadLimit) blockers.push(`spread ${spread.toFixed(1)}p exceeds ${spreadLimit.toFixed(1)}p`);
   if (confidence < minConfidence) blockers.push(`target-hit confidence ${confidence}% is below ${minConfidence}%`);
 
@@ -95,7 +83,7 @@ export function computeIctTargetHitConfidence({
     spreadPips: +spread.toFixed(2),
     eligible: blockers.length === 0,
     blockers,
-    model: 'ict_current_entry_target_before_stop_v1',
+    model: 'ict_current_executable_scalp_v2',
   };
 }
 
