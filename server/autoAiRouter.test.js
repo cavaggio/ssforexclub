@@ -67,28 +67,14 @@ test('routing: all engines scan from 02:00 ET without submitting early orders', 
   }
 });
 
-test('V3 begins execution at 02:15 ET', async () => {
-  const before = await routeAt('v3', new Date('2026-07-13T06:14:00Z'));
-  const open = await routeAt('v3', new Date('2026-07-13T06:15:00Z'));
-  assert.equal(before.result.executionAllowed, false);
-  assert.match(before.calls[0].args.executionBlockedReason, /02:15/);
-  assert.equal(open.result.executionAllowed, true);
-});
-
-test('PPR begins execution at 03:00 ET', async () => {
-  const before = await routeAt('ppr', new Date('2026-07-13T06:59:00Z'));
-  const open = await routeAt('ppr', new Date('2026-07-13T07:00:00Z'));
-  assert.equal(before.result.executionAllowed, false);
-  assert.match(before.calls[0].args.executionBlockedReason, /03:00/);
-  assert.equal(open.result.executionAllowed, true);
-});
-
-test('ICT begins execution at 05:00 ET', async () => {
-  const before = await routeAt('ict', new Date('2026-07-13T08:59:00Z'));
-  const open = await routeAt('ict', new Date('2026-07-13T09:00:00Z'));
-  assert.equal(before.result.executionAllowed, false);
-  assert.match(before.calls[0].args.executionBlockedReason, /05:00/);
-  assert.equal(open.result.executionAllowed, true);
+test('V3, PPR, and ICT all begin execution at 02:15 ET', async () => {
+  for (const engine of ENGINES) {
+    const before = await routeAt(engine, new Date('2026-07-13T06:14:00Z'));
+    const open = await routeAt(engine, new Date('2026-07-13T06:15:00Z'));
+    assert.equal(before.result.executionAllowed, false);
+    assert.match(before.calls[0].args.executionBlockedReason, /02:15/);
+    assert.equal(open.result.executionAllowed, true);
+  }
 });
 
 test('daily study can run at 17:00 ET but can never submit an order', async () => {
@@ -108,7 +94,7 @@ test('daily study can run at 17:00 ET but can never submit an order', async () =
   }
 });
 
-test('routing: never runs more than one engine in one call', async () => {
+test('routing: each internal call still runs exactly one engine', async () => {
   for (const engine of ENGINES) {
     const { calls } = await routeAt(engine, INSIDE_ALL_EXECUTION_WINDOWS);
     assert.equal(calls.length, 1, `engine ${engine} must call exactly one path`);

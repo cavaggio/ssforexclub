@@ -59,8 +59,13 @@ test('refactor: only hard gates reject — soft concepts never appear as hard re
   for (const rr of r.rejectionReasons) {
     // FVG/OB/displacement/MSS/CHoCH are confluence now — never a hard "No X" rejection.
     assert.ok(!/No .*(displacement|FVG|OB|MSS|CHoCH|order block)/i.test(rr), `soft concept leaked into rejection: "${rr}"`);
-    // Every rejection is clearly labeled: hard gate, or below the display threshold.
-    assert.ok(/^Hard gate:/.test(rr) || /^Confluence below display threshold/.test(rr), `unlabeled rejection: "${rr}"`);
+    // Every rejection is clearly labeled: hard gate or the authoritative target-hit floor.
+    assert.ok(
+      /^Hard gate:/.test(rr) ||
+      /^Confluence below display threshold/.test(rr) ||
+      /^Target-hit confidence below execution threshold/.test(rr),
+      `unlabeled rejection: "${rr}"`,
+    );
   }
 });
 

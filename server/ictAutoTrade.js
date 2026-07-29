@@ -1,4 +1,4 @@
-﻿/**
+/**
  * server/ictAutoTrade.js
  *
  * Autonomous-entry runner for ONE user (per-request OANDA client supplied by the
@@ -195,7 +195,7 @@ export async function runAutoAiForUser({
     const direction = a.signal === 'buy' ? 'long' : 'short';
     const res = await executeIctTrade(
       { pair: a.pair, direction, units: 0, entry: a.entry, stopLoss: a.stopLoss, targetProfit: a.target1, ictSignalId: a.signalId },
-      { client, now, autoAi: true },
+      { client, now, autoAi: true, authoritativeAnalysis: a },
     );
     if (res.success) {
       executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });

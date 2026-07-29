@@ -32,3 +32,5 @@ if (!after.includes('buildIctWatchState(analyses, cfg.minConfidence, cfg.minRR)'
 
 if (after !== before) writeFileSync(path, after, 'utf8');
 console.log(`[SIGNAL_FORENSICS] legacy ICT watch-state implementation removed${after !== before ? ' (patched)' : ''}`);
+
+await import('./apply_execution_first_policy.mjs');
