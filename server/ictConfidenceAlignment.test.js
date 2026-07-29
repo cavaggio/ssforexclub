@@ -12,7 +12,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('current, fresh, natural-liquidity ICT scalp can clear the target-hit floor', () => {
+test('current executable ICT scalp can clear the target-hit floor', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 95,
     freshImpulse: true,
@@ -30,10 +30,10 @@ test('current, fresh, natural-liquidity ICT scalp can clear the target-hit floor
 
   assert.equal(result.eligible, true);
   assert.ok(result.confidence >= 93);
-  assert.equal(result.model, 'ict_current_entry_target_before_stop_v1');
+  assert.equal(result.model, 'ict_current_executable_scalp_v2');
 });
 
-test('missing trigger age is not silently converted to a fresh zero-age trigger', () => {
+test('missing trigger age remains a diagnostic and does not veto valid current geometry', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
     freshImpulse: true,
@@ -45,11 +45,13 @@ test('missing trigger age is not silently converted to a fresh zero-age trigger'
     minConfidence: 93,
   });
 
-  assert.equal(result.eligible, false);
-  assert.ok(result.blockers.some((reason) => reason.includes('not timestamped')));
+  assert.equal(result.eligible, true);
+  assert.equal(result.triggerAgeBars, null);
+  assert.ok(result.timingScore < 100);
+  assert.ok(!result.blockers.some((reason) => reason.includes('not timestamped')));
 });
 
-test('raw confluence cannot hide a late, stale, already-consumed scalp entry', () => {
+test('late and consumed metrics remain visible but do not override current executable scalp geometry', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
     freshImpulse: true,
@@ -62,13 +64,15 @@ test('raw confluence cannot hide a late, stale, already-consumed scalp entry', (
     minConfidence: 93,
   });
 
-  assert.equal(result.eligible, false);
-  assert.ok(result.confidence < 70);
-  assert.ok(result.blockers.some((reason) => reason.includes('bars old')));
-  assert.ok(result.blockers.some((reason) => reason.includes('already consumed')));
+  assert.equal(result.eligible, true);
+  assert.ok(result.timingScore < 70);
+  assert.equal(result.entryDriftAtr, 0.7);
+  assert.equal(result.rewardConsumedFraction, 0.45);
+  assert.equal(result.priceInsideEntryZone, false);
+  assert.ok(!result.blockers.some((reason) => /bars old|consumed|drifted|entry zone/i.test(reason)));
 });
 
-test('synthetically extending a target to manufacture 1.5R cannot qualify at 93%', () => {
+test('an exact 1.5R current scalp may execute even when the target was normalized to the floor', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
     freshImpulse: true,
@@ -81,12 +85,13 @@ test('synthetically extending a target to manufacture 1.5R cannot qualify at 93%
     minConfidence: 93,
   });
 
-  assert.equal(result.eligible, false);
-  assert.ok(result.confidence < 93);
-  assert.ok(result.blockers.some((reason) => reason.includes('natural liquidity target')));
+  assert.equal(result.eligible, true);
+  assert.ok(result.confidence >= 93);
+  assert.equal(result.targetAdjusted, true);
+  assert.ok(!result.blockers.some((reason) => reason.includes('natural liquidity target')));
 });
 
-test('fresh bid/ask repricing can reject a scanner-qualified setup before fill', () => {
+test('fresh bid/ask repricing still rejects when executable R:R falls below 1.5', () => {
   const analysis = {
     entry: 163.90,
     idealEntry: 163.90,
@@ -114,7 +119,7 @@ test('fresh bid/ask repricing can reject a scanner-qualified setup before fill',
   });
 
   assert.equal(result.eligible, false);
-  assert.ok(result.blockers.some((reason) => reason.includes('drifted') || reason.includes('consumed')));
+  assert.ok(result.blockers.some((reason) => reason.includes('R:R')));
 });
 
 test('ICT TP and SL probabilities are decimal ratios expected by the dashboard', () => {
@@ -124,15 +129,18 @@ test('ICT TP and SL probabilities are decimal ratios expected by the dashboard',
   });
 });
 
-test('generated runtime source uses one ICT target-hit model across scan, fill, open trade, and reassess', () => {
+test('generated runtime source uses one current-executable ICT model across scan, fill, open trade, and reassess', () => {
   const engine = fs.readFileSync(path.join(ROOT, 'server', 'ictEngine.js'), 'utf8');
+  const targetConfidence = fs.readFileSync(path.join(ROOT, 'server', 'ictTargetConfidence.js'), 'utf8');
   const execution = fs.readFileSync(path.join(ROOT, 'server', 'ictExecution.js'), 'utf8');
   const monitor = fs.readFileSync(path.join(ROOT, 'server', 'oandaActiveTradeMonitor.js'), 'utf8');
   const reassessor = fs.readFileSync(path.join(ROOT, 'server', 'oandaActiveTradeReassessor.js'), 'utf8');
 
   assert.match(engine, /computeIctTargetHitConfidence/);
-  assert.match(engine, /Hard gate: late market entry/);
+  assert.doesNotMatch(engine, /Hard gate: late market entry/);
+  assert.match(targetConfidence, /ict_current_executable_scalp_v2/);
   assert.match(execution, /Final executable-price target-hit confirmation rejected/);
+  assert.match(execution, /authoritativeAnalysis/);
   assert.match(monitor, /ict_target_hit_lifecycle/);
   assert.match(reassessor, /source = 'ict_target_hit_lifecycle'/);
 });
