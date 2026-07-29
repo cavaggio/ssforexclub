@@ -178,10 +178,12 @@ export async function POST(req: Request) {
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const configuredEngine = normalizeEngine(row.auto_ai_engine);
-    const selectedEngine = scanMode === 'daily_study' && engineFilter
-      ? engineFilter
-      : configuredEngine;
-    if (scanMode !== 'daily_study' && engineFilter && configuredEngine !== engineFilter) continue;
+    const selectedEngines: AutoAiEngine[] = scanMode === 'daily_study' && engineFilter
+      ? [engineFilter]
+      : engineFilter
+        ? [engineFilter]
+        : [...AUTO_AI_ENGINES];
+    const selectedEngine = selectedEngines[0] ?? configuredEngine;
     enabledEngines.add(selectedEngine);
 
     try {
@@ -203,112 +205,116 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const result = await callInternalEndpoint('/api/internal/oanda/auto', {
-        apiKey: credentials.token,
-        accountId: credentials.accountId,
-        baseUrl: resolved.baseUrl,
-        environment: resolved.activeEnvironment,
-        runId: `${runId}-${selectedEngine}`,
-        scanMode,
-        pairs: scanMode === 'daily_study' ? [] : engineFilter ? pairs : [],
-        engine: selectedEngine,
-      });
+      for (const selectedEngine of selectedEngines) {
+        enabledEngines.add(selectedEngine);
 
-      if (!result.ok) {
-        results.push({ user: row.user_id, engine: selectedEngine, error: result.error, status: result.status });
-        continue;
-      }
-
-      const payload = (result.data ?? {}) as Record<string, any>;
-      const accounting = scanAccounting(payload);
-      const executedList = Array.isArray(payload.executed) ? payload.executed : [];
-      const state = watchStates[selectedEngine];
-      const learning = await recordSignalLearningCycle({
-        userId: row.user_id,
-        brokerAccountId: credentials.accountId,
-        environment: resolved.activeEnvironment,
-        engine: selectedEngine,
-        scanMode,
-        runId: `${runId}-${selectedEngine}`,
-        payload,
-      });
-
-      learningObservations += learning.observationsWritten;
-      learningOutcomes += learning.outcomesWritten;
-      scanned += accounting.scanned;
-      qualified += accounting.qualified;
-      watching += accounting.watching;
-      rejected += accounting.rejected;
-      executed += executedList.length;
-      skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
-      if (!accounting.countInvariantOk) countMismatches += 1;
-
-      addPairs(state.nearQualifiedPairs, payload.nearQualifiedPairs);
-      addPairs(state.hotPairs, payload.hotPairs);
-      addPairs(state.lateEntryPairs, payload.lateEntryPairs);
-      for (const pair of state.lateEntryPairs) {
-        state.nearQualifiedPairs.delete(pair);
-        state.hotPairs.delete(pair);
-      }
-
-      console.log(
-        `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] selectedEngineOnly=true ` +
-        `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
-        `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
-        `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length} ` +
-        `learningObservations=${learning.observationsWritten} learningOutcomes=${learning.outcomesWritten}`,
-      );
-
-      for (const item of executedList) {
-        const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
-        await logTradeEvent({
-          userId: row.user_id,
-          broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
-          brokerAccountId: credentials.accountId,
-          environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
-          eventType: 'opened',
+        const result = await callInternalEndpoint('/api/internal/oanda/auto', {
+          apiKey: credentials.token,
+          accountId: credentials.accountId,
+          baseUrl: resolved.baseUrl,
+          environment: resolved.activeEnvironment,
+          runId: `${runId}-${selectedEngine}`,
+          scanMode,
+          pairs: scanMode === 'daily_study' ? [] : engineFilter ? pairs : [],
           engine: selectedEngine,
-          strategy: typeof item?.strategy === 'string' ? item.strategy : selectedEngine.toUpperCase(),
-          brokerTradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-          instrument: typeof item?.pair === 'string' ? item.pair : null,
-          tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-          brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-          side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
-          units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
-          entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
-          sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
-          tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
-          confidence: typeof item?.confidence === 'number' ? item.confidence : null,
-          recommendation: typeof item?.expectedRR === 'number'
-            ? `RR ${item.expectedRR}`
-            : `${selectedEngine.toUpperCase()}_AUTO`,
-          reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during selected-engine run ${runId}`,
-          rawPayload: {
-            runId,
-            scanMode,
+        });
+
+        if (!result.ok) {
+          results.push({ user: row.user_id, engine: selectedEngine, error: result.error, status: result.status });
+          continue;
+        }
+
+        const payload = (result.data ?? {}) as Record<string, any>;
+        const accounting = scanAccounting(payload);
+        const executedList = Array.isArray(payload.executed) ? payload.executed : [];
+        const state = watchStates[selectedEngine];
+        const learning = await recordSignalLearningCycle({
+          userId: row.user_id,
+          brokerAccountId: credentials.accountId,
+          environment: resolved.activeEnvironment,
+          engine: selectedEngine,
+          scanMode,
+          runId: `${runId}-${selectedEngine}`,
+          payload,
+        });
+
+        learningObservations += learning.observationsWritten;
+        learningOutcomes += learning.outcomesWritten;
+        scanned += accounting.scanned;
+        qualified += accounting.qualified;
+        watching += accounting.watching;
+        rejected += accounting.rejected;
+        executed += executedList.length;
+        skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
+        if (!accounting.countInvariantOk) countMismatches += 1;
+
+        addPairs(state.nearQualifiedPairs, payload.nearQualifiedPairs);
+        addPairs(state.hotPairs, payload.hotPairs);
+        addPairs(state.lateEntryPairs, payload.lateEntryPairs);
+        for (const pair of state.lateEntryPairs) {
+          state.nearQualifiedPairs.delete(pair);
+          state.hotPairs.delete(pair);
+        }
+
+        console.log(
+          `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] allEnginesActive=true ` +
+          `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
+          `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
+          `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length} ` +
+          `learningObservations=${learning.observationsWritten} learningOutcomes=${learning.outcomesWritten}`,
+        );
+
+        for (const item of executedList) {
+          const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
+          await logTradeEvent({
+            userId: row.user_id,
+            broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+            brokerAccountId: credentials.accountId,
+            environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+            eventType: 'opened',
             engine: selectedEngine,
-            executionMode: 'selected_engine_only',
-            accounting,
-            learning: {
-              observationCapture: learning.ok,
-              migrationRequired: learning.migrationRequired === true,
+            strategy: typeof item?.strategy === 'string' ? item.strategy : selectedEngine.toUpperCase(),
+            brokerTradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+            instrument: typeof item?.pair === 'string' ? item.pair : null,
+            tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+            brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+            side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
+            units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
+            entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
+            sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
+            tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
+            confidence: typeof item?.confidence === 'number' ? item.confidence : null,
+            recommendation: typeof item?.expectedRR === 'number'
+              ? `RR ${item.expectedRR}`
+              : `${selectedEngine.toUpperCase()}_AUTO`,
+            reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during all-engine run ${runId}`,
+            rawPayload: {
+              runId,
+              scanMode,
+              engine: selectedEngine,
+              executionMode: 'all_enabled_engines',
+              accounting,
+              learning: {
+                observationCapture: learning.ok,
+                migrationRequired: learning.migrationRequired === true,
+              },
+              item,
             },
-            item,
-          },
-          edge: edgeSnapshotFromSignal(signal),
+            edge: edgeSnapshotFromSignal(signal),
+          });
+        }
+
+        results.push({
+          user: row.user_id,
+          selectedEngine,
+          activeEnvironment: resolved.activeEnvironment,
+          executionMode: 'all_enabled_engines',
+          accounting,
+          executionAllowed: payload.executionAllowed === true,
+          learning,
+          result: payload,
         });
       }
-
-      results.push({
-        user: row.user_id,
-        selectedEngine,
-        activeEnvironment: resolved.activeEnvironment,
-        executionMode: 'selected_engine_only',
-        accounting,
-        executionAllowed: payload.executionAllowed === true,
-        learning,
-        result: payload,
-      });
     } catch (err) {
       results.push({
         user: row.user_id,
@@ -325,7 +331,7 @@ export async function POST(req: Request) {
   const aggregateLate = [...new Set(selectedStates.flatMap((state) => [...state.lateEntryPairs]))];
 
   console.log(
-    `[AUTO_AI][SUMMARY][runId=${runId}] selectedEngineOnly=true engineFilter=${engineFilter ?? 'none'} ` +
+    `[AUTO_AI][SUMMARY][runId=${runId}] allEnginesActive=true engineFilter=${engineFilter ?? 'none'} ` +
     `users=${results.length} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
     `rejected=${rejected} executed=${executed} skipped=${skipped} ` +
     `learningObservations=${learningObservations} learningOutcomes=${learningOutcomes}`,
@@ -348,14 +354,14 @@ export async function POST(req: Request) {
     skipped,
     learningObservations,
     learningOutcomes,
-    executionMode: 'selected_engine_only',
+    executionMode: 'all_enabled_engines',
     enabledEngines: [...enabledEngines],
     engineWatchStates,
     nearQualifiedPairs: aggregateNear,
     hotPairs: aggregateHot,
     lateEntryPairs: aggregateLate,
     scanWindow: '02:00-10:00 America/New_York, Monday-Friday',
-    executionWindow: 'V3 02:15, PPR 03:00, ICT 05:00 through 10:00 America/New_York, Monday-Friday',
+    executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday',
     dailyStudyWindow: '17:00-17:15 America/New_York, Monday-Friday',
     results,
   });
