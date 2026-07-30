@@ -14,30 +14,25 @@ function str(formData: FormData, key: string): string {
 
 async function requireUserId(): Promise<string> {
   const { userId } = await auth();
-
-  if (!userId) {
-    throw new Error('Unauthenticated');
-  }
+  if (!userId) throw new Error('Unauthenticated');
 
   const u = await currentUser();
-
   if (u) {
     await upsertUserFromClerk({
       clerkUserId: u.id,
       email: u.primaryEmailAddress?.emailAddress ?? '',
     }).catch(() => undefined);
   }
-
   return userId;
 }
 
 export async function saveFtmoConnectionAction(formData: FormData): Promise<FtmoActionResult> {
   try {
     const userId = await requireUserId();
-    const environment = (str(formData, 'environment') || 'challenge') as BrokerEnvironment;
+    const environment = (str(formData, 'environment') || 'free_trial') as BrokerEnvironment;
 
-    if (!['challenge', 'verification', 'funded'].includes(environment)) {
-      return { ok: false, error: 'FTMO environment must be challenge, verification, or funded' };
+    if (!['free_trial', 'challenge', 'verification', 'funded'].includes(environment)) {
+      return { ok: false, error: 'FTMO environment must be free trial, challenge, verification, or funded' };
     }
 
     const credentials = {
@@ -52,15 +47,9 @@ export async function saveFtmoConnectionAction(formData: FormData): Promise<Ftmo
     const required = ['accountLogin', 'server', 'bridgeUrl', 'bridgeApiKey', 'bridgeSecret'] as const;
     const missing = required.filter((key) => !credentials[key]);
 
-    if (missing.length) {
-      return { ok: false, error: `Missing required FTMO MT5 field(s): ${missing.join(', ')}` };
-    }
-    if (!/^\d+$/.test(credentials.accountLogin)) {
-      return { ok: false, error: 'FTMO MT5 login must contain digits only' };
-    }
-    if (credentials.bridgeSecret.length < 16) {
-      return { ok: false, error: 'Bridge secret must be at least 16 characters' };
-    }
+    if (missing.length) return { ok: false, error: `Missing required FTMO MT5 field(s): ${missing.join(', ')}` };
+    if (!/^\d+$/.test(credentials.accountLogin)) return { ok: false, error: 'FTMO MT5 login must contain digits only' };
+    if (credentials.bridgeSecret.length < 16) return { ok: false, error: 'Bridge secret must be at least 16 characters' };
 
     let bridgeUrl: URL;
     try {
@@ -82,7 +71,6 @@ export async function saveFtmoConnectionAction(formData: FormData): Promise<Ftmo
 
     revalidatePath('/dashboard/ftmo');
     revalidatePath('/dashboard/settings');
-
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
