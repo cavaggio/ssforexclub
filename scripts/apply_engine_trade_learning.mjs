@@ -82,13 +82,9 @@ function patchPpr(source) {
     "applyCombinedLearningCalibration(item, { client, engine: 'ppr' })",
   );
   if (!out.includes('qualifiedCandidates: qualified,')) {
-    out = out.replaceAll(
-      '      watchCandidates: scan?.watchCandidates || [],',
-      '      qualifiedCandidates: qualified,\n      watchCandidates: scan?.watchCandidates || [],',
-    );
-    out = out.replaceAll(
-      '    watchCandidates: scan?.watchCandidates || [],',
-      '    qualifiedCandidates: qualified,\n    watchCandidates: scan?.watchCandidates || [],',
+    out = out.replace(
+      /^(\s*)watchCandidates: scan\?\.watchCandidates \|\| \[\],$/gm,
+      '$1qualifiedCandidates: qualified,\n$1watchCandidates: scan?.watchCandidates || [],',
     );
   }
   if (!out.includes('applyCombinedLearningCalibration') || !out.includes('qualifiedCandidates: qualified')) {
@@ -161,13 +157,9 @@ function patchV3(source) {
     'V3 authoritative execution calibration',
   );
   if (!out.includes('qualifiedCandidates: qualified,')) {
-    out = out.replaceAll(
-      '      watchCandidates: stageWatchCandidates,',
-      '      qualifiedCandidates: qualified,\n      watchCandidates: stageWatchCandidates,\n      rejected: scan?.rejected || [],',
-    );
-    out = out.replaceAll(
-      '    watchCandidates: stageWatchCandidates,',
-      '    qualifiedCandidates: qualified,\n    watchCandidates: stageWatchCandidates,\n    rejected: scan?.rejected || [],',
+    out = out.replace(
+      /^(\s*)watchCandidates: stageWatchCandidates,$/gm,
+      '$1qualifiedCandidates: qualified,\n$1watchCandidates: stageWatchCandidates,\n$1rejected: scan?.rejected || [],',
     );
   }
   if (!out.includes('applyCombinedLearningCalibration') || !out.includes('authoritativeCandidate') || !out.includes('qualifiedCandidates: qualified')) {
