@@ -7,6 +7,7 @@ import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
 import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
 import { restoreV3WatchlistCompatibility } from './restore_v3_watchlist_compat.mjs';
+import { applyActualTradeLearningView } from './apply_actual_trade_learning_view.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -88,6 +89,7 @@ await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
 applyAccountEngineIsolation(ROOT);
 restoreV3WatchlistCompatibility(ROOT);
+applyActualTradeLearningView(ROOT);
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
 // for starting the API. A stale source marker must never take the entire scanner,
