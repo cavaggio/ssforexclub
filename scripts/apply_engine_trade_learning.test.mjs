@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
+import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_learning_compat.mjs';
 
 function fixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), 'engine-learning-patch-'));
@@ -76,6 +77,15 @@ test('patches all engine scan and authoritative execution paths once', () => {
   const changed = applyEngineTradeLearningPatch(root);
   assert.deepEqual(changed.sort(), expected.sort());
   assert.equal(applyEngineTradeLearningPatch(root).length, 0);
+  const combined = new Map(expected.map((relativePath) => [
+    relativePath,
+    readFileSync(join(root, relativePath), 'utf8'),
+  ]));
+  assert.equal(prepareEngineTradeLearningCompatibility(root).length, 4);
+  applyEngineTradeLearningPatch(root);
+  for (const [relativePath, content] of combined) {
+    assert.equal(readFileSync(join(root, relativePath), 'utf8'), content, `${relativePath} drifted after compatibility round-trip`);
+  }
   const ict = readFileSync(join(root, 'server/ictAutoTrade.js'), 'utf8');
   const ictExecution = readFileSync(join(root, 'server/ictExecution.js'), 'utf8');
   const ppr = readFileSync(join(root, 'server/pprAutoTrade.js'), 'utf8');
