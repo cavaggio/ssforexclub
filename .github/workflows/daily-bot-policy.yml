@@ -27,7 +27,7 @@ jobs:
         id: apply_policy
         continue-on-error: true
         shell: bash
-        run: npm run apply:v3-entry >/tmp/daily-policy-apply.log 2>&1
+        run: npm run apply:v3-entry && npm run apply:account-isolation >/tmp/daily-policy-apply.log 2>&1
       - name: Capture generated source
         if: always()
         shell: bash
