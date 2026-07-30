@@ -18,7 +18,16 @@ import { DashboardNav } from '@/components/dashboard-nav';
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   await auth.protect();
-  const user = await currentUser();
+
+  // The identity detail is used only for display and best-effort shadow-user
+  // synchronization. A transient Clerk profile lookup must not take down every
+  // protected dashboard route after middleware/auth.protect already authorized it.
+  let user: Awaited<ReturnType<typeof currentUser>> = null;
+  try {
+    user = await currentUser();
+  } catch (err) {
+    console.error('[dashboard] Clerk profile lookup failed:', err);
+  }
 
   // Best-effort shadow-user upsert. Never fail the page if Postgres is down —
   // unauth content was already gated, and downstream queries that need the
