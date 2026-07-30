@@ -14,6 +14,7 @@ on:
       - 'web/app/api/cron/auto-ai-trading-extended/route.ts'
       - 'web/app/api/cron/engine-learning-backfill/route.ts'
       - 'web/lib/engineLearningBackfill.ts'
+      - 'web/lib/engineLearningBackfillAccounts.contract.test.js'
       - 'web/lib/autoAiAllEngines.contract.test.js'
       - 'supabase/migrations/20260730143000_engine_account_accuracy_7d.sql'
       - 'package.json'
@@ -41,7 +42,12 @@ jobs:
       - name: Apply complete generated-source pipeline
         run: npm run apply:v3-entry && npm run apply:account-isolation
       - name: Validate isolation and learning tests
-        run: node --test scripts/apply_account_engine_isolation.test.mjs server/engineTradeLearningCore.test.js web/lib/autoAiAllEngines.contract.test.js
+        run: |
+          node --test \
+            scripts/apply_account_engine_isolation.test.mjs \
+            server/engineTradeLearningCore.test.js \
+            web/lib/autoAiAllEngines.contract.test.js \
+            web/lib/engineLearningBackfillAccounts.contract.test.js
       - name: Validate patched syntax
         run: |
           node --check scripts/apply_account_engine_isolation.mjs

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
-import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
+import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { backfillEngineLearningWindow } from '@/lib/engineLearningBackfill';
 
 export const dynamic = 'force-dynamic';
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
   try {
     const { data: settings, error } = await supabase
       .from('user_trading_settings')
-      .select('user_id')
+      .select('user_id, auto_ai_engine')
       .eq('auto_ai_trading_enabled', true);
     if (error) throw error;
 
@@ -58,42 +58,49 @@ export async function POST(req: Request) {
     let observationsConsidered = 0;
     let outcomesWritten = 0;
 
-    for (const row of (settings || []) as Array<{ user_id: string }>) {
-      const resolved = await resolveActiveBrokerForUser(row.user_id);
-      if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials) {
+    for (const row of (settings || []) as Array<{ user_id: string; auto_ai_engine?: string | null }>) {
+      const connections = await listBrokerConnectionsForUser(row.user_id);
+      const activeAccounts = [...new Map(
+        connections
+          .filter((connection) => connection.isActive && connection.broker === 'oanda' && connection.accountId)
+          .map((connection) => [connection.accountId, connection]),
+      ).values()];
+
+      if (!activeAccounts.length) {
         results.push({
           userId: row.user_id,
-          skipped: resolved.brokerCredentialStatus,
-          reason: resolved.reason,
+          configuredEngine: row.auto_ai_engine || null,
+          skipped: 'no_active_oanda_accounts',
+          reason: 'No active OANDA broker connections were available for historical learning.',
         });
         continue;
       }
 
-      const credentials = await resolved.getCredentials();
-      if (!credentials?.accountId) {
-        results.push({ userId: row.user_id, skipped: 'credentials_unavailable' });
-        continue;
-      }
-
-      accountsProcessed += 1;
-      for (const engine of ENGINES as readonly Engine[]) {
-        const result = await backfillEngineLearningWindow({
-          userId: row.user_id,
-          brokerAccountId: credentials.accountId,
-          engine,
-          tradingDays,
-          calendarLookbackDays,
-          now: startedAt,
-        });
-        engineProfilesProcessed += 1;
-        observationsConsidered += result.observationsConsidered;
-        outcomesWritten += result.outcomesWritten;
-        results.push({
-          userId: row.user_id,
-          accountId: credentials.accountId,
-          environment: resolved.activeEnvironment,
-          ...result,
-        });
+      for (const account of activeAccounts) {
+        accountsProcessed += 1;
+        for (const engine of ENGINES as readonly Engine[]) {
+          const result = await backfillEngineLearningWindow({
+            userId: row.user_id,
+            brokerAccountId: account.accountId,
+            engine,
+            tradingDays,
+            calendarLookbackDays,
+            now: startedAt,
+          });
+          engineProfilesProcessed += 1;
+          observationsConsidered += result.observationsConsidered;
+          outcomesWritten += result.outcomesWritten;
+          results.push({
+            userId: row.user_id,
+            accountId: account.accountId,
+            connectionId: account.id,
+            broker: account.broker,
+            environment: account.environment,
+            validationStatus: account.validationStatus,
+            configuredEngine: row.auto_ai_engine || null,
+            ...result,
+          });
+        }
       }
     }
 
