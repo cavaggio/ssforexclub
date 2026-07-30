@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applySignalExecutionQualitySeparation } from './apply_signal_execution_quality_separation.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -31,6 +32,10 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   }
   if (after !== before) writeFileSync(path, after, 'utf8');
   console.log(`[ACTUAL_TRADE_LEARNING] verified server/engineTradeLearning.js${after !== before ? ' (patched)' : ''}`);
+
+  // Apply signal/execution quality separation only after the actual-trade view
+  // owns pair expectancy, so thesis confidence never absorbs entry/fill drag.
+  applySignalExecutionQualitySeparation(root);
   return { changed: after !== before, source: after };
 }
 
