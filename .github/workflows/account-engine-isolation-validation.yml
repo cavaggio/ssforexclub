@@ -1,0 +1,61 @@
+name: Account engine isolation validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/apply_account_engine_isolation*'
+      - 'server/ictAutoTrade.js'
+      - 'server/ictExecution.js'
+      - 'server/ictWatchlist.js'
+      - 'server/v3IndependentScanner.js'
+      - 'server/engineTradeLearning*'
+      - 'server/ictAutoScheduler.js'
+      - 'web/app/api/cron/auto-ai-trading-extended/route.ts'
+      - 'web/app/api/cron/engine-learning-backfill/route.ts'
+      - 'web/lib/engineLearningBackfill.ts'
+      - 'web/lib/autoAiAllEngines.contract.test.js'
+      - 'supabase/migrations/20260730143000_engine_account_accuracy_7d.sql'
+      - 'package.json'
+      - '.github/workflows/account-engine-isolation-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Apply complete generated-source pipeline
+        run: npm run apply:v3-entry
+      - name: Validate isolation and learning tests
+        run: node --test scripts/apply_account_engine_isolation.test.mjs server/engineTradeLearningCore.test.js web/lib/autoAiAllEngines.contract.test.js
+      - name: Validate patched syntax
+        run: |
+          node --check scripts/apply_account_engine_isolation.mjs
+          node --check server/ictAutoTrade.js
+          node --check server/ictExecution.js
+          node --check server/v3IndependentScanner.js
+          node --check server/engineTradeLearning.js
+          node --check server/engineTradeLearningCore.js
+          node --check server/ictAutoScheduler.js
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Typecheck web routes
+        working-directory: web
+        run: npm run typecheck
+      - name: Build web application
+        working-directory: web
+        run: npm run build
