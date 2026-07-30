@@ -33,6 +33,14 @@ function Row({ label, active }: { label: string; active: boolean }) {
   );
 }
 
+function environmentLabel(value: string | null | undefined) {
+  if (value === 'free_trial') return 'FTMO Free Trial';
+  if (value === 'challenge') return 'FTMO Challenge';
+  if (value === 'verification') return 'Verification';
+  if (value === 'funded') return 'FTMO Account / Funded';
+  return value || '—';
+}
+
 export default async function FtmoPage() {
   const { userId } = await auth();
   const connections = userId
@@ -45,7 +53,8 @@ export default async function FtmoPage() {
   const liveExecution = on(process.env.FTMO_LIVE_EXECUTION_ENABLED);
   const useV3 = process.env.FTMO_USE_V3_ENGINE == null || on(process.env.FTMO_USE_V3_ENGINE);
   const useICT = process.env.FTMO_USE_ICT_ENGINE == null || on(process.env.FTMO_USE_ICT_ENGINE);
-  const provider = process.env.FTMO_PROVIDER || 'mt5_bridge';
+  const staleProvider = String(process.env.FTMO_PROVIDER || '').trim().toLowerCase();
+  const hasLegacyProviderSetting = Boolean(staleProvider && staleProvider !== 'mt5_bridge');
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -54,12 +63,18 @@ export default async function FtmoPage() {
 
         <p style={{ color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
           Signal Stack sends signed trade requests to a private bridge running beside the FTMO MT5 terminal on a
-          Windows VPS. FTMO credentials never fall back to OANDA or another broker connection.
+          Windows VPS. FTMO credentials never fall back to OANDA, cTrader, or another broker connection.
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12 }}>
           Safe mode: keep live execution disabled until bridge health, account identity, positions, and test orders are verified.
         </p>
+
+        {hasLegacyProviderSetting && (
+          <p style={{ color: '#e0b341', marginTop: 10, fontSize: 12 }}>
+            A legacy FTMO_PROVIDER value is still configured, but it is ignored. This page and execution path use MetaTrader 5 Bridge only. Set FTMO_PROVIDER=mt5_bridge in Railway and Vercel to remove the stale setting.
+          </p>
+        )}
       </section>
 
       <section style={panel}>
@@ -68,7 +83,7 @@ export default async function FtmoPage() {
         <div style={grid}>
           <div style={card}>
             <strong>Provider</strong>
-            <span>{provider}</span>
+            <span>MetaTrader 5 Bridge</span>
           </div>
 
           <Row label="FTMO connector" active={ftmoEnabled} />
@@ -80,7 +95,7 @@ export default async function FtmoPage() {
 
           <div style={card}>
             <strong>Environment</strong>
-            <span>{active?.environment ?? '—'}</span>
+            <span>{environmentLabel(active?.environment)}</span>
           </div>
 
           <div style={card}>
