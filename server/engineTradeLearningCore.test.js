@@ -5,6 +5,10 @@ import {
   applyBoundedConfidence,
   computeEngineTradeAdjustment,
 } from './engineTradeLearningCore.js';
+import {
+  assessCandidateExecutionQuality,
+  separateSignalAndExecutionLearning,
+} from './signalExecutionQuality.js';
 
 function matureProfile(overrides = {}) {
   return {
@@ -84,4 +88,43 @@ test('combines market study and engine learning within a five-point total cap', 
     engineTradeAdjustment: -3,
   });
   assert.equal(adverse.finalConfidence, 0);
+});
+
+test('late premium entry quality is penalized without creating a hard gate', () => {
+  const quality = assessCandidateExecutionQuality({
+    ...ictCandidate,
+    timing: { timingGrade: 'D', lateEntryRisk: 'high' },
+    concepts: {
+      premiumDiscount: { currentZone: 'premium' },
+      sweep: { pending: true, subtype: 'pending_sweep' },
+    },
+  });
+
+  assert.equal(quality.adjustment < 0, true);
+  assert.equal(quality.adjustment >= -2.5, true);
+  assert.equal(quality.advisoryOnly, true);
+  assert.equal(quality.createsHardGate, false);
+  assert.equal(quality.adverseLocation, true);
+  assert.equal(quality.sweepPending, true);
+});
+
+test('separates directional signal evidence from entry and fill quality', () => {
+  const engineResult = computeEngineTradeAdjustment(ictCandidate, matureProfile({
+    executionQuality: { outcomes: 100, efficient_entry_rate: 15, poor_or_early_rate: 70 },
+  }));
+  const separated = separateSignalAndExecutionLearning({
+    engineResult,
+    candidate: {
+      ...ictCandidate,
+      timing: { timingGrade: 'D', lateEntryRisk: 'high' },
+      concepts: { premiumDiscount: { currentZone: 'premium' } },
+    },
+    options: { mode: 'limited', displayMinimum: 10, liveMinimum: 30, fullWeightMinimum: 100 },
+  });
+
+  assert.equal(separated.separated, true);
+  assert.equal(separated.signalQuality.appliedAdjustment > 0, true);
+  assert.equal(separated.executionQuality.appliedAdjustment < 0, true);
+  assert.equal(separated.executionQuality.advisoryOnly, true);
+  assert.equal(separated.executionQuality.createsHardGate, false);
 });
