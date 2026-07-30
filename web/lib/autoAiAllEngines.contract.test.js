@@ -1,19 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { applyAccountEngineIsolation } from '../../scripts/apply_account_engine_isolation.mjs';
-import { restoreV3WatchlistCompatibility } from '../../scripts/restore_v3_watchlist_compat.mjs';
-import { prepareActualTradeLearningCompatibility } from '../../scripts/prepare_actual_trade_learning_compat.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-
+// The workflow and package pretest apply the complete generated-source pipeline.
+// This contract is intentionally read-only so it cannot race another test that
+// verifies patch idempotence in a temporary directory.
 test('Auto AI executes only the configured engine for each account while studies remain non-executing', () => {
-  prepareActualTradeLearningCompatibility(ROOT);
-  applyAccountEngineIsolation(ROOT);
-  restoreV3WatchlistCompatibility(ROOT);
-
   const source = readFileSync(
     new URL('../app/api/cron/auto-ai-trading-extended/route.ts', import.meta.url),
     'utf8',
