@@ -100,7 +100,6 @@ export async function POST(req: Request) {
         actualClosedTrades += actual.closedTrades;
         results.push({
           kind: 'actual_trade_lifecycle',
-          userId: row.user_id,
           accountId: account.accountId,
           connectionId: account.id,
           broker: account.broker,
