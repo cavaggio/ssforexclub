@@ -9,12 +9,11 @@ const finite = (value, fallback = null) => {
 
 /**
  * ICT confidence is the confidence that the CURRENT executable entry reaches the
- * recorded target before the recorded stop. It is intentionally not the raw
- * number of ICT concepts detected.
+ * recorded target before the recorded stop. Signal quality and execution quality
+ * are reported separately so a correct thesis is not confused with a poor fill.
  *
- * The weakest execution dimension caps the result. A strong higher-timeframe
- * narrative therefore cannot hide a stale trigger, a late market entry, poor
- * executable R:R, an already-consumed move, or a synthetic target extension.
+ * Entry/fill inefficiency may reduce target-hit confidence by at most three
+ * points. It remains a bounded confidence adjustment, never a new hard gate.
  */
 export function computeIctTargetHitConfidence({
   confluenceScore = 0,
@@ -58,8 +57,17 @@ export function computeIctTargetHitConfidence({
   if (spread > spreadLimit) geometryScore = 0;
   geometryScore = clamp(geometryScore);
 
+  const signalQualityConfidence = Math.round(confluence);
+  const executionQualityConfidence = Math.round(clamp((timingScore * 0.65) + (geometryScore * 0.35)));
+  // Timing/fill inefficiency reduces target-hit confidence by at most three points.
+  // It remains a bounded confidence adjustment, not a new hard rejection rule.
+  const executionQualityAdjustment = -Math.min(
+    3,
+    Math.max(0, Math.round((100 - executionQualityConfidence) / 15)),
+  );
   const weighted = (confluence * 0.75) + (geometryScore * 0.25);
-  const confidence = Math.round(clamp(Math.min(weighted, geometryScore, confluence)));
+  const baseConfidence = Math.round(clamp(Math.min(weighted, geometryScore, confluence)));
+  const confidence = Math.round(clamp(baseConfidence + executionQualityAdjustment));
 
   const blockers = [];
   if (rr < rrFloor) blockers.push(`executable R:R ${rr.toFixed(2)} is below ${rrFloor.toFixed(2)}`);
@@ -70,6 +78,10 @@ export function computeIctTargetHitConfidence({
     confidence,
     targetHitConfidence: confidence,
     confluenceScore: Math.round(confluence),
+    signalQualityConfidence,
+    executionQualityConfidence,
+    executionQualityAdjustment,
+    baseConfidence,
     timingScore: Math.round(timingScore),
     geometryScore: Math.round(geometryScore),
     freshImpulse: Boolean(freshImpulse),
@@ -83,7 +95,7 @@ export function computeIctTargetHitConfidence({
     spreadPips: +spread.toFixed(2),
     eligible: blockers.length === 0,
     blockers,
-    model: 'ict_current_executable_scalp_v2',
+    model: 'ict_signal_execution_quality_v3',
   };
 }
 

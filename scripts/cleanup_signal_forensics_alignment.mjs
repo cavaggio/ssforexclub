@@ -33,4 +33,16 @@ if (!after.includes('buildIctWatchState(analyses, cfg.minConfidence, cfg.minRR)'
 if (after !== before) writeFileSync(path, after, 'utf8');
 console.log(`[SIGNAL_FORENSICS] legacy ICT watch-state implementation removed${after !== before ? ' (patched)' : ''}`);
 
+// The legacy execution-first pass validates the temporary v2 model marker.
+// Normalize only that marker here; the final quality-separation pass restores
+// the committed v3 signal/execution model after all legacy generators finish.
+const targetConfidencePath = resolve(ROOT, 'server/ictTargetConfidence.js');
+const targetBefore = readFileSync(targetConfidencePath, 'utf8');
+const targetPrepared = targetBefore.replace(
+  "model: 'ict_signal_execution_quality_v3'",
+  "model: 'ict_current_executable_scalp_v2'",
+);
+if (targetPrepared !== targetBefore) writeFileSync(targetConfidencePath, targetPrepared, 'utf8');
+console.log(`[SIGNAL_FORENSICS] ICT confidence compatibility marker prepared${targetPrepared !== targetBefore ? ' (patched)' : ''}`);
+
 await import('./apply_execution_first_policy.mjs');
