@@ -2,7 +2,7 @@ import { analyzePprPair, pprConfig } from './pprEngine.js';
 import { evaluatePprExecutionPolicy } from './pprExecutionPolicy.js';
 import { executeTrade } from './oandaTrade.js';
 import { pprRuntimeConfig } from './pprEnv.js';
-import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
+import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 
 /**
  * PPR owns its final refresh and confirmation. The shared OANDA executor is used
@@ -23,22 +23,22 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
   if (fresh.status !== 'qualified' || !fresh.signal) {
     return { allowed: false, reason: `Fresh PPR confirmation failed: ${fresh.reason || fresh.status || 'unknown'}`, fresh, runtime };
   }
-  const studiedSignal = await applyStoredStudyCalibration(fresh.signal, { client, engine: 'ppr' });
-  if (studiedSignal.direction !== originalDirection) {
-    return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${studiedSignal.direction}`, fresh, runtime };
+  const calibratedSignal = await applyCombinedLearningCalibration(fresh.signal, { client, engine: 'ppr' });
+  if (calibratedSignal.direction !== originalDirection) {
+    return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${calibratedSignal.direction}`, fresh, runtime };
   }
 
   const config = pprConfig();
-  if (!(Number(studiedSignal.confidence) >= config.minConfidence)) {
+  if (!(Number(calibratedSignal.confidence) >= config.minConfidence)) {
     return {
       allowed: false,
-      reason: `PPR confidence below threshold after daily-study calibration (${studiedSignal.confidence} < ${config.minConfidence})`,
+      reason: `PPR confidence below threshold after combined market/engine calibration (${calibratedSignal.confidence} < ${config.minConfidence})`,
       fresh,
-      studiedSignal,
+      calibratedSignal,
       runtime,
     };
   }
-  const policy = evaluatePprExecutionPolicy(studiedSignal, {
+  const policy = evaluatePprExecutionPolicy(calibratedSignal, {
     minRR: config.minRR,
     maxEntryDistancePips: config.maxEntryDistancePips,
   });
@@ -50,7 +50,7 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
     `manipulations=${policy.manipulationTypes.join('+')} distance=${policy.distancePips}p rr=${policy.rr} ` +
     `engineMode=${runtime.engineMode} autoExecution=${runtime.aiAutoExecutionEnabled} autoManage=${runtime.aiAutoManageEnabled}`,
   );
-  return { allowed: true, signal: studiedSignal, policy, runtime };
+  return { allowed: true, signal: calibratedSignal, policy, runtime };
 }
 
 export async function executePprTrade(candidate, {

@@ -12,7 +12,8 @@
 
 import { analyzeICTPairs, ictExecConfig } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
-import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';
+import { runDailyMarketStudy } from './dailyMarketStudy.js';
+import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 
 function finiteNumber(value) {
   const parsed = Number(value);
@@ -160,14 +161,14 @@ export async function runAutoAiForUser({
 
   const { analyses: rawAnalyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });
   const analyses = await Promise.all(rawAnalyses.map((item) =>
-    applyStoredStudyCalibration(item, { client, engine: 'ict' })
+    applyCombinedLearningCalibration(item, { client, engine: 'ict' })
   ));
   const qualified = analyses.filter((analysis) => isIctAutoQualified(analysis, cfg));
   const watchState = buildIctWatchState(analyses, cfg.minConfidence, cfg.minRR);
 
   if (!qualified.length) {
     log(`scan complete pairs=${analyses.length} qualified=0 executed=0 skipped=0`);
-    return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], ...watchState };
+    return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], results: analyses, ...watchState };
   }
 
   if (executionAllowed === false) {
@@ -198,7 +199,20 @@ export async function runAutoAiForUser({
       { client, now, autoAi: true, authoritativeAnalysis: a },
     );
     if (res.success) {
-      executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });
+      executed.push({
+        pair: a.pair,
+        direction,
+        tradeId: res.tradeId,
+        fillPrice: res.fillPrice ?? a.entry,
+        units: res.units,
+        stopLoss: res.stopLoss ?? a.stopLoss,
+        takeProfit: res.takeProfit ?? a.target1,
+        confidence: a.confidence,
+        expectedRR: a.rr,
+        holdMinutes: res.holdMinutes,
+        strategy: 'ICT',
+        signal: a,
+      });
       log(`trade executed pair=${a.pair} dir=${direction} id=${res.tradeId}`);
     } else {
       skipped.push({ pair: a.pair, reason: res.reason });
@@ -206,7 +220,7 @@ export async function runAutoAiForUser({
     }
   }
   log(`scan complete pairs=${analyses.length} qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
-  return { scanned: analyses.length, qualified: qualified.length, executed, skipped, ...watchState };
+  return { scanned: analyses.length, qualified: qualified.length, executed, skipped, results: analyses, ...watchState };
 }
 
 

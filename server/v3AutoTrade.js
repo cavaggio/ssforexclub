@@ -1,6 +1,7 @@
 import { scanV3IndependentMarket, refreshIndependentV3CandidateForExecution } from './v3IndependentScanner.js';
 import { executeV3Trade } from './v3TradeExecution.js';
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
+import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 
 /**
  * Autonomous V3 runner for one authenticated OANDA user.
@@ -75,16 +76,19 @@ export async function runAutoV3ForUser({
     log,
   });
 
-  const qualified = (Array.isArray(scan?.qualified) ? scan.qualified : []).map((signal) =>
-    applyScalpMetadata({
-      ...signal,
-      source: 'v3_pure_auto_ai',
-      strategy: 'V3',
-      engine: 'v3',
-      tradeStyle: 'SCALP',
-      scalpOnly: true,
-      selectedLogicType: 'v3_pure',
-      architecture: 'independent_v3_raw_market_data',
+  const qualified = await Promise.all(
+    (Array.isArray(scan?.qualified) ? scan.qualified : []).map(async (signal) => {
+      const calibrated = await applyCombinedLearningCalibration(signal, { client, engine: 'v3' });
+      return applyScalpMetadata({
+        ...calibrated,
+        source: 'v3_pure_auto_ai',
+        strategy: 'V3',
+        engine: 'v3',
+        tradeStyle: 'SCALP',
+        scalpOnly: true,
+        selectedLogicType: 'v3_pure',
+        architecture: 'independent_v3_raw_market_data',
+      });
     }),
   );
 
@@ -108,7 +112,9 @@ export async function runAutoV3ForUser({
       v3Promoted: 0,
       independentV3Qualified: 0,
       qualityWatch: stageWatchCandidates.length,
+      qualifiedCandidates: qualified,
       watchCandidates: stageWatchCandidates,
+      rejected: scan?.rejected || [],
       ...watchState,
     };
   }
@@ -132,7 +138,9 @@ export async function runAutoV3ForUser({
       v3Promoted: qualified.length,
       independentV3Qualified: qualified.length,
       qualityWatch: stageWatchCandidates.length,
+      qualifiedCandidates: qualified,
       watchCandidates: stageWatchCandidates,
+      rejected: scan?.rejected || [],
       ...watchState,
     };
   }
@@ -153,7 +161,9 @@ export async function runAutoV3ForUser({
       v3Promoted: qualified.length,
       independentV3Qualified: qualified.length,
       qualityWatch: stageWatchCandidates.length,
+      qualifiedCandidates: qualified,
       watchCandidates: stageWatchCandidates,
+      rejected: scan?.rejected || [],
       ...watchState,
     };
   }
@@ -168,9 +178,12 @@ export async function runAutoV3ForUser({
       log(`execution skipped pair=${signal.pair} dir=${signal.direction} reason="${refreshed.reason}"`);
       continue;
     }
-    signal = applyScalpMetadata({
+    const authoritativeCandidate = await applyCombinedLearningCalibration({
       ...signal,
       ...refreshed.candidate,
+    }, { client, engine: 'v3' });
+    signal = applyScalpMetadata({
+      ...authoritativeCandidate,
       source: 'v3_pure_auto_ai',
       strategy: 'V3',
       engine: 'v3',
@@ -200,7 +213,7 @@ export async function runAutoV3ForUser({
         source: signal.source,
         strategy: 'V3',
         architecture: 'independent_v3_raw_market_data',
-            signal,
+        signal,
       });
       log(`trade executed pair=${signal.pair} dir=${signal.direction} id=${result.tradeId}`);
     } else {
@@ -225,8 +238,9 @@ export async function runAutoV3ForUser({
     v3Promoted: qualified.length,
     independentV3Qualified: qualified.length,
     qualityWatch: stageWatchCandidates.length,
+    qualifiedCandidates: qualified,
     watchCandidates: stageWatchCandidates,
+    rejected: scan?.rejected || [],
     ...watchState,
   };
 }
-

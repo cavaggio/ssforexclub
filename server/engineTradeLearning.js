@@ -1,0 +1,248 @@
+import { createClient } from '@supabase/supabase-js';
+import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
+import {
+  ENGINE_TRADE_LEARNING_HARD_GATES,
+  applyBoundedConfidence,
+  computeEngineTradeAdjustment,
+} from './engineTradeLearningCore.js';
+
+const profileCache = new Map();
+let supabaseClient;
+let warnedMissingSchema = false;
+
+function db() {
+  if (supabaseClient !== undefined) return supabaseClient;
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  supabaseClient = url && key
+    ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+    : null;
+  return supabaseClient;
+}
+
+function finiteNumber(value, fallback = null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeEngine(value) {
+  const engine = String(value || '').trim().toLowerCase();
+  return ['ict', 'ppr', 'v3'].includes(engine) ? engine : null;
+}
+
+function normalizePair(value) {
+  const pair = String(value || '').trim().replace('/', '_').toUpperCase();
+  return /^[A-Z]{3}_[A-Z]{3}$/.test(pair) ? pair : null;
+}
+
+function accountIdOf(client) {
+  return String(client?.accountId || client?.accountID || client?.account_id || 'default');
+}
+
+function cacheTtlMs() {
+  const configured = finiteNumber(process.env.ENGINE_TRADE_LEARNING_CACHE_MS, 300_000);
+  return Math.max(30_000, Math.min(3_600_000, configured));
+}
+
+function learningMode() {
+  const configured = String(process.env.ENGINE_TRADE_LEARNING_MODE || 'limited').trim().toLowerCase();
+  return ['off', 'shadow', 'limited', 'active'].includes(configured) ? configured : 'limited';
+}
+
+function optionsFromEnv() {
+  return {
+    mode: learningMode(),
+    displayMinimum: Math.max(5, finiteNumber(process.env.ENGINE_TRADE_LEARNING_DISPLAY_MIN, 10)),
+    liveMinimum: Math.max(20, finiteNumber(process.env.ENGINE_TRADE_LEARNING_LIVE_MIN, 30)),
+    fullWeightMinimum: Math.max(50, finiteNumber(process.env.ENGINE_TRADE_LEARNING_FULL_WEIGHT_MIN, 100)),
+    segmentMinimum: Math.max(5, finiteNumber(process.env.ENGINE_TRADE_LEARNING_SEGMENT_MIN, 12)),
+    confirmationMinimum: Math.max(5, finiteNumber(process.env.ENGINE_TRADE_LEARNING_CONFIRMATION_MIN, 15)),
+    maxAdjustment: Math.min(3, Math.max(0, finiteNumber(process.env.ENGINE_TRADE_LEARNING_MAX_ADJUSTMENT, 3))),
+  };
+}
+
+function schemaMissing(error) {
+  const message = String(error?.message || error || '');
+  const code = String(error?.code || '');
+  return ['42P01', '42703', 'PGRST205', 'PGRST204'].includes(code) ||
+    /engine_executed_|engine_learning_adjustment_audit/i.test(message);
+}
+
+async function loadRows(view, accountId, engine, pair) {
+  const supabase = db();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from(view)
+    .select('*')
+    .eq('broker_account_id', accountId)
+    .eq('engine', engine)
+    .eq('pair', pair)
+    .eq('horizon_minutes', 60);
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+export async function loadEngineTradeProfile({ client, engine, pair, force = false } = {}) {
+  const normalizedEngine = normalizeEngine(engine);
+  const normalizedPair = normalizePair(pair);
+  const accountId = accountIdOf(client);
+  if (!normalizedEngine || !normalizedPair || !db()) return null;
+  const key = `${accountId}:${normalizedEngine}:${normalizedPair}`;
+  const cached = profileCache.get(key);
+  if (!force && cached && Date.now() - cached.loadedAt < cacheTtlMs()) return cached.profile;
+
+  try {
+    const [pairRows, contextStats, confirmationStats, qualityRows] = await Promise.all([
+      loadRows('engine_executed_pair_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_executed_context_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_executed_confirmation_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_execution_quality_stats', accountId, normalizedEngine, normalizedPair),
+    ]);
+    const profile = {
+      accountId,
+      engine: normalizedEngine,
+      pair: normalizedPair,
+      pairSummary: pairRows[0] || null,
+      contextStats,
+      confirmationStats,
+      executionQuality: qualityRows[0] || null,
+      loadedAt: new Date().toISOString(),
+    };
+    profileCache.set(key, { loadedAt: Date.now(), profile });
+    return profile;
+  } catch (error) {
+    if (schemaMissing(error)) {
+      if (!warnedMissingSchema) {
+        warnedMissingSchema = true;
+        console.warn('[ENGINE_LEARNING] migration 20260730110000_engine_trade_learning.sql is required; market study remains active');
+      }
+      return null;
+    }
+    console.warn(`[ENGINE_LEARNING] profile read failed ${normalizedEngine}/${normalizedPair}: ${error?.message || String(error)}`);
+    return null;
+  }
+}
+
+function compactCandidate(candidate = {}) {
+  return {
+    pair: candidate.pair || candidate.instrument || candidate.symbol || null,
+    direction: candidate.direction || candidate.side || candidate.signal || null,
+    session: candidate.session?.name || candidate.session || null,
+    confidence: finiteNumber(candidate.confidence ?? candidate.score),
+    rr: finiteNumber(candidate.expectedRR ?? candidate.rr ?? candidate.riskReward),
+    spreadPips: finiteNumber(candidate.spreadPips ?? candidate.spread),
+    marketRegime: candidate.marketRegime?.regime || candidate.marketRegime || null,
+    volatility: candidate.volatilityState || candidate.volatility || null,
+    dailyDirection: candidate.dailyDirection || candidate.dailyStudyContext?.dayDirection || null,
+    h4Direction: candidate.h4Direction || null,
+  };
+}
+
+async function persistAudit({ client, engine, pair, candidate, confidence, engineResult }) {
+  const supabase = db();
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('engine_learning_adjustment_audit').insert({
+      broker_account_id: accountIdOf(client),
+      environment: String(client?.environment || 'unknown'),
+      engine,
+      pair,
+      direction: String(candidate?.direction || candidate?.side || candidate?.signal || '') || null,
+      mode: engineResult.mode,
+      recommendation_stage: engineResult.stage,
+      sample_size: engineResult.sampleSize,
+      original_confidence: confidence.originalConfidence,
+      market_study_adjustment: confidence.marketStudyAdjustment,
+      engine_trade_adjustment: confidence.engineTradeAdjustment,
+      combined_adjustment: confidence.combinedAdjustment,
+      final_confidence: confidence.finalConfidence,
+      component_adjustments: engineResult.components,
+      reasons: engineResult.reasons,
+      hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+      candidate_snapshot: compactCandidate(candidate),
+    });
+    if (error && !schemaMissing(error)) throw error;
+  } catch (error) {
+    if (!schemaMissing(error)) {
+      console.warn(`[ENGINE_LEARNING] audit write failed ${engine}/${pair}: ${error?.message || String(error)}`);
+    }
+  }
+}
+
+/**
+ * Applies the existing Daily/4H market study first, then applies an independent
+ * engine-specific adjustment learned only from that engine's completed executed
+ * trades. The combined adjustment is capped at +/-5 confidence points and does
+ * not bypass or alter any hard execution/risk gate.
+ */
+export async function applyCombinedLearningCalibration(candidate = {}, { client, engine } = {}) {
+  const normalizedEngine = normalizeEngine(engine || candidate.engine || candidate.strategy);
+  const pair = normalizePair(candidate.pair || candidate.instrument || candidate.symbol);
+  if (!normalizedEngine || !pair) return candidate;
+
+  const originalConfidence = finiteNumber(candidate.confidence ?? candidate.score, null);
+  const studiedCandidate = await applyStoredStudyCalibration(candidate, { client, engine: normalizedEngine });
+  const marketStudyAdjustment = finiteNumber(studiedCandidate?.dailyStudyContext?.adjustment, 0);
+  const profile = await loadEngineTradeProfile({ client, engine: normalizedEngine, pair });
+  const engineResult = computeEngineTradeAdjustment(
+    { ...studiedCandidate, engine: normalizedEngine, pair },
+    profile || { engine: normalizedEngine, pair, pairSummary: { outcomes: 0 } },
+    optionsFromEnv(),
+  );
+  const confidence = applyBoundedConfidence({
+    originalConfidence,
+    marketStudyAdjustment,
+    engineTradeAdjustment: engineResult.appliedAdjustment,
+    maxCombinedAdjustment: 5,
+  });
+
+  const learningContext = {
+    engine: normalizedEngine,
+    pair,
+    mode: engineResult.mode,
+    stage: engineResult.stage,
+    sampleSize: engineResult.sampleSize,
+    marketStudyAdjustment: confidence.marketStudyAdjustment,
+    engineTradeAdjustment: confidence.engineTradeAdjustment,
+    rawEngineTradeAdjustment: engineResult.rawAdjustment,
+    combinedAdjustment: confidence.combinedAdjustment,
+    originalConfidence: confidence.originalConfidence,
+    finalConfidence: confidence.finalConfidence,
+    components: engineResult.components,
+    reasons: engineResult.reasons,
+    hardGatesPreserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+    scope: 'broker_account_engine_pair',
+  };
+
+  const calibrated = {
+    ...studiedCandidate,
+    baseConfidence: originalConfidence,
+    adjustedConfidence: confidence.finalConfidence,
+    combinedLearningContext: learningContext,
+  };
+  if (confidence.finalConfidence != null) {
+    calibrated.confidence = confidence.finalConfidence;
+    if (finiteNumber(studiedCandidate.tpHitConfidence, null) != null) {
+      calibrated.tpHitConfidence = confidence.finalConfidence;
+    }
+    if (finiteNumber(studiedCandidate.entryQualityConfidence, null) != null) {
+      calibrated.entryQualityConfidence = confidence.finalConfidence;
+    }
+  }
+
+  await persistAudit({
+    client,
+    engine: normalizedEngine,
+    pair,
+    candidate: studiedCandidate,
+    confidence,
+    engineResult,
+  });
+  return calibrated;
+}
+
+export function __resetEngineTradeLearningForTests() {
+  profileCache.clear();
+  supabaseClient = undefined;
+  warnedMissingSchema = false;
+}

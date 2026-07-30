@@ -1,0 +1,41 @@
+name: Engine trade learning validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/engineTradeLearning*'
+      - 'scripts/apply_engine_trade_learning*'
+      - 'scripts/runtime_execution_start.mjs'
+      - 'server/ictAutoTrade.js'
+      - 'server/ictExecution.js'
+      - 'server/pprAutoTrade.js'
+      - 'server/pprExecution.js'
+      - 'server/v3AutoTrade.js'
+      - 'supabase/migrations/20260730110000_engine_trade_learning.sql'
+      - 'package.json'
+      - '.github/workflows/engine-trade-learning-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  engine-learning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Apply engine integration patch
+        run: node scripts/apply_engine_trade_learning.mjs
+      - name: Validate engine learning core and patch idempotence
+        run: node --test server/engineTradeLearningCore.test.js scripts/apply_engine_trade_learning.test.mjs
+      - name: Validate market-study and signal-learning regression suites
+        run: node --test server/dailyMarketStudy.test.js web/lib/signalLearningCore.test.js
+      - name: Validate patched engine syntax
+        run: node --check server/ictAutoTrade.js && node --check server/ictExecution.js && node --check server/pprAutoTrade.js && node --check server/pprExecution.js && node --check server/v3AutoTrade.js

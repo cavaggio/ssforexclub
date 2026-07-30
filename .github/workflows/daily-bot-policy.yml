@@ -75,7 +75,7 @@ jobs:
           grep -F 'const ictExecutionEnabled = isIctExecutionEnabled();' server/index.js
           grep -F 'Timing diagnostics remain visible but do not veto a valid current-price scalp.' server/ictEngine.js
           grep -F 'authoritativeAnalysis = null' server/ictExecution.js
-          grep -F 'analysis = authoritativeAnalysis || await applyStoredStudyCalibration' server/ictExecution.js
+          grep -F 'analysis = authoritativeAnalysis || await applyCombinedLearningCalibration' server/ictExecution.js
       - name: Syntax check policy modules
         run: |
           node --check scripts/apply_daily_ict_policy.mjs
@@ -84,14 +84,19 @@ jobs:
           node --check scripts/apply_signal_forensics_alignment_v3.mjs
           node --check scripts/apply_execution_first_policy.mjs
           node --check scripts/cleanup_signal_forensics_alignment.mjs
+          node --check scripts/prepare_engine_trade_learning_compat.mjs
+          node --check scripts/apply_engine_trade_learning.mjs
           node --check server/autoAiWindow.js
           node --check server/autoAiRouter.js
           node --check server/riskManager.js
           node --check server/dailyMarketStudy.js
+          node --check server/engineTradeLearning.js
+          node --check server/engineTradeLearningCore.js
           node --check server/ictAutoScheduler.js
           node --check server/ictAutoTrade.js
           node --check server/pprAutoTrade.js
           node --check server/pprExecution.js
+          node --check server/v3AutoTrade.js
           node --check server/ictExecution.js
           node --check server/oandaTrade.js
       - name: Run focused policy tests
@@ -104,6 +109,8 @@ jobs:
             server/ictAutoScheduler.test.js \
             server/ictWatchlist.test.js \
             server/dailyMarketStudy.test.js \
+            server/engineTradeLearningCore.test.js \
+            scripts/apply_engine_trade_learning.test.mjs \
             server/riskManager.test.js \
             server/signalForensicsAlignment.contract.test.js \
             >/tmp/daily-policy-tests.log 2>&1
