@@ -33,8 +33,11 @@ export function computeIctTargetHitConfidence({
   const age = finite(triggerAgeBars);
   const drift = Math.max(0, finite(entryDriftAtr, 99));
   const consumed = clamp(finite(rewardConsumedFraction, 0), 0, 1.5);
-  const rr = Math.max(0, finite(actualRR, 0));
-  const rrFloor = Math.max(1.5, finite(minimumRR, 1.5));
+  const rrRaw = Math.max(0, finite(actualRR, 0));
+  const rrFloorRaw = Math.max(1.5, finite(minimumRR, 1.5));
+  // Normalize both values to the displayed two-decimal contract before gating.
+  const rr = Math.round((rrRaw + Number.EPSILON) * 100) / 100;
+  const rrFloor = Math.round((rrFloorRaw + Number.EPSILON) * 100) / 100;
   const spread = Math.max(0, finite(spreadPips, 0));
   const spreadLimit = Math.max(0.1, finite(maxSpreadPips, 3.5));
 
