@@ -10,7 +10,7 @@
     "dev": "vite",
     "dev:server": "node server/index.js",
     "dev:full": "concurrently \"npm run dev:server\" \"npm run dev\"",
-    "prebuild": "npm run apply:v3-entry && npm run apply:account-isolation",
+    "prebuild": "npm run apply:v3-entry",
     "build": "vite build",
     "preview": "vite preview",
     "prestart": "npm run apply:v3-entry && npm run apply:account-isolation",
