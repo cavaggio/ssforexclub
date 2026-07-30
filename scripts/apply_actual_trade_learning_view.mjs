@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applySignalExecutionQualitySeparation } from './apply_signal_execution_quality_separation.mjs';
@@ -33,9 +33,13 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   if (after !== before) writeFileSync(path, after, 'utf8');
   console.log(`[ACTUAL_TRADE_LEARNING] verified server/engineTradeLearning.js${after !== before ? ' (patched)' : ''}`);
 
-  // Apply signal/execution quality separation only after the actual-trade view
-  // owns pair expectancy, so thesis confidence never absorbs entry/fill drag.
-  applySignalExecutionQualitySeparation(root);
+  // Minimal unit-test fixtures intentionally contain only engineTradeLearning.js.
+  // Production/runtime trees contain both files and always receive the patch.
+  const targetConfidencePath = resolve(root, 'server/ictTargetConfidence.js');
+  const qualityModulePath = resolve(root, 'server/signalExecutionQuality.js');
+  if (existsSync(targetConfidencePath) && existsSync(qualityModulePath)) {
+    applySignalExecutionQualitySeparation(root);
+  }
   return { changed: after !== before, source: after };
 }
 
