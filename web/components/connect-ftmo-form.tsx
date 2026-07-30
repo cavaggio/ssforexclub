@@ -7,6 +7,8 @@ async function wrapper(_prev: FtmoActionResult | null, formData: FormData): Prom
   return saveFtmoConnectionAction(formData);
 }
 
+type FtmoEnvironment = 'free_trial' | 'challenge' | 'verification' | 'funded';
+
 const setupSteps = [
   {
     title: 'MT5 Login Number',
@@ -47,7 +49,7 @@ const setupSteps = [
 
 export function ConnectFtmoForm() {
   const [state, formAction, pending] = useActionState(wrapper, null);
-  const [environment, setEnvironment] = useState<'challenge' | 'verification' | 'funded'>('challenge');
+  const [environment, setEnvironment] = useState<FtmoEnvironment>('free_trial');
 
   return (
     <>
@@ -55,8 +57,7 @@ export function ConnectFtmoForm() {
         <h3 style={{ margin: 0, fontSize: 16 }}>Connect FTMO MetaTrader 5 bridge</h3>
 
         <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, lineHeight: 1.6 }}>
-          These encrypted credentials authorize Signal Stack to your private MT5 bridge. Keep the FTMO master trading
-          password only on the Windows VPS bridge; do not enter the investor/read-only password here.
+          Provider: <strong style={{ color: 'var(--text)' }}>MetaTrader 5 Bridge</strong>. These encrypted credentials authorize Signal Stack to your private MT5 bridge. Keep the FTMO master trading password only on the Windows VPS bridge; do not enter the investor/read-only password here.
         </p>
 
         <form action={formAction} style={grid}>
@@ -64,12 +65,13 @@ export function ConnectFtmoForm() {
             <select
               name="environment"
               value={environment}
-              onChange={(e) => setEnvironment(e.target.value as 'challenge' | 'verification' | 'funded')}
+              onChange={(e) => setEnvironment(e.target.value as FtmoEnvironment)}
               style={input}
             >
-              <option value="challenge">Challenge</option>
+              <option value="free_trial">FTMO Free Trial</option>
+              <option value="challenge">FTMO Challenge</option>
               <option value="verification">Verification</option>
-              <option value="funded">Funded</option>
+              <option value="funded">FTMO Account / Funded</option>
             </select>
           </Field>
 
@@ -98,8 +100,7 @@ export function ConnectFtmoForm() {
           </Field>
 
           <div style={{ gridColumn: '1 / -1', ...noteBox }}>
-            The FTMO master password, MetaTrader terminal path, and the same bridge key/secret are configured in the
-            bridge service&apos;s Windows VPS <code>.env</code> file.
+            The FTMO master password, MetaTrader terminal path, and the same bridge key/secret are configured in the bridge service&apos;s Windows VPS <code>.env</code> file. cTrader credentials are not accepted by this connector.
           </div>
 
           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
@@ -149,108 +150,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-const panel: React.CSSProperties = {
-  background: 'var(--panel)',
-  border: '1px solid var(--border)',
-  borderRadius: 10,
-  padding: 24,
-};
-
-const grid: React.CSSProperties = {
-  marginTop: 16,
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-  gap: 12,
-};
-
-const guideGrid: React.CSSProperties = {
-  marginTop: 16,
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
-  gap: 12,
-};
-
-const guideCard: React.CSSProperties = {
-  background: 'var(--bg)',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  padding: 14,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 7,
-};
-
-const sourceLabel: React.CSSProperties = {
-  color: 'var(--accent)',
-  fontSize: 10,
-  fontWeight: 700,
-  textTransform: 'uppercase',
-  letterSpacing: '0.8px',
-};
-
-const adminBox: React.CSSProperties = {
-  marginTop: 14,
-  padding: '12px 14px',
-  background: '#33270d33',
-  border: '1px solid #5c481a',
-  borderRadius: 8,
-};
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--muted)',
-  textTransform: 'uppercase',
-  letterSpacing: '1px',
-  fontWeight: 700,
-};
-
-const input: React.CSSProperties = {
-  padding: '10px 12px',
-  background: 'var(--bg)',
-  border: '1px solid var(--border)',
-  color: 'var(--text)',
-  borderRadius: 6,
-  fontFamily: 'inherit',
-  fontSize: 13,
-};
-
-const noteBox: React.CSSProperties = {
-  padding: '10px 14px',
-  background: 'var(--bg)',
-  border: '1px solid var(--border)',
-  borderRadius: 6,
-  color: 'var(--muted)',
-  fontSize: 12,
-  lineHeight: 1.55,
-};
-
-const btn: React.CSSProperties = {
-  padding: '10px 24px',
-  background: 'var(--accent)',
-  color: '#001a33',
-  border: 'none',
-  borderRadius: 6,
-  fontFamily: 'inherit',
-  fontWeight: 700,
-  fontSize: 13,
-};
-
-const errBox: React.CSSProperties = {
-  marginTop: 12,
-  padding: '10px 14px',
-  background: '#320d0d',
-  border: '1px solid #5c1a1a',
-  color: 'var(--bad)',
-  borderRadius: 6,
-  fontSize: 13,
-};
-
-const okBox: React.CSSProperties = {
-  marginTop: 12,
-  padding: '10px 14px',
-  background: '#0d3320',
-  border: '1px solid #1a5c38',
-  color: 'var(--good)',
-  borderRadius: 6,
-  fontSize: 13,
-};
+const panel: React.CSSProperties = { background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24 };
+const grid: React.CSSProperties = { marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 };
+const guideGrid: React.CSSProperties = { marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 12 };
+const guideCard: React.CSSProperties = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 14, display: 'flex', flexDirection: 'column', gap: 7 };
+const sourceLabel: React.CSSProperties = { color: 'var(--accent)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px' };
+const adminBox: React.CSSProperties = { marginTop: 14, padding: '12px 14px', background: '#33270d33', border: '1px solid #5c481a', borderRadius: 8 };
+const labelStyle: React.CSSProperties = { fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 };
+const input: React.CSSProperties = { padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, fontFamily: 'inherit', fontSize: 13 };
+const noteBox: React.CSSProperties = { padding: '10px 14px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 };
+const btn: React.CSSProperties = { padding: '10px 24px', background: 'var(--accent)', color: '#001a33', border: 'none', borderRadius: 6, fontFamily: 'inherit', fontWeight: 700, fontSize: 13 };
+const errBox: React.CSSProperties = { marginTop: 12, padding: '10px 14px', background: '#320d0d', border: '1px solid #5c1a1a', color: 'var(--bad)', borderRadius: 6, fontSize: 13 };
+const okBox: React.CSSProperties = { marginTop: 12, padding: '10px 14px', background: '#0d3320', border: '1px solid #1a5c38', color: 'var(--good)', borderRadius: 6, fontSize: 13 };
