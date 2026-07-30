@@ -6,11 +6,6 @@ function patchFile(path, transform) {
   if (updated !== original) fs.writeFileSync(path, updated);
 }
 
-patchFile('server/ftmoClient.js', (source) => {
-  if (source.includes('export async function getFtmoSymbolSpec')) return source;
-  return `${source.trimEnd()}\n\nexport async function getFtmoSymbolSpec(client, symbol) {\n  assertFtmoClient(client);\n  const normalized = clean(symbol);\n  if (!normalized) throw new Error('FTMO symbol is required');\n  return callFtmoBridge(client, '/v1/symbols/spec', { symbol: normalized });\n}\n\nexport async function getFtmoCandles(client, request = {}) {\n  assertFtmoClient(client);\n  const symbol = clean(request.symbol);\n  if (!symbol) throw new Error('FTMO candle symbol is required');\n  return callFtmoBridge(client, '/v1/market/candles', { request: { ...request, symbol } });\n}\n`;
-});
-
 patchFile('server/index.js', (source) => {
   let updated = source;
   if (!updated.includes("import ftmoIndicesRouter from './ftmoIndicesRouter.js';")) {
