@@ -6,23 +6,6 @@ function patchFile(path, transform) {
   if (updated !== original) fs.writeFileSync(path, updated);
 }
 
-patchFile('src/App.tsx', (source) => {
-  let updated = source;
-  if (!updated.includes("import { FtmoConnectionTab } from './components/FtmoConnectionTab';")) {
-    const anchor = "import ForexSignalStackTab from './components/ForexSignalStackTab';";
-    updated = updated.replace(anchor, `${anchor}\nimport { FtmoConnectionTab } from './components/FtmoConnectionTab';`);
-  }
-  updated = updated.replace(
-    'const TABS=["Dashboard","Signals","Institutions","GEX+ETF","Playbook","Risk","AI-Fidelity","AI-Alpaca","💹 Forex"];',
-    'const TABS=["Dashboard","Signals","Institutions","GEX+ETF","Playbook","Risk","AI-Fidelity","AI-Alpaca","💹 Forex","FTMO"];',
-  );
-  if (!updated.includes('activeTab==="FTMO"')) {
-    const anchor = '      {activeTab==="AI-Fidelity"&&<div className="fade-in"';
-    updated = updated.replace(anchor, `      {activeTab==="FTMO" && (\n        <div className="fade-in">\n          <FtmoConnectionTab />\n        </div>\n      )}\n${anchor}`);
-  }
-  return updated;
-});
-
 patchFile('server/index.js', (source) => {
   let updated = source;
   if (!updated.includes("from './ftmoConnectionStore.js'")) {
