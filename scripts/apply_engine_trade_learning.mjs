@@ -10,14 +10,21 @@ function replaceRequired(source, before, after, label) {
   return source.replace(before, after);
 }
 
-function patchIct(source) {
-  let out = source;
-  out = replaceRequired(
-    out,
-    "import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';",
-    "import { runDailyMarketStudy } from './dailyMarketStudy.js';\nimport { applyCombinedLearningCalibration } from './engineTradeLearning.js';",
-    'ICT learning import',
+function replaceCalibrationImport(source, label) {
+  if (source.includes("import { applyCombinedLearningCalibration } from './engineTradeLearning.js';")) return source;
+  if (!source.includes("import { applyStoredStudyCalibration")) {
+    throw new Error(`[ENGINE_LEARNING_PATCH] missing ${label} calibration import`);
+  }
+  return source.replace(
+    /import \{ applyStoredStudyCalibration(?:,\s*runDailyMarketStudy)? \} from '\.\/dailyMarketStudy\.js';/,
+    (match) => match.includes('runDailyMarketStudy')
+      ? "import { runDailyMarketStudy } from './dailyMarketStudy.js';\nimport { applyCombinedLearningCalibration } from './engineTradeLearning.js';"
+      : "import { applyCombinedLearningCalibration } from './engineTradeLearning.js';",
   );
+}
+
+function patchIct(source) {
+  let out = replaceCalibrationImport(source, 'ICT');
   out = out.replaceAll(
     "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
     "applyCombinedLearningCalibration(item, { client, engine: 'ict' })",
@@ -53,20 +60,23 @@ function patchIct(source) {
     "return { scanned: analyses.length, qualified: qualified.length, executed, skipped, results: analyses, ...watchState };",
     'ICT completed-scan learning evidence',
   );
-  if (!out.includes('applyCombinedLearningCalibration') || (!out.includes('combinedLearningContext') && !out.includes('results: analyses'))) {
+  if (!out.includes('applyCombinedLearningCalibration') || !out.includes('results: analyses')) {
     throw new Error('[ENGINE_LEARNING_PATCH] ICT markers incomplete');
   }
   return out;
 }
 
+function patchIctExecution(source) {
+  let out = replaceCalibrationImport(source, 'ICT execution');
+  out = out.replaceAll('applyStoredStudyCalibration(', 'applyCombinedLearningCalibration(');
+  if (!out.includes("applyCombinedLearningCalibration(await analyze(pair), { client, engine: 'ict' })")) {
+    throw new Error('[ENGINE_LEARNING_PATCH] ICT authoritative execution calibration missing');
+  }
+  return out;
+}
+
 function patchPpr(source) {
-  let out = source;
-  out = replaceRequired(
-    out,
-    "import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';",
-    "import { runDailyMarketStudy } from './dailyMarketStudy.js';\nimport { applyCombinedLearningCalibration } from './engineTradeLearning.js';",
-    'PPR learning import',
-  );
+  let out = replaceCalibrationImport(source, 'PPR');
   out = out.replaceAll(
     "applyStoredStudyCalibration(item, { client, engine: 'ppr' })",
     "applyCombinedLearningCalibration(item, { client, engine: 'ppr' })",
@@ -83,6 +93,17 @@ function patchPpr(source) {
   }
   if (!out.includes('applyCombinedLearningCalibration') || !out.includes('qualifiedCandidates: qualified')) {
     throw new Error('[ENGINE_LEARNING_PATCH] PPR markers incomplete');
+  }
+  return out;
+}
+
+function patchPprExecution(source) {
+  let out = replaceCalibrationImport(source, 'PPR execution');
+  out = out.replaceAll('applyStoredStudyCalibration(', 'applyCombinedLearningCalibration(');
+  out = out.replaceAll('studiedSignal', 'calibratedSignal');
+  out = out.replaceAll('daily-study calibration', 'combined market/engine calibration');
+  if (!out.includes("applyCombinedLearningCalibration(fresh.signal, { client, engine: 'ppr' })")) {
+    throw new Error('[ENGINE_LEARNING_PATCH] PPR authoritative execution calibration missing');
   }
   return out;
 }
@@ -126,6 +147,19 @@ function patchV3(source) {
   );`,
     'V3 qualified calibration block',
   );
+  out = replaceRequired(
+    out,
+    `    signal = applyScalpMetadata({
+      ...signal,
+      ...refreshed.candidate,`,
+    `    const authoritativeCandidate = await applyCombinedLearningCalibration({
+      ...signal,
+      ...refreshed.candidate,
+    }, { client, engine: 'v3' });
+    signal = applyScalpMetadata({
+      ...authoritativeCandidate,`,
+    'V3 authoritative execution calibration',
+  );
   if (!out.includes('qualifiedCandidates: qualified,')) {
     out = out.replaceAll(
       '      watchCandidates: stageWatchCandidates,',
@@ -136,7 +170,7 @@ function patchV3(source) {
       '    qualifiedCandidates: qualified,\n    watchCandidates: stageWatchCandidates,\n    rejected: scan?.rejected || [],',
     );
   }
-  if (!out.includes('applyCombinedLearningCalibration') || !out.includes('qualifiedCandidates: qualified')) {
+  if (!out.includes('applyCombinedLearningCalibration') || !out.includes('authoritativeCandidate') || !out.includes('qualifiedCandidates: qualified')) {
     throw new Error('[ENGINE_LEARNING_PATCH] V3 markers incomplete');
   }
   return out;
@@ -144,7 +178,9 @@ function patchV3(source) {
 
 const PATCHES = [
   ['server/ictAutoTrade.js', patchIct],
+  ['server/ictExecution.js', patchIctExecution],
   ['server/pprAutoTrade.js', patchPpr],
+  ['server/pprExecution.js', patchPprExecution],
   ['server/v3AutoTrade.js', patchV3],
 ];
 
