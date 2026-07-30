@@ -3,6 +3,7 @@ import { buildFtmoClient } from './ftmoClient.js';
 import { analyzeFtmoIndexSetup } from './ftmoIndicesEngine.js';
 import { executeFtmoIndexSetup } from './ftmoIndicesExecution.js';
 import { ftmoIndicesConfig } from './ftmoIndicesConfig.js';
+import { getFtmoCredentials } from './ftmoConnectionStore.js';
 
 const router = express.Router();
 
@@ -32,12 +33,29 @@ router.post('/scan', async (req, res) => {
 
 router.post('/execute', async (req, res) => {
   try {
-    const credentials = req.body?.credentials || null;
+    if (req.body?.credentials) {
+      return res.status(400).json({ ok: false, error: 'Client-supplied FTMO credentials are not accepted' });
+    }
+
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: 'Authenticated client login required' });
+    }
+
+    const credentials = await getFtmoCredentials(userId);
+    if (!credentials) {
+      return res.status(409).json({
+        ok: false,
+        error: 'FTMO connection required for this client',
+        code: 'FTMO_CONNECTION_REQUIRED',
+      });
+    }
+
     const client = buildFtmoClient({ credentials });
     const result = await executeFtmoIndexSetup({ client, setupInput: req.body?.setup || req.body || {} });
-    res.status(result.ok ? 200 : 409).json(result);
+    return res.status(result.ok ? 200 : 409).json(result);
   } catch (error) {
-    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    return res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 
