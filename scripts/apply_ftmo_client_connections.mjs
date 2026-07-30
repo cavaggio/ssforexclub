@@ -42,3 +42,18 @@ patchFile('server/index.js', (source) => {
   }
   return updated;
 });
+
+patchFile('server/ftmoIndicesRouter.js', (source) => {
+  let updated = source;
+
+  if (!updated.includes("import { getFtmoCredentials } from './ftmoConnectionStore.js';")) {
+    const anchor = "import { ftmoIndicesConfig } from './ftmoIndicesConfig.js';";
+    updated = updated.replace(anchor, `${anchor}\nimport { getFtmoCredentials } from './ftmoConnectionStore.js';`);
+  }
+
+  const insecureBlock = `    const credentials = req.body?.credentials || null;\n    const client = buildFtmoClient({ credentials });`;
+  const secureBlock = `    const userId = req.user?.userId;\n    if (!userId) {\n      return res.status(401).json({ ok: false, error: 'Authenticated client is required' });\n    }\n\n    if (req.body?.credentials) {\n      return res.status(400).json({\n        ok: false,\n        error: 'FTMO credentials must not be supplied in the execution request',\n      });\n    }\n\n    const credentials = await getFtmoCredentials(userId);\n    if (!credentials) {\n      return res.status(409).json({\n        ok: false,\n        error: 'No FTMO connection is configured for this client login',\n        code: 'FTMO_CONNECTION_REQUIRED',\n      });\n    }\n\n    const client = buildFtmoClient({ credentials });`;
+
+  updated = updated.replace(insecureBlock, secureBlock);
+  return updated;
+});
