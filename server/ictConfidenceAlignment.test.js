@@ -30,10 +30,12 @@ test('current executable ICT scalp can clear the target-hit floor', () => {
 
   assert.equal(result.eligible, true);
   assert.ok(result.confidence >= 93);
-  assert.equal(result.model, 'ict_current_executable_scalp_v2');
+  assert.equal(result.signalQualityConfidence, 95);
+  assert.ok(result.executionQualityConfidence >= 90);
+  assert.equal(result.model, 'ict_signal_execution_quality_v3');
 });
 
-test('missing trigger age remains a diagnostic and does not veto valid current geometry', () => {
+test('missing trigger age remains a diagnostic and applies only a bounded penalty', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
     freshImpulse: true,
@@ -48,10 +50,12 @@ test('missing trigger age remains a diagnostic and does not veto valid current g
   assert.equal(result.eligible, true);
   assert.equal(result.triggerAgeBars, null);
   assert.ok(result.timingScore < 100);
+  assert.ok(result.executionQualityAdjustment <= 0);
+  assert.ok(result.executionQualityAdjustment >= -3);
   assert.ok(!result.blockers.some((reason) => reason.includes('not timestamped')));
 });
 
-test('late and consumed metrics remain visible but do not override current executable scalp geometry', () => {
+test('late and consumed metrics reduce execution quality without becoming a new hard gate', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
     freshImpulse: true,
@@ -69,6 +73,10 @@ test('late and consumed metrics remain visible but do not override current execu
   assert.equal(result.entryDriftAtr, 0.7);
   assert.equal(result.rewardConsumedFraction, 0.45);
   assert.equal(result.priceInsideEntryZone, false);
+  assert.equal(result.signalQualityConfidence, 100);
+  assert.ok(result.executionQualityConfidence < result.signalQualityConfidence);
+  assert.ok(result.executionQualityAdjustment < 0);
+  assert.ok(result.executionQualityAdjustment >= -3);
   assert.ok(!result.blockers.some((reason) => /bars old|consumed|drifted|entry zone/i.test(reason)));
 });
 
@@ -129,7 +137,7 @@ test('ICT TP and SL probabilities are decimal ratios expected by the dashboard',
   });
 });
 
-test('generated runtime source uses one current-executable ICT model across scan, fill, open trade, and reassess', () => {
+test('generated runtime source uses separated signal and execution quality across scan and fill', () => {
   const engine = fs.readFileSync(path.join(ROOT, 'server', 'ictEngine.js'), 'utf8');
   const targetConfidence = fs.readFileSync(path.join(ROOT, 'server', 'ictTargetConfidence.js'), 'utf8');
   const execution = fs.readFileSync(path.join(ROOT, 'server', 'ictExecution.js'), 'utf8');
@@ -138,7 +146,9 @@ test('generated runtime source uses one current-executable ICT model across scan
 
   assert.match(engine, /computeIctTargetHitConfidence/);
   assert.doesNotMatch(engine, /Hard gate: late market entry/);
-  assert.match(targetConfidence, /ict_current_executable_scalp_v2/);
+  assert.match(targetConfidence, /ict_signal_execution_quality_v3/);
+  assert.match(targetConfidence, /signalQualityConfidence/);
+  assert.match(targetConfidence, /executionQualityConfidence/);
   assert.match(execution, /Final executable-price target-hit confirmation rejected/);
   assert.match(execution, /authoritativeAnalysis/);
   assert.match(monitor, /ict_target_hit_lifecycle/);
