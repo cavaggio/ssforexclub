@@ -1,0 +1,5 @@
+Railway restart trigger
+
+2026-07-30T10:55:00-04:00
+Purpose: rerun the seven-trading-day engine/account learning backfill after the Supabase accuracy migration was applied.
+No trading logic, risk settings, credentials, or watchlists changed.
