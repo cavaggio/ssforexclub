@@ -7,6 +7,7 @@ import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
 import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
 import { restoreV3WatchlistCompatibility } from './restore_v3_watchlist_compat.mjs';
+import { prepareActualTradeLearningCompatibility } from './prepare_actual_trade_learning_compat.mjs';
 import { applyActualTradeLearningView } from './apply_actual_trade_learning_view.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -87,6 +88,7 @@ await import('./apply_daily_risk_persistence.mjs');
 await import('./apply_signal_forensics_alignment_v3.mjs');
 await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
+prepareActualTradeLearningCompatibility(ROOT);
 applyAccountEngineIsolation(ROOT);
 restoreV3WatchlistCompatibility(ROOT);
 applyActualTradeLearningView(ROOT);
