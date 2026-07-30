@@ -17,6 +17,10 @@ if (!qualified.length) return { scanned: analyses.length, qualified: 0, executed
 executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });
 return { scanned: analyses.length, qualified: qualified.length, executed, skipped, ...watchState };
 `, 'utf8');
+  writeFileSync(join(root, 'server/ictExecution.js'), `
+import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
+analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });
+`, 'utf8');
   writeFileSync(join(root, 'server/pprAutoTrade.js'), `
 import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';
 const qualified = [];
@@ -24,6 +28,15 @@ applyStoredStudyCalibration(item, { client, engine: 'ppr' });
 return {
       watchCandidates: scan?.watchCandidates || [],
 };
+`, 'utf8');
+  writeFileSync(join(root, 'server/pprExecution.js'), `
+import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
+const studiedSignal = await applyStoredStudyCalibration(fresh.signal, { client, engine: 'ppr' });
+if (studiedSignal.direction !== originalDirection) return { allowed: false };
+if (!(Number(studiedSignal.confidence) >= config.minConfidence)) {
+  return { reason: 'confidence below threshold after daily-study calibration', studiedSignal };
+}
+return { allowed: true, signal: studiedSignal };
 `, 'utf8');
   writeFileSync(join(root, 'server/v3AutoTrade.js'), `
 import { applyScalpMetadata } from './scalpOnlyPolicy.js';
@@ -39,6 +52,11 @@ import { applyScalpMetadata } from './scalpOnlyPolicy.js';
       architecture: 'independent_v3_raw_market_data',
     }),
   );
+    signal = applyScalpMetadata({
+      ...signal,
+      ...refreshed.candidate,
+      source: 'v3_pure_auto_ai',
+    });
 return {
       watchCandidates: stageWatchCandidates,
 };
@@ -46,17 +64,30 @@ return {
   return root;
 }
 
-test('patches all engines once and remains idempotent', () => {
+test('patches all engine scan and authoritative execution paths once', () => {
   const root = fixtureRoot();
+  const expected = [
+    'server/ictAutoTrade.js',
+    'server/ictExecution.js',
+    'server/pprAutoTrade.js',
+    'server/pprExecution.js',
+    'server/v3AutoTrade.js',
+  ];
   const changed = applyEngineTradeLearningPatch(root);
-  assert.deepEqual(changed.sort(), ['server/ictAutoTrade.js', 'server/pprAutoTrade.js', 'server/v3AutoTrade.js']);
+  assert.deepEqual(changed.sort(), expected.sort());
   assert.equal(applyEngineTradeLearningPatch(root).length, 0);
   const ict = readFileSync(join(root, 'server/ictAutoTrade.js'), 'utf8');
+  const ictExecution = readFileSync(join(root, 'server/ictExecution.js'), 'utf8');
   const ppr = readFileSync(join(root, 'server/pprAutoTrade.js'), 'utf8');
+  const pprExecution = readFileSync(join(root, 'server/pprExecution.js'), 'utf8');
   const v3 = readFileSync(join(root, 'server/v3AutoTrade.js'), 'utf8');
   assert.match(ict, /signal: a/);
   assert.match(ict, /results: analyses/);
+  assert.match(ictExecution, /applyCombinedLearningCalibration\(await analyze/);
   assert.match(ppr, /qualifiedCandidates: qualified/);
+  assert.match(pprExecution, /combined market\/engine calibration/);
+  assert.match(pprExecution, /signal: calibratedSignal/);
   assert.match(v3, /await applyCombinedLearningCalibration/);
+  assert.match(v3, /authoritativeCandidate/);
   assert.match(v3, /rejected: scan\?\.rejected/);
 });
