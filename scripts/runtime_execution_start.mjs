@@ -3,11 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
-import './apply_daily_ict_policy.mjs';
-import './apply_daily_bot_policy.mjs';
-import './apply_daily_risk_persistence.mjs';
-import './apply_signal_forensics_alignment_v3.mjs';
-import './cleanup_signal_forensics_alignment.mjs';
+import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_learning_compat.mjs';
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -81,6 +77,12 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 
 enforceRuntimeFloors();
 ensureIctRrFloorRuntime();
+prepareEngineTradeLearningCompatibility(ROOT);
+await import('./apply_daily_ict_policy.mjs');
+await import('./apply_daily_bot_policy.mjs');
+await import('./apply_daily_risk_persistence.mjs');
+await import('./apply_signal_forensics_alignment_v3.mjs');
+await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
