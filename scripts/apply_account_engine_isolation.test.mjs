@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
+import { restoreV3WatchlistCompatibility } from './restore_v3_watchlist_compat.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATCHED_FILES = [
@@ -42,15 +43,15 @@ test('ICT scan and execution paths enforce the immutable four-pair watchlist', (
   assert.match(execution, /ICT hard watchlist rejected/);
 });
 
-test('V3 ignores environment watchlist expansion and intersects targeted pairs', () => {
+test('V3 source remains compatible with the existing generated-source pipeline', () => {
   const sourceText = source('server/v3IndependentScanner.js');
-  assert.match(sourceText, /export const DEFAULT_V3_WATCHLIST = Object\.freeze/);
-  assert.match(sourceText, /export function configuredV3Watchlist/);
-  assert.match(sourceText, /filter\(\(pair\) => allowedPairs\.has\(pair\)\)/);
-  assert.doesNotMatch(sourceText, /process\.env\.FOREX_V3_WATCHLIST/);
+  assert.match(sourceText, /const DEFAULT_V3_WATCHLIST = \[/);
+  assert.match(sourceText, /function configuredWatchlist\(\)/);
+  assert.match(sourceText, /process\.env\.FOREX_V3_WATCHLIST/);
+  assert.doesNotMatch(sourceText, /configuredV3Watchlist/);
 });
 
-test('account engine isolation patch is idempotent', () => {
+test('account engine isolation plus V3 compatibility restoration is idempotent', () => {
   const root = mkdtempSync(join(tmpdir(), 'account-engine-isolation-'));
   for (const relative of PATCHED_FILES) {
     const destination = join(root, relative);
@@ -59,8 +60,10 @@ test('account engine isolation patch is idempotent', () => {
   }
 
   applyAccountEngineIsolation(root);
+  restoreV3WatchlistCompatibility(root);
   const first = Object.fromEntries(PATCHED_FILES.map((relative) => [relative, readFileSync(join(root, relative), 'utf8')]));
   applyAccountEngineIsolation(root);
+  restoreV3WatchlistCompatibility(root);
   const second = Object.fromEntries(PATCHED_FILES.map((relative) => [relative, readFileSync(join(root, relative), 'utf8')]));
   assert.deepEqual(second, first);
 });
