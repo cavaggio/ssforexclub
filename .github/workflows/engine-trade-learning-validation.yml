@@ -8,7 +8,9 @@ on:
       - 'scripts/apply_engine_trade_learning*'
       - 'scripts/runtime_execution_start.mjs'
       - 'server/ictAutoTrade.js'
+      - 'server/ictExecution.js'
       - 'server/pprAutoTrade.js'
+      - 'server/pprExecution.js'
       - 'server/v3AutoTrade.js'
       - 'supabase/migrations/20260730110000_engine_trade_learning.sql'
       - 'package.json'
@@ -36,4 +38,4 @@ jobs:
       - name: Validate market-study and signal-learning regression suites
         run: node --test server/dailyMarketStudy.test.js web/lib/signalLearningCore.test.js
       - name: Validate patched engine syntax
-        run: node --check server/ictAutoTrade.js && node --check server/pprAutoTrade.js && node --check server/v3AutoTrade.js
+        run: node --check server/ictAutoTrade.js && node --check server/ictExecution.js && node --check server/pprAutoTrade.js && node --check server/pprExecution.js && node --check server/v3AutoTrade.js
