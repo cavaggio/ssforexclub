@@ -45,15 +45,16 @@ patchFile('server/index.js', (source) => {
 
 patchFile('server/ftmoIndicesRouter.js', (source) => {
   let updated = source;
-
-  if (!updated.includes("import { getFtmoCredentials } from './ftmoConnectionStore.js';")) {
-    const anchor = "import { ftmoIndicesConfig } from './ftmoIndicesConfig.js';";
-    updated = updated.replace(anchor, `${anchor}\nimport { getFtmoCredentials } from './ftmoConnectionStore.js';`);
+  if (!updated.includes("from './ftmoConnectionStore.js'")) {
+    updated = updated.replace(
+      "import { ftmoIndicesConfig } from './ftmoIndicesConfig.js';",
+      "import { ftmoIndicesConfig } from './ftmoIndicesConfig.js';\nimport { getFtmoCredentials } from './ftmoConnectionStore.js';",
+    );
   }
 
-  const insecureBlock = `    const credentials = req.body?.credentials || null;\n    const client = buildFtmoClient({ credentials });`;
-  const secureBlock = `    const userId = req.user?.userId;\n    if (!userId) {\n      return res.status(401).json({ ok: false, error: 'Authenticated client is required' });\n    }\n\n    if (req.body?.credentials) {\n      return res.status(400).json({\n        ok: false,\n        error: 'FTMO credentials must not be supplied in the execution request',\n      });\n    }\n\n    const credentials = await getFtmoCredentials(userId);\n    if (!credentials) {\n      return res.status(409).json({\n        ok: false,\n        error: 'No FTMO connection is configured for this client login',\n        code: 'FTMO_CONNECTION_REQUIRED',\n      });\n    }\n\n    const client = buildFtmoClient({ credentials });`;
-
-  updated = updated.replace(insecureBlock, secureBlock);
+  updated = updated.replace(
+    /const credentials = req\.body\?\.credentials \|\| null;\s*const client = buildFtmoClient\(\{ credentials \}\);/,
+    `if (req.body?.credentials) {\n      return res.status(400).json({ ok: false, error: 'Client-supplied FTMO credentials are not accepted' });\n    }\n    const userId = req.user?.userId;\n    if (!userId) {\n      return res.status(401).json({ ok: false, error: 'Authenticated client login required' });\n    }\n    const credentials = await getFtmoCredentials(userId);\n    if (!credentials) {\n      return res.status(409).json({ ok: false, error: 'FTMO connection required for this client', code: 'FTMO_CONNECTION_REQUIRED' });\n    }\n    const client = buildFtmoClient({ credentials });`,
+  );
   return updated;
 });
