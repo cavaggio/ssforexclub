@@ -46,3 +46,4 @@ if (targetPrepared !== targetBefore) writeFileSync(targetConfidencePath, targetP
 console.log(`[SIGNAL_FORENSICS] ICT confidence compatibility marker prepared${targetPrepared !== targetBefore ? ' (patched)' : ''}`);
 
 await import('./apply_execution_first_policy.mjs');
+await import('./apply_ict_rr_precision.mjs');
