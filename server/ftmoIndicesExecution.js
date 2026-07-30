@@ -1,8 +1,62 @@
+import crypto from 'crypto';
 import { ftmoIndicesConfig, isFtmoIndicesExecutionEnabled } from './ftmoIndicesConfig.js';
 import { analyzeFtmoIndexSetup, calculateFtmoIndexVolume } from './ftmoIndicesEngine.js';
-import { getFtmoAccountSummary, getFtmoPositions, getFtmoSymbolSpec, placeFtmoOrder } from './ftmoClient.js';
+import { createFtmoBridgeSignature, getFtmoAccountSummary, getFtmoPositions, placeFtmoOrder } from './ftmoClient.js';
 
 const INDEX_GROUP = 'US_INDICES';
+
+function clean(value) {
+  return String(value ?? '').trim();
+}
+
+async function getFtmoSymbolSpec(client, symbol) {
+  const normalizedSymbol = clean(symbol);
+  if (!normalizedSymbol) throw new Error('FTMO symbol is required');
+  if (!client?.credentials?.bridgeUrl || typeof client?.fetchImpl !== 'function') {
+    throw new Error('Invalid FTMO MT5 bridge client');
+  }
+
+  const body = JSON.stringify({
+    account: {
+      login: client.credentials.accountLogin,
+      server: client.credentials.server,
+      terminalId: client.credentials.terminalId,
+    },
+    symbol: normalizedSymbol,
+  });
+  const timestamp = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const signature = createFtmoBridgeSignature({
+    timestamp,
+    nonce,
+    body,
+    secret: client.credentials.bridgeSecret,
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), client.config?.timeoutMs || 8_000);
+  try {
+    const response = await client.fetchImpl(`${client.credentials.bridgeUrl}/v1/symbols/spec`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-signal-stack-key': client.credentials.bridgeApiKey,
+        'x-signal-stack-timestamp': timestamp,
+        'x-signal-stack-nonce': nonce,
+        'x-signal-stack-signature': signature,
+      },
+      body,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || payload?.message || `FTMO MT5 bridge returned HTTP ${response.status}`);
+    }
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function positionRiskPercent(position, equity) {
   const explicit = Number(position?.riskPercent ?? position?.risk_percent);
