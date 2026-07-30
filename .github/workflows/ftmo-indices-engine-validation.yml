@@ -1,0 +1,37 @@
+name: FTMO indices engine validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/ftmoIndices*'
+      - 'scripts/apply_ftmo_indices_engine.mjs'
+      - 'supabase/migrations/20260730_ftmo_indices_engine.sql'
+      - 'docs/ftmo-indices-deployment.md'
+      - '.github/workflows/ftmo-indices-engine-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Apply generated integration
+        run: node scripts/apply_ftmo_indices_engine.mjs
+      - name: Syntax checks
+        run: |
+          node --check server/ftmoIndicesConfig.js
+          node --check server/ftmoIndicesEngine.js
+          node --check server/ftmoIndicesExecution.js
+          node --check server/ftmoIndicesRouter.js
+          node --check server/index.js
+          node --check server/ftmoClient.js
+      - name: Engine tests
+        run: node --test server/ftmoIndicesEngine.test.js
