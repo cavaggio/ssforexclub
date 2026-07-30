@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
-import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
+import {
+  getDecryptedBrokerCredentials,
+  listBrokerConnectionsForUser,
+  resolveBrokerBaseUrl,
+} from '@/lib/brokerConnections';
 import { syncOandaTransactionsForUser } from '@/lib/oandaTransactionSync';
 
 export const dynamic = 'force-dynamic';
@@ -29,6 +33,7 @@ export async function POST(req: Request) {
   const results: Record<string, unknown>[] = [];
 
   let syncedUsers = 0;
+  let syncedAccounts = 0;
   let closeEvents = 0;
   let logged = 0;
   let failed = 0;
@@ -37,47 +42,64 @@ export async function POST(req: Request) {
     const userId = row.user_id;
 
     try {
-      const resolved = await resolveActiveBrokerForUser(userId);
+      const connections = await listBrokerConnectionsForUser(userId);
+      const accounts = [...new Map(
+        connections
+          .filter((connection) => connection.isActive && connection.broker === 'oanda' && connection.accountId)
+          .map((connection) => [connection.accountId, connection]),
+      ).values()];
 
-      if (resolved.activeBroker !== 'oanda') {
-        results.push({ user: mask(userId), skipped: 'not_oanda' });
+      if (!accounts.length) {
+        results.push({ user: mask(userId), skipped: 'no_active_oanda_accounts' });
         continue;
       }
 
-      if (
-        resolved.brokerCredentialStatus !== 'ready' ||
-        !resolved.getCredentials ||
-        !resolved.baseUrl
-      ) {
-        results.push({
-          user: mask(userId),
-          skipped: resolved.brokerCredentialStatus,
-          reason: resolved.reason,
-        });
-        continue;
+      let userSynced = false;
+      for (const account of accounts) {
+        try {
+          const creds = await getDecryptedBrokerCredentials(userId, account.id);
+          if (!creds || creds.broker !== 'oanda' || creds.accountId !== account.accountId) {
+            failed += 1;
+            results.push({
+              user: mask(userId),
+              account: mask(account.accountId),
+              skipped: 'credentials_unavailable',
+            });
+            continue;
+          }
+
+          const sync = await syncOandaTransactionsForUser({
+            userId,
+            brokerAccountId: creds.accountId,
+            environment: creds.environment as 'practice' | 'live' | 'paper',
+            baseUrl: resolveBrokerBaseUrl(creds.broker, creds.environment),
+            token: creds.token,
+          });
+
+          syncedAccounts += 1;
+          userSynced = true;
+          closeEvents += sync.closeEvents;
+          logged += sync.logged;
+          failed += sync.failed;
+
+          results.push({
+            user: mask(userId),
+            account: mask(account.accountId),
+            connectionId: account.id,
+            environment: account.environment,
+            validationStatus: account.validationStatus,
+            sync,
+          });
+        } catch (err) {
+          failed += 1;
+          results.push({
+            user: mask(userId),
+            account: mask(account.accountId),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-
-      const creds = await resolved.getCredentials();
-
-      if (!creds) {
-        results.push({ user: mask(userId), skipped: 'decrypt_failed' });
-        continue;
-      }
-
-      const sync = await syncOandaTransactionsForUser({
-        userId,
-        brokerAccountId: creds.accountId,
-        environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
-        baseUrl: resolved.baseUrl,
-        token: creds.token,
-      });
-
-      syncedUsers += 1;
-      closeEvents += sync.closeEvents;
-      logged += sync.logged;
-      failed += sync.failed;
-
-      results.push({ user: mask(userId), sync });
+      if (userSynced) syncedUsers += 1;
     } catch (err) {
       failed += 1;
       results.push({
@@ -91,6 +113,7 @@ export async function POST(req: Request) {
     ok: true,
     users: rows.length,
     syncedUsers,
+    syncedAccounts,
     closeEvents,
     logged,
     failed,

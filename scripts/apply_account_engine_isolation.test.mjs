@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
 import { restoreV3WatchlistCompatibility } from './restore_v3_watchlist_compat.mjs';
+import { prepareActualTradeLearningCompatibility } from './prepare_actual_trade_learning_compat.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PATCHED_FILES = [
@@ -59,9 +60,11 @@ test('account engine isolation plus V3 compatibility restoration is idempotent',
     cpSync(resolve(ROOT, relative), destination);
   }
 
+  prepareActualTradeLearningCompatibility(root);
   applyAccountEngineIsolation(root);
   restoreV3WatchlistCompatibility(root);
   const first = Object.fromEntries(PATCHED_FILES.map((relative) => [relative, readFileSync(join(root, relative), 'utf8')]));
+  prepareActualTradeLearningCompatibility(root);
   applyAccountEngineIsolation(root);
   restoreV3WatchlistCompatibility(root);
   const second = Object.fromEntries(PATCHED_FILES.map((relative) => [relative, readFileSync(join(root, relative), 'utf8')]));

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { backfillEngineLearningWindow } from '@/lib/engineLearningBackfill';
+import { reconcileActualTradesForAccount } from '@/lib/actualTradeReconciliation';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,6 +58,10 @@ export async function POST(req: Request) {
     let engineProfilesProcessed = 0;
     let observationsConsidered = 0;
     let outcomesWritten = 0;
+    let actualOpeningsConsidered = 0;
+    let actualTradesFetched = 0;
+    let actualTradesUpserted = 0;
+    let actualClosedTrades = 0;
 
     for (const row of (settings || []) as Array<{ user_id: string; auto_ai_engine?: string | null }>) {
       const connections = await listBrokerConnectionsForUser(row.user_id);
@@ -78,6 +83,34 @@ export async function POST(req: Request) {
 
       for (const account of activeAccounts) {
         accountsProcessed += 1;
+
+        // Actual OANDA lifecycle reconciliation owns win/loss/P&L attribution.
+        // It intentionally studies every recoverable historical opening for this
+        // exact account/engine, including legacy pairs no longer on a watchlist.
+        const actual = await reconcileActualTradesForAccount({
+          userId: row.user_id,
+          connectionId: account.id,
+          brokerAccountId: account.accountId,
+          calendarLookbackDays,
+          now: startedAt,
+        });
+        actualOpeningsConsidered += actual.openingsConsidered;
+        actualTradesFetched += actual.tradesFetched;
+        actualTradesUpserted += actual.tradesUpserted;
+        actualClosedTrades += actual.closedTrades;
+        results.push({
+          kind: 'actual_trade_lifecycle',
+          accountId: account.accountId,
+          connectionId: account.id,
+          broker: account.broker,
+          environment: account.environment,
+          validationStatus: account.validationStatus,
+          configuredEngine: row.auto_ai_engine || null,
+          ...actual,
+        });
+
+        // Keep the existing 15/30/60/120-minute forward market-path study as a
+        // separate execution-quality layer for each engine/account.
         for (const engine of ENGINES as readonly Engine[]) {
           const result = await backfillEngineLearningWindow({
             userId: row.user_id,
@@ -91,6 +124,7 @@ export async function POST(req: Request) {
           observationsConsidered += result.observationsConsidered;
           outcomesWritten += result.outcomesWritten;
           results.push({
+            kind: 'forward_market_path',
             userId: row.user_id,
             accountId: account.accountId,
             connectionId: account.id,
@@ -116,15 +150,22 @@ export async function POST(req: Request) {
           engine_profiles_processed: engineProfilesProcessed,
           observations_considered: observationsConsidered,
           outcomes_written: outcomesWritten,
+          actual_openings_considered: actualOpeningsConsidered,
+          actual_trades_fetched: actualTradesFetched,
+          actual_trades_upserted: actualTradesUpserted,
+          actual_closed_trades: actualClosedTrades,
           results,
-          error: failed.length ? `${failed.length} engine profile(s) failed` : null,
+          error: failed.length ? `${failed.length} reconciliation/profile result(s) failed` : null,
         })
         .eq('id', runId);
     }
 
     console.log(
       `[ENGINE_LEARNING_BACKFILL] tradingDays=${tradingDays} accounts=${accountsProcessed} ` +
-      `engineProfiles=${engineProfilesProcessed} observations=${observationsConsidered} outcomes=${outcomesWritten} status=${status}`,
+      `actualOpenings=${actualOpeningsConsidered} actualFetched=${actualTradesFetched} ` +
+      `actualUpserted=${actualTradesUpserted} actualClosed=${actualClosedTrades} ` +
+      `engineProfiles=${engineProfilesProcessed} observations=${observationsConsidered} ` +
+      `forwardOutcomes=${outcomesWritten} status=${status}`,
     );
 
     return NextResponse.json({
@@ -134,6 +175,10 @@ export async function POST(req: Request) {
       tradingDays,
       calendarLookbackDays,
       accountsProcessed,
+      actualOpeningsConsidered,
+      actualTradesFetched,
+      actualTradesUpserted,
+      actualClosedTrades,
       engineProfilesProcessed,
       observationsConsidered,
       outcomesWritten,
