@@ -1,7 +1,8 @@
 import { scanPprMarket } from './pprEngine.js';
 import { executePprTrade } from './pprExecution.js';
 import { pprRuntimeConfig } from './pprEnv.js';
-import { applyStoredStudyCalibration, runDailyMarketStudy } from './dailyMarketStudy.js';
+import { runDailyMarketStudy } from './dailyMarketStudy.js';
+import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 
 function maskAccount(id) {
   return id && id.length > 4 ? `${id.slice(0, 3)}…${id.slice(-3)}` : '***';
@@ -127,10 +128,10 @@ export async function runAutoPprForUser({
   const scan = {
     ...rawScan,
     qualified: await Promise.all((Array.isArray(rawScan?.qualified) ? rawScan.qualified : []).map((item) =>
-      applyStoredStudyCalibration(item, { client, engine: 'ppr' })
+      applyCombinedLearningCalibration(item, { client, engine: 'ppr' })
     )),
     watchCandidates: await Promise.all((Array.isArray(rawScan?.watchCandidates) ? rawScan.watchCandidates : []).map((item) =>
-      applyStoredStudyCalibration(item, { client, engine: 'ppr' })
+      applyCombinedLearningCalibration(item, { client, engine: 'ppr' })
     )),
   };
   const qualified = Array.isArray(scan?.qualified) ? scan.qualified : [];
@@ -158,6 +159,7 @@ export async function runAutoPprForUser({
       executionReadiness: counts.executionReadiness,
       executed: [],
       skipped: [],
+      qualifiedCandidates: qualified,
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
       pprRuntime: runtime,
@@ -193,6 +195,7 @@ export async function runAutoPprForUser({
       executed: [],
       skipped,
       executionAllowed: false,
+      qualifiedCandidates: qualified,
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
       pprRuntime: runtime,
@@ -222,6 +225,7 @@ export async function runAutoPprForUser({
       executionReadiness: counts.executionReadiness,
       executed: [],
       skipped,
+      qualifiedCandidates: qualified,
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
       pprRuntime: runtime,
@@ -256,6 +260,7 @@ export async function runAutoPprForUser({
       executionReadiness: counts.executionReadiness,
       executed: [],
       skipped,
+      qualifiedCandidates: qualified,
       watchCandidates: scan?.watchCandidates || [],
       rejected: scan?.rejected || [],
       pprRuntime: runtime,
@@ -321,6 +326,7 @@ export async function runAutoPprForUser({
     executionReadiness: counts.executionReadiness,
     executed,
     skipped,
+    qualifiedCandidates: qualified,
     watchCandidates: scan?.watchCandidates || [],
     rejected: scan?.rejected || [],
     pprRuntime: runtime,
