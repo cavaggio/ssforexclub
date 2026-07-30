@@ -5,6 +5,7 @@ import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
 import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_learning_compat.mjs';
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
+import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -84,6 +85,7 @@ await import('./apply_daily_risk_persistence.mjs');
 await import('./apply_signal_forensics_alignment_v3.mjs');
 await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
+applyAccountEngineIsolation(ROOT);
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
 // for starting the API. A stale source marker must never take the entire scanner,
