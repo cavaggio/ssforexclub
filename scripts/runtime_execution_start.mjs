@@ -8,6 +8,7 @@ import './apply_daily_bot_policy.mjs';
 import './apply_daily_risk_persistence.mjs';
 import './apply_signal_forensics_alignment_v3.mjs';
 import './cleanup_signal_forensics_alignment.mjs';
+import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
@@ -80,6 +81,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 
 enforceRuntimeFloors();
 ensureIctRrFloorRuntime();
+applyEngineTradeLearningPatch(ROOT);
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
 // for starting the API. A stale source marker must never take the entire scanner,
