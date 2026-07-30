@@ -1,0 +1,61 @@
+name: Actual trade reconciliation validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/lib/actualTradeReconciliation*'
+      - 'web/lib/oandaTransactionSyncAccounts.contract.test.js'
+      - 'web/app/api/cron/engine-learning-backfill/route.ts'
+      - 'web/app/api/cron/oanda-transaction-sync/route.ts'
+      - 'scripts/apply_actual_trade_learning_view*'
+      - 'scripts/runtime_execution_start.mjs'
+      - 'server/engineTradeLearning.js'
+      - 'supabase/migrations/20260730162000_actual_trade_lifecycle_reconciliation.sql'
+      - 'supabase/migrations/20260730162500_actual_trade_accuracy_view_fix.sql'
+      - 'package.json'
+      - 'web/package.json'
+      - '.github/workflows/actual-trade-reconciliation-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Apply complete generated-source pipeline
+        run: npm run apply:v3-entry && npm run apply:account-isolation
+      - name: Validate actual lifecycle and account isolation
+        run: |
+          node --test \
+            web/lib/actualTradeReconciliationCore.test.js \
+            web/lib/actualTradeReconciliation.contract.test.js \
+            web/lib/oandaTransactionSyncAccounts.contract.test.js \
+            scripts/apply_actual_trade_learning_view.test.mjs \
+            server/engineTradeLearningCore.test.js
+      - name: Validate JavaScript syntax
+        run: |
+          node --check web/lib/actualTradeReconciliationCore.js
+          node --check scripts/apply_actual_trade_learning_view.mjs
+          node --check scripts/runtime_execution_start.mjs
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts >/dev/null
+      - name: Typecheck web reconciliation routes
+        working-directory: web
+        run: npm run typecheck
+      - name: Build web application
+        working-directory: web
+        run: npm run build
