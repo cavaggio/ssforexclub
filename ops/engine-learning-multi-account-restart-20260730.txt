@@ -1,0 +1,6 @@
+Railway restart trigger
+
+2026-07-30T11:22:00-04:00
+Purpose: rerun the seven-trading-day learning backfill after deployment of all-active-OANDA-account enumeration.
+Expected current scope: 2 active OANDA accounts and 6 account/engine profiles.
+No trading logic, credentials, risk settings, execution rules, market-study rules, or watchlists changed.
