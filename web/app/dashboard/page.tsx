@@ -8,28 +8,59 @@
 import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
-import { resolveActiveBrokerForUser, toClientSafeBrokerStatus } from '@/lib/brokerResolver';
+import {
+  resolveActiveBrokerForUser,
+  toClientSafeBrokerStatus,
+  type ClientSafeBrokerStatus,
+} from '@/lib/brokerResolver';
 import { ScannerStatusCard } from '@/components/scanner-status-card';
 import { ScannerWatchStatus } from '@/components/scanner-watch-status';
 import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
 
+function unavailableBrokerStatus(): ClientSafeBrokerStatus {
+  return {
+    activeBroker: null,
+    activeEnvironment: 'practice',
+    activeConnectionId: null,
+    isLiveTrading: false,
+    isPaperTrading: true,
+    liveTradingAcknowledged: false,
+    environmentSource: 'fallback_dev_env',
+    platformLiveTradingEnabled: false,
+    brokerCredentialStatus: 'error',
+    baseUrl: null,
+    reason: 'Broker status is temporarily unavailable. The dashboard remains accessible while the connection is retried.',
+  };
+}
+
 export default async function DashboardPage() {
   const { userId } = await auth();
   if (!userId) return null;
 
-  let connections: Awaited<ReturnType<typeof listBrokerConnectionsForUser>> = [];
-  try {
-    connections = await listBrokerConnectionsForUser(userId);
-  } catch {
-    // Surface the error in the active-mode card below; don't bring the page down.
+  // These reads are display dependencies, not authorization gates. A temporary
+  // Supabase/credential-resolution failure must degrade the affected cards rather
+  // than reject the complete /dashboard server render.
+  const [connectionsResult, brokerResult] = await Promise.allSettled([
+    listBrokerConnectionsForUser(userId),
+    resolveActiveBrokerForUser(userId),
+  ]);
+
+  if (connectionsResult.status === 'rejected') {
+    console.error('[dashboard] broker connection list failed:', connectionsResult.reason);
+  }
+  if (brokerResult.status === 'rejected') {
+    console.error('[dashboard] active broker resolution failed:', brokerResult.reason);
   }
 
-  const resolvedBroker = await resolveActiveBrokerForUser(userId);
-  const brokerStatus = toClientSafeBrokerStatus(resolvedBroker);
+  const connections = connectionsResult.status === 'fulfilled' ? connectionsResult.value : [];
+  const brokerStatus = brokerResult.status === 'fulfilled'
+    ? toClientSafeBrokerStatus(brokerResult.value)
+    : unavailableBrokerStatus();
+  const brokerStatusUnavailable = brokerResult.status === 'rejected';
   const isLive = brokerStatus.isLiveTrading;
-  const hasAnyConnection = connections.length > 0;
+  const hasAnyConnection = connections.length > 0 || brokerStatus.brokerCredentialStatus === 'ready';
   const modeLabel = isLive
     ? 'Live'
     : brokerStatus.activeEnvironment === 'practice'
@@ -55,6 +86,24 @@ export default async function DashboardPage() {
           </p>
         </div>
       </div>
+
+      {brokerStatusUnavailable && (
+        <section
+          role="status"
+          style={{
+            background: 'rgba(255, 178, 36, 0.08)',
+            border: '1px solid var(--warn)',
+            borderRadius: 10,
+            padding: '12px 16px',
+            color: 'var(--text)',
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ color: 'var(--warn)' }}>Connection status temporarily unavailable.</strong>{' '}
+          The page loaded in safe mode. Refresh to retry the broker-status read; no order settings were changed.
+        </section>
+      )}
 
       <section
         style={{
@@ -107,7 +156,7 @@ export default async function DashboardPage() {
         </Link>
       </section>
 
-      {!hasAnyConnection && (
+      {!hasAnyConnection && !brokerStatusUnavailable && (
         <section
           style={{
             background: '#1f1100',
