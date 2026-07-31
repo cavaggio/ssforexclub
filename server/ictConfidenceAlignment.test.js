@@ -35,6 +35,45 @@ test('current executable ICT scalp can clear the target-hit floor', () => {
   assert.equal(result.model, 'ict_signal_execution_quality_v3');
 });
 
+test('displayed 1.50R is not rejected because of floating-point residue', () => {
+  const result = computeIctTargetHitConfidence({
+    confluenceScore: 100,
+    freshImpulse: true,
+    triggerAgeBars: 0,
+    entryDriftAtr: 0,
+    rewardConsumedFraction: 0,
+    priceInsideEntryZone: true,
+    actualRR: 1.4999999998,
+    minimumRR: 1.5,
+    spreadPips: 0,
+    minConfidence: 93,
+  });
+
+  assert.equal(result.actualRR, 1.5);
+  assert.equal(result.minimumRR, 1.5);
+  assert.equal(result.eligible, true);
+  assert.ok(!result.blockers.some((reason) => reason.includes('R:R')));
+});
+
+test('a true displayed 1.49R remains below the 1.50 floor', () => {
+  const result = computeIctTargetHitConfidence({
+    confluenceScore: 100,
+    freshImpulse: true,
+    triggerAgeBars: 0,
+    entryDriftAtr: 0,
+    rewardConsumedFraction: 0,
+    priceInsideEntryZone: true,
+    actualRR: 1.494,
+    minimumRR: 1.5,
+    spreadPips: 0,
+    minConfidence: 93,
+  });
+
+  assert.equal(result.actualRR, 1.49);
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.some((reason) => reason.includes('R:R')));
+});
+
 test('missing trigger age remains a diagnostic and applies only a bounded penalty', () => {
   const result = computeIctTargetHitConfidence({
     confluenceScore: 100,
@@ -145,8 +184,12 @@ test('generated runtime source uses separated signal and execution quality acros
   const reassessor = fs.readFileSync(path.join(ROOT, 'server', 'oandaActiveTradeReassessor.js'), 'utf8');
 
   assert.match(engine, /computeIctTargetHitConfidence/);
+  assert.match(engine, /executableRRRaw/);
+  assert.match(engine, /minimumExecutableRR/);
   assert.doesNotMatch(engine, /Hard gate: late market entry/);
   assert.match(targetConfidence, /ict_signal_execution_quality_v3/);
+  assert.match(targetConfidence, /const rrRaw =/);
+  assert.match(targetConfidence, /const rrFloorRaw =/);
   assert.match(targetConfidence, /signalQualityConfidence/);
   assert.match(targetConfidence, /executionQualityConfidence/);
   assert.match(execution, /Final executable-price target-hit confirmation rejected/);
