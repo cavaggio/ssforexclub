@@ -13,6 +13,7 @@ import { applyActualTradeLearningView } from './apply_actual_trade_learning_view
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
 const ICT_ENGINE_PATH = resolve(ROOT, 'server/ictEngine.js');
+const ICT_AUTO_TRADE_PATH = resolve(ROOT, 'server/ictAutoTrade.js');
 const ICT_RR_RUNTIME_MARKERS = [
   'export const ICT_MIN_RR = 1.5;',
   'minRR: configuredIctMinRR()',
@@ -20,6 +21,13 @@ const ICT_RR_RUNTIME_MARKERS = [
   'const targetPolicy = enforceMinimumRRTarget({',
   'targetAdjustedToMinRR',
   'minimumRR: configuredIctMinRR()',
+];
+const SIGNAL_FORENSICS_RUNTIME_MARKERS = [
+  'export function maskAccountForLog',
+  'export function buildIctWatchState',
+  'hasBlockingHardReject(item)',
+  'hasExecutableGeometry(item, cfg.minRR)',
+  'buildIctWatchState(analyses, cfg.minConfidence, cfg.minRR)',
 ];
 
 function truthy(value) {
@@ -67,6 +75,31 @@ function ensureIctRrFloorRuntime() {
   }
 }
 
+async function ensureSignalForensicsRuntime() {
+  const before = readFileSync(ICT_AUTO_TRADE_PATH, 'utf8');
+  if (SIGNAL_FORENSICS_RUNTIME_MARKERS.every((marker) => before.includes(marker))) {
+    console.log('[RUNTIME_EXECUTION_START] signal-forensics contract already enforced by build pipeline');
+    return;
+  }
+
+  // Signal-forensics is a compatibility/source-generation pass. A stale source
+  // anchor must never crash Railway and take all scanner/execution endpoints down.
+  try {
+    await import('./apply_signal_forensics_alignment_v3.mjs');
+  } catch (error) {
+    console.error(
+      `[RUNTIME_EXECUTION_START] optional signal-forensics compatibility patch skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+
+  const after = readFileSync(ICT_AUTO_TRADE_PATH, 'utf8');
+  const missing = SIGNAL_FORENSICS_RUNTIME_MARKERS.filter((marker) => !after.includes(marker));
+  if (missing.length) {
+    console.error(`[RUNTIME_EXECUTION_START] signal-forensics runtime markers still missing: ${missing.join(', ')}`);
+  }
+}
+
 function patchFile(relativePath, patcher, requiredMarkers) {
   const path = resolve(ROOT, relativePath);
   const before = readFileSync(path, 'utf8');
@@ -85,7 +118,7 @@ prepareEngineTradeLearningCompatibility(ROOT);
 await import('./apply_daily_ict_policy.mjs');
 await import('./apply_daily_bot_policy.mjs');
 await import('./apply_daily_risk_persistence.mjs');
-await import('./apply_signal_forensics_alignment_v3.mjs');
+await ensureSignalForensicsRuntime();
 await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
 prepareActualTradeLearningCompatibility(ROOT);
