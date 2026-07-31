@@ -9,12 +9,17 @@ import { maybeRebaseIctTarget } from '../server/ictExecutionTarget.js';
 
 const source = readFileSync(new URL('../server/engineTradeLearning.js', import.meta.url), 'utf8');
 const ictEngineSource = readFileSync(new URL('../server/ictEngine.js', import.meta.url), 'utf8');
+const ictAutoTradeSource = readFileSync(new URL('../server/ictAutoTrade.js', import.meta.url), 'utf8');
 const ictExecutionSource = readFileSync(new URL('../server/ictExecution.js', import.meta.url), 'utf8');
 const runtimeStartSource = readFileSync(new URL('./runtime_execution_start.mjs', import.meta.url), 'utf8');
 const legacyRuntimeStartSource = runtimeStartSource
   .replaceAll('ICT_EXECUTION_MIN_CONFIDENCE', 'ICT_MIN_CONFIDENCE')
   .replaceAll('Math.max(80', 'Math.max(93')
   .replaceAll("'80'", "'93'");
+const legacyAutoTradeSource = ictAutoTradeSource.replace(
+  /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )80(, minRR = 1\.5\))?/,
+  (_, prefix, minRrSuffix = '') => `${prefix}93${minRrSuffix}`,
+);
 
 test('actual-trade learning patch is idempotent after account-isolation source generation', () => {
   const root = mkdtempSync(join(tmpdir(), 'actual-trade-learning-'));
@@ -39,16 +44,20 @@ test('final runtime pass restores the 80% ICT floor and bounded executable-price
     mkdirSync(join(root, 'scripts'), { recursive: true });
     writeFileSync(join(root, 'server/engineTradeLearning.js'), source, 'utf8');
     writeFileSync(join(root, 'server/ictEngine.js'), ictEngineSource, 'utf8');
+    writeFileSync(join(root, 'server/ictAutoTrade.js'), legacyAutoTradeSource, 'utf8');
     writeFileSync(join(root, 'server/ictExecution.js'), ictExecutionSource, 'utf8');
     writeFileSync(join(root, 'scripts/runtime_execution_start.mjs'), legacyRuntimeStartSource, 'utf8');
 
     applyActualTradeLearningView(root);
     const engine = readFileSync(join(root, 'server/ictEngine.js'), 'utf8');
+    const autoTrade = readFileSync(join(root, 'server/ictAutoTrade.js'), 'utf8');
     const execution = readFileSync(join(root, 'server/ictExecution.js'), 'utf8');
     const runtimeStart = readFileSync(join(root, 'scripts/runtime_execution_start.mjs'), 'utf8');
 
     assert.match(engine, /ICT_EXECUTION_MIN_CONFIDENCE \|\| '80'/);
     assert.doesNotMatch(engine, /minConfidence: Math\.max\(93/);
+    assert.match(autoTrade, /buildIctWatchState\(analyses = \[\], minConfidence = 80, minRR = 1\.5\)/);
+    assert.match(autoTrade, /confidence >= cfg\.minConfidence/);
     assert.match(execution, /minConfidence: Math\.max\(80/);
     assert.match(execution, /maybeRebaseIctTarget/);
     assert.match(execution, /executionTargetRebase/);
@@ -56,10 +65,12 @@ test('final runtime pass restores the 80% ICT floor and bounded executable-price
     assert.doesNotMatch(runtimeStart, /Math\.max\(93/);
 
     const engineOnce = engine;
+    const autoTradeOnce = autoTrade;
     const executionOnce = execution;
     const runtimeStartOnce = runtimeStart;
     applyActualTradeLearningView(root);
     assert.equal(readFileSync(join(root, 'server/ictEngine.js'), 'utf8'), engineOnce);
+    assert.equal(readFileSync(join(root, 'server/ictAutoTrade.js'), 'utf8'), autoTradeOnce);
     assert.equal(readFileSync(join(root, 'server/ictExecution.js'), 'utf8'), executionOnce);
     assert.equal(readFileSync(join(root, 'scripts/runtime_execution_start.mjs'), 'utf8'), runtimeStartOnce);
   } finally {
