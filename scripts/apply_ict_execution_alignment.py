@@ -27,7 +27,15 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 engine = ENGINE.read_text(encoding="utf-8")
 engine = engine.replace(
     "minConfidence: Math.max(85, parseFloat(process.env.ICT_MIN_CONFIDENCE || '85'))",
+    "minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+)
+engine = engine.replace(
     "minConfidence: Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))",
+    "minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+)
+engine = engine.replace(
+    "minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))",
+    "minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
 )
 engine = engine.replace(
     "minRR: parseFloat(process.env.ICT_MIN_RR || '2.0')",
@@ -65,11 +73,12 @@ rr_marker_present = (
     or "configuredIctMinRR()" in engine
 )
 
-# The later 93% policy intentionally raises the floor. Keep accepting the
-# original 80% marker for a pristine source tree and the final 93% contract on
-# subsequent generated-source passes.
+# The authoritative operational floor is 80%. Accept legacy source forms so this
+# compatibility pass can normalize an older tree, but require the final runtime
+# form to use the execution-specific environment variable.
 confidence_marker_present = (
-    "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))" in engine
+    "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))" in engine
+    or "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))" in engine
     or "Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))" in engine
 )
 

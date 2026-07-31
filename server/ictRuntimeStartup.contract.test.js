@@ -24,17 +24,15 @@ test('build-time adaptive stop metadata can coexist with the R:R contract', () =
   assert.match(engineSource, /minimumRR: configuredIctMinRR\(\)/);
 });
 
-test('Railway startup cannot lower the ICT confidence floor below 93%', () => {
+test('Railway startup enforces the authoritative 80% ICT confidence floor without restoring 93%', () => {
   assert.match(
     runtimeSource,
-    /process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(93,/,
+    /process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80,/,
   );
   assert.match(
     runtimeSource,
-    /Math\.max\(93, parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '93'\)\)/,
+    /Math\.max\(80, parseFloat\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE \|\| '80'\)\)/,
   );
-  assert.doesNotMatch(
-    runtimeSource,
-    /process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(80,/,
-  );
+  assert.doesNotMatch(runtimeSource, /Math\.max\(93/);
+  assert.doesNotMatch(runtimeSource, /process\.env\.ICT_MIN_CONFIDENCE/);
 });

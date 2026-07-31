@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applySignalExecutionQualitySeparation } from './apply_signal_execution_quality_separation.mjs';
+import { applyIctRuntimeGateFix } from './apply_ict_runtime_gate_fix.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +41,16 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   if (existsSync(targetConfidencePath) && existsSync(qualityModulePath)) {
     applySignalExecutionQualitySeparation(root);
   }
+
+  // This runs last in prestart, after the legacy generators and account-isolation
+  // passes, so the operational 80% floor and bounded fresh-quote R:R correction
+  // cannot be overwritten before the server boots.
+  const ictEnginePath = resolve(root, 'server/ictEngine.js');
+  const ictExecutionPath = resolve(root, 'server/ictExecution.js');
+  if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
+    applyIctRuntimeGateFix(root);
+  }
+
   return { changed: after !== before, source: after };
 }
 
