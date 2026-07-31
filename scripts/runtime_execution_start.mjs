@@ -35,7 +35,7 @@ function enforceRuntimeFloors() {
   // These are execution contracts, not optional tuning suggestions. A stale or
   // accidentally loosened Railway variable must never make the runtime less safe
   // or contradict the scanner's qualified status.
-  process.env.ICT_MIN_CONFIDENCE = String(Math.max(93, finiteNumber(process.env.ICT_MIN_CONFIDENCE, 93)));
+  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80)));
   process.env.ICT_MIN_RR = String(Math.max(1.5, finiteNumber(process.env.ICT_MIN_RR, 1.5)));
   process.env.ICT_MAX_RISK_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.ICT_MAX_RISK_PERCENT, 1))));
   process.env.RISK_MAX_PER_TRADE_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.RISK_MAX_PER_TRADE_PERCENT, 1))));
@@ -113,8 +113,8 @@ patchFile(
       "export function isIctEnabled() { return ICT_MODE === 'shadow' || ICT_MODE === 'active' || ICT_MODE === 'live'; }",
     )
     .replace(
-      /minConfidence:\s*Math\.max\((?:80|85|93),\s*parseFloat\(process\.env\.ICT_MIN_CONFIDENCE \|\| '(?:80|85|93)'\)\)/,
-      "minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))",
+      /minConfidence:\s*Math\.max\((?:80|85|93),\s*parseFloat\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE \|\| '(?:80|85|93)'\)\)/,
+      "minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
     )
     .replace(
       /minRR:\s*(?:Math\.max\(1\.5,\s*)?parseFloat\(process\.env\.ICT_MIN_RR \|\| '(?:1|1\.0|1\.5|2|2\.0)'\)\)?/,
@@ -130,7 +130,7 @@ patchFile(
     ),
   [
     "ICT_MODE === 'active'",
-    "Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))",
+    "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
     'export const ICT_MIN_RR = 1.5;',
     'minRR: configuredIctMinRR()',
     'export function enforceMinimumRRTarget',
