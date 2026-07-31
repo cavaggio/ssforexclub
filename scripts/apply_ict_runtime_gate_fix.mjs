@@ -46,6 +46,22 @@ function patchEngine(source) {
   return out;
 }
 
+function patchAutoTrade(source) {
+  let out = source;
+  out = out.replace(
+    /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )93(, minRR = 1\.5\))?/,
+    (_, prefix, minRrSuffix = '') => `${prefix}80${minRrSuffix}`,
+  );
+  out = out.replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5');
+  if (!out.includes('minConfidence = 80')) {
+    throw new Error('[ICT_RUNTIME_GATE_FIX] ICT Auto AI watch-state floor was not normalized to 80%');
+  }
+  if (!out.includes('confidence >= cfg.minConfidence') || !out.includes('rr >= cfg.minRR')) {
+    throw new Error('[ICT_RUNTIME_GATE_FIX] ICT Auto AI qualification is not using the shared execution config');
+  }
+  return out;
+}
+
 function patchExecution(source) {
   let out = source;
   out = replaceRequired(
@@ -177,6 +193,7 @@ export function applyIctRuntimeGateFix(root = DEFAULT_ROOT) {
   const targets = [
     ['scripts/runtime_execution_start.mjs', patchRuntimeStart, true],
     ['server/ictEngine.js', patchEngine, false],
+    ['server/ictAutoTrade.js', patchAutoTrade, false],
     ['server/ictExecution.js', patchExecution, false],
   ];
   const changed = [];
