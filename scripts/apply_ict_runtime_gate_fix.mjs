@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +8,26 @@ function replaceRequired(source, before, after, label) {
   if (source.includes(after)) return source;
   if (!source.includes(before)) throw new Error(`[ICT_RUNTIME_GATE_FIX] missing ${label}`);
   return source.replace(before, after);
+}
+
+function patchRuntimeStart(source) {
+  const after = source
+    .replaceAll('ICT_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
+    .replaceAll('Math.max(93', 'Math.max(80')
+    .replaceAll("'93'", "'80'");
+
+  const required = [
+    'process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80,',
+    "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+  ];
+  const missing = required.filter((marker) => !after.includes(marker));
+  if (missing.length) {
+    throw new Error(`[ICT_RUNTIME_GATE_FIX] runtime start missing markers: ${missing.join(', ')}`);
+  }
+  if (after.includes('Math.max(93') || after.includes("|| '93'")) {
+    throw new Error('[ICT_RUNTIME_GATE_FIX] runtime start still contains the retired 93% ICT floor');
+  }
+  return after;
 }
 
 function patchEngine(source) {
@@ -155,12 +175,14 @@ function patchExecution(source) {
 
 export function applyIctRuntimeGateFix(root = DEFAULT_ROOT) {
   const targets = [
-    ['server/ictEngine.js', patchEngine],
-    ['server/ictExecution.js', patchExecution],
+    ['scripts/runtime_execution_start.mjs', patchRuntimeStart, true],
+    ['server/ictEngine.js', patchEngine, false],
+    ['server/ictExecution.js', patchExecution, false],
   ];
   const changed = [];
-  for (const [relativePath, patcher] of targets) {
+  for (const [relativePath, patcher, optional] of targets) {
     const path = resolve(root, relativePath);
+    if (optional && !existsSync(path)) continue;
     const before = readFileSync(path, 'utf8');
     const after = patcher(before);
     if (after !== before) {
