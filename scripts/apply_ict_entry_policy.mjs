@@ -58,17 +58,20 @@ engine = replaceRequired(engine, /    minimumRR: configuredIctMinRR\(\),\n  \};/
 engine = replaceRequired(engine, /    rr: setup\?\.ok \? setup\.rr : null,\n    confidence,/, `    rr: setup?.ok ? setup.rr : null,\n    atrPips,\n    riskModel: setup?.ok ? setup.riskModel ?? null : null,\n    confidence,`, 'risk metadata');
 fs.writeFileSync(ENGINE, engine);
 
+// Preserve the legacy intermediate watch-state shape expected by the forensic
+// source generator. The final runtime gate at the end of the pipeline rewrites
+// this default to the authoritative 80% floor before tests or server startup.
 let auto = fs.readFileSync(AUTO, 'utf8');
 auto = auto.replace(
   /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )\d+(, minRR = 1\.5\))?/,
-  (_, prefix, minRrSuffix = '') => `${prefix}80${minRrSuffix}`,
+  (_, prefix, minRrSuffix = '') => `${prefix}93${minRrSuffix}`,
 );
-auto = auto.replace(/if \(confidence >= \d+ && rr >= 1\.5\)/g, 'if (confidence >= 80 && rr >= 1.5)');
+auto = auto.replace(/if \(confidence >= \d+ && rr >= 1\.5\)/g, 'if (confidence >= 93 && rr >= 1.5)');
 if (
-  !auto.includes('minConfidence = 80') ||
+  !auto.includes('minConfidence = 93') ||
   !auto.includes('confidence >= cfg.minConfidence') ||
   !auto.includes('rr >= cfg.minRR')
-) throw new Error('ICT autonomous threshold was not aligned to the configured 80% floor.');
+) throw new Error('ICT intermediate watch-state contract was not prepared.');
 fs.writeFileSync(AUTO, auto);
 
 let execution = fs.readFileSync(EXECUTION, 'utf8');
@@ -89,4 +92,4 @@ const recordBlock = `  try {\n    const actualFillRisk = Math.abs(fillPrice - st
 execution = insertAfter(execution, "  rec(`filled tradeId=${tradeId} price=${fillPrice} units=${units} holdMinutes=${holdMinutes}`);\n", recordBlock, 'entry snapshot');
 execution = replaceRequired(execution, "    holdMinutes,\n    executionLog: log,", "    holdMinutes,\n    entryConfidence: analysis.confidence,\n    setupType: analysis.setupType,\n    riskModel: analysis.riskModel,\n    claudeStopAdvice: analysis.claudeStopAdvice,\n    executionLog: log,", 'execution response');
 fs.writeFileSync(EXECUTION, execution);
-console.log('ICT entry policy enforced: 80% floor, adaptive structural stop, bounded Claude advice, fresh-spread guard.');
+console.log('ICT entry policy enforced: 80% scanner/execution floor with compatibility watch-state preparation.');
