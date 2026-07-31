@@ -180,12 +180,35 @@ function patchExecution(source) {
   };
 `;
 
-  out = replaceRequired(
-    out,
-    oldConfirmation,
-    newConfirmation,
-    'final executable-price confirmation block',
-  );
+  if (out.includes(newConfirmation)) {
+    // A legacy generator may reinsert the old confirmation on a later source
+    // pass because it does not recognize the enhanced block. Remove every legacy
+    // copy and collapse accidental enhanced duplicates so the module has exactly
+    // one executablePrice declaration on every idempotent build.
+    out = out.split(oldConfirmation).join('');
+    const firstEnhanced = out.indexOf(newConfirmation);
+    if (firstEnhanced >= 0) {
+      const head = out.slice(0, firstEnhanced + newConfirmation.length);
+      const tail = out.slice(firstEnhanced + newConfirmation.length).split(newConfirmation).join('');
+      out = head + tail;
+    }
+  } else {
+    out = replaceRequired(
+      out,
+      oldConfirmation,
+      newConfirmation,
+      'final executable-price confirmation block',
+    );
+  }
+
+  const executablePriceDeclarations = out.match(
+    /const executablePrice = direction === 'long' \? protectiveCheck\.ask : protectiveCheck\.bid;/g,
+  ) || [];
+  if (executablePriceDeclarations.length !== 1) {
+    throw new Error(
+      `[ICT_RUNTIME_GATE_FIX] expected exactly one executable-price confirmation, found ${executablePriceDeclarations.length}`,
+    );
+  }
   return out;
 }
 
