@@ -59,9 +59,16 @@ engine = replaceRequired(engine, /    rr: setup\?\.ok \? setup\.rr : null,\n    
 fs.writeFileSync(ENGINE, engine);
 
 let auto = fs.readFileSync(AUTO, 'utf8');
-auto = auto.replace(/function buildIctWatchState\(analyses = \[\], minConfidence = \d+\)/, 'function buildIctWatchState(analyses = [], minConfidence = 80)');
+auto = auto.replace(
+  /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )\d+(, minRR = 1\.5\))?/,
+  (_, prefix, minRrSuffix = '') => `${prefix}80${minRrSuffix}`,
+);
 auto = auto.replace(/if \(confidence >= \d+ && rr >= 1\.5\)/g, 'if (confidence >= 80 && rr >= 1.5)');
-if (!auto.includes('minConfidence = 80') || !auto.includes('confidence >= 80 && rr >= 1.5')) throw new Error('ICT autonomous threshold was not aligned to 80%.');
+if (
+  !auto.includes('minConfidence = 80') ||
+  !auto.includes('confidence >= cfg.minConfidence') ||
+  !auto.includes('rr >= cfg.minRR')
+) throw new Error('ICT autonomous threshold was not aligned to the configured 80% floor.');
 fs.writeFileSync(AUTO, auto);
 
 let execution = fs.readFileSync(EXECUTION, 'utf8');
