@@ -131,9 +131,9 @@ export function ConnectFtmoForm() {
         </div>
 
         <div style={adminBox}>
-          <strong style={{ color: '#e0b341' }}>Platform administrator only: Railway encryption key</strong>
+          <strong style={{ color: '#e0b341' }}>Platform administrator only: Vercel credential encryption key</strong>
           <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6, margin: '7px 0 0' }}>
-            <code>FTMO_CREDENTIAL_ENCRYPTION_KEY</code> is not provided by FTMO. Generate it once with <code>openssl rand -hex 32</code>, then add it under Railway → Signal Stack service → Variables and redeploy. Clients must never see or enter this value.
+            The dashboard server action encrypts broker credentials with <code>ENCRYPTION_KEY</code>. Generate it once with <code>node -e &quot;console.log(require(&apos;crypto&apos;).randomBytes(32).toString(&apos;hex&apos;))&quot;</code>, add it under Vercel → ssforexclub → Settings → Environment Variables, and redeploy. Clients must never see or enter this value.
           </p>
         </div>
       </section>
