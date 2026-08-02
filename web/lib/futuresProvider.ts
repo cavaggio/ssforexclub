@@ -69,10 +69,13 @@ function deriveAccountId(provider: FuturesProvider, creds: Record<string, unknow
   return String(creds.accountLogin || '').trim();
 }
 
-const VALID_ENVS: Record<FuturesProvider, BrokerEnvironment[]> = {
+// Keep this runtime list string-based because BrokerEnvironment predates the
+// FTMO Free Trial UI value. The database migration in this change makes
+// free_trial canonical at persistence time.
+const VALID_ENVS: Record<FuturesProvider, readonly string[]> = {
   ninjatrader: ['paper', 'live'],
   topstep: ['evaluation', 'funded'],
-  ftmo: ['challenge', 'verification', 'funded'],
+  ftmo: ['free_trial', 'challenge', 'verification', 'funded'],
 };
 
 export async function saveFuturesConnection(args: {
