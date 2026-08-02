@@ -5,6 +5,17 @@ if (-not (Test-Path ".env")) {
   throw "Missing mt5-bridge\.env. Run .\setup_bridge.ps1, then enter the FTMO account values."
 }
 
+# Load .env into this PowerShell process so bind host/port and the Python
+# process use the same account-specific configuration.
+Get-Content ".env" | ForEach-Object {
+  $line = $_.Trim()
+  if (-not $line -or $line.StartsWith("#")) { return }
+  $parts = $line.Split("=", 2)
+  if ($parts.Count -eq 2) {
+    [Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1], "Process")
+  }
+}
+
 if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
   throw "Python launcher 'py' was not found. Install 64-bit Python 3.11 and select Add Python to PATH."
 }
@@ -19,6 +30,6 @@ if (-not (Test-Path ".venv")) {
 $bindHost = if ($env:BRIDGE_BIND_HOST) { $env:BRIDGE_BIND_HOST } else { "127.0.0.1" }
 $port = if ($env:BRIDGE_PORT) { $env:BRIDGE_PORT } else { "8787" }
 
-# python-dotenv loads .env inside app.py. Keep the service bound to localhost;
-# publish it through an HTTPS reverse proxy or Cloudflare Tunnel.
+# Keep the service bound to localhost; publish it through an HTTPS reverse
+# proxy or Cloudflare Tunnel.
 .\.venv\Scripts\python.exe -m uvicorn connector:app --host $bindHost --port $port
