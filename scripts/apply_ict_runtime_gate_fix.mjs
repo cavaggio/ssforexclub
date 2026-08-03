@@ -68,8 +68,12 @@ function patchExecution(source) {
     out,
     "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n",
     "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n" +
-      "import { maybeRebaseIctTarget } from './ictExecutionTarget.js';\n",
+      "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';\n",
     'ICT executable-target import',
+  );
+  out = out.replace(
+    "import { maybeRebaseIctTarget } from './ictExecutionTarget.js';",
+    "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';",
   );
   out = replaceRequired(
     out,
@@ -81,6 +85,44 @@ function patchExecution(source) {
     '  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.',
     '  // Auto execution uses the authoritative ICT floor (80 by default).',
   );
+
+  // The final market-side entry is authoritative for risk sizing. These values
+  // are recalculated after the fresh quote and any bounded TP rebase.
+  out = out
+    .replace('  const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);',
+      '  let slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);')
+    .replace('  const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);',
+      '  let tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);')
+    .replace('  const sizing = computeFixedDollarSizing({',
+      '  let sizing = computeFixedDollarSizing({')
+    .replace('  const units = sizing.signedUnits;',
+      '  let units = sizing.signedUnits;');
+
+  // A target that is still on the correct side of the quote can be safely
+  // extended by the executable-R:R policy below. Do not reject it before that
+  // policy runs merely because it is inside the generic two-pip buffer.
+  out = out.replace(
+    "    ? stopLoss < executable - minBuffer && targetProfit > executable + minBuffer\n    : stopLoss > executable + minBuffer && targetProfit < executable - minBuffer;",
+    "    ? stopLoss < executable - minBuffer && targetProfit > executable\n    : stopLoss > executable + minBuffer && targetProfit < executable;",
+  );
+
+  const oldQuoteSelection = `    freshQuote = Array.isArray(pricingPayload)
+      ? pricingPayload[0]
+      : pricingPayload?.prices?.[0] || pricingPayload?.[pair] || pricingPayload;
+`;
+  const newQuoteSelection = `    const pairQuoteSelection = selectIctPairQuote(pricingPayload, pair);
+    if (!pairQuoteSelection.ok) {
+      rec(\`blocked: \${pairQuoteSelection.reason}\`);
+      return blocked(
+        \`\${pair} fresh price check failed: \${pairQuoteSelection.reason}.\`,
+        { pairQuoteSelection },
+      );
+    }
+    freshQuote = pairQuoteSelection.quote;
+`;
+  if (!out.includes(newQuoteSelection)) {
+    out = replaceRequired(out, oldQuoteSelection, newQuoteSelection, 'pair-specific fresh quote selection');
+  }
 
   const oldConfirmation = `  const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
   const finalTargetConfidence = repriceIctTargetHitConfidence({
@@ -109,7 +151,7 @@ function patchExecution(source) {
   };
 `;
 
-  const newConfirmation = `  const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
+  const previousConfirmation = `  const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
   let finalAnalysis = analysis;
   let finalTargetConfidence = repriceIctTargetHitConfidence({
     analysis: finalAnalysis,
@@ -180,18 +222,130 @@ function patchExecution(source) {
   };
 `;
 
+  const newConfirmation = `  const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
+  let finalAnalysis = analysis;
+  let finalTargetConfidence = repriceIctTargetHitConfidence({
+    analysis: finalAnalysis,
+    pair,
+    direction,
+    executablePrice,
+    spreadPips: freshSpreadPips,
+    maxSpreadPips: maxFreshSpreadPips,
+    minConfidence: config.minConfidence,
+  });
+
+  // The scanner already established valid structure and at least the configured
+  // R:R. Reprice the pair at the actual ask/bid and move TP only as far as needed
+  // to preserve that floor, subject to a small pair-priced extension cap.
+  const executionTargetRebase = maybeRebaseIctTarget({
+    pair,
+    direction,
+    executablePrice,
+    stopLoss,
+    currentTarget: targetProfit,
+    scannerRR: Number(analysis.rr ?? analysis.targetConfidence?.actualRR ?? 0),
+    executableRR: finalTargetConfidence.actualRR,
+    minimumRR: Number(config.minRR ?? analysis.minimumRR ?? 1.5),
+    maxExtensionPips: Number(process.env.ICT_EXECUTION_TARGET_REBASE_MAX_PIPS || 5),
+  });
+  if (executionTargetRebase.adjusted) {
+    targetProfit = executionTargetRebase.targetProfit;
+    finalAnalysis = {
+      ...analysis,
+      target1: targetProfit,
+      takeProfit: targetProfit,
+      targetAdjustedToMinRR: true,
+      executionTargetRebase,
+    };
+    finalTargetConfidence = repriceIctTargetHitConfidence({
+      analysis: finalAnalysis,
+      pair,
+      direction,
+      executablePrice,
+      spreadPips: freshSpreadPips,
+      maxSpreadPips: maxFreshSpreadPips,
+      minConfidence: config.minConfidence,
+    });
+    rec(
+      \`\${pair} fresh quote reduced R:R to \${executionTargetRebase.executableRR.toFixed(2)}; \` +
+      \`TP rebased \${executionTargetRebase.extensionPips.toFixed(2)}p to preserve \` +
+      \`\${executionTargetRebase.minimumRR.toFixed(2)}R.\`,
+    );
+  }
+
+  if (!finalTargetConfidence.eligible || finalTargetConfidence.confidence < config.minConfidence) {
+    const rrBelowFloor = finalTargetConfidence.actualRR < finalTargetConfidence.minimumRR;
+    const accurateBlockers = (finalTargetConfidence.blockers || []).filter((blocker) =>
+      !(rrBelowFloor && String(blocker).startsWith('target-hit confidence')),
+    );
+    if (rrBelowFloor && executionTargetRebase.blocker) accurateBlockers.push(executionTargetRebase.blocker);
+    return blocked(
+      \`Final executable-price confirmation rejected for \${pair}: \${accurateBlockers.join('; ') || 'confidence gate failed'}.\`,
+      { finalTargetConfidence, executionTargetRebase, pair },
+    );
+  }
+  entry = executablePrice;
+  analysis = {
+    ...finalAnalysis,
+    entry,
+    target1: targetProfit,
+    takeProfit: targetProfit,
+    rr: finalTargetConfidence.actualRR,
+    confidence: finalTargetConfidence.confidence,
+    targetHitConfidence: finalTargetConfidence.confidence,
+    targetConfidence: finalTargetConfidence,
+    executionTargetRebase,
+  };
+
+  // Position size, margin, and actual risk must use the same executable entry and
+  // final TP that are sent to OANDA; the earlier planned-entry sizing is stale.
+  slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
+  tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
+  sizing = computeFixedDollarSizing({
+    pair, direction, entryPrice: entry, targetRiskUSD,
+    stopLossPips: slPips, stopLossPrice: stopLoss,
+    takeProfitPips: tpPips, takeProfitPrice: targetProfit,
+    accountMarginRate: parseFloat(account?.marginRate ?? 0),
+    accountBalanceUSD: balanceUSD,
+  });
+  units = sizing.signedUnits;
+  if (!units || Math.abs(units) < 1) {
+    return blocked(\`\${pair} final executable sizing produced 0 units; riskUSD=\${targetRiskUSD}, stopPips=\${slPips}.\`);
+  }
+  const finalMarginCheck = checkMargin({
+    marginAvailable,
+    estimatedMargin: sizing.estimatedMarginRequired,
+  });
+  if (!finalMarginCheck.allowed) {
+    return blocked(\`\${pair}: \${finalMarginCheck.reason}\`);
+  }
+  const finalRiskCheck = checkRiskPerTrade({
+    balanceUSD,
+    actualDollarRisk: sizing.actualRiskUSD,
+    stopLossPips: slPips,
+    positionSize: Math.abs(units),
+  });
+  if (!finalRiskCheck.passed) {
+    return blocked(\`\${pair}: \${finalRiskCheck.reason}\`);
+  }
+  if (autoAi) {
+    const finalOpenRiskPercent = computeOpenRiskPercent(openTradesForBudget, balanceUSD) ?? 0;
+    const finalTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const finalTotalCheck = checkTotalOpenRisk(finalOpenRiskPercent, finalTradeRiskPercent);
+    if (!finalTotalCheck.allowed) return blocked(\`\${pair}: \${finalTotalCheck.reason}\`);
+  }
+`;
+
   if (out.includes(newConfirmation)) {
-    // A legacy generator may reinsert the old confirmation on a later source
-    // pass because it does not recognize the enhanced block. Remove every legacy
-    // copy and collapse accidental enhanced duplicates so the module has exactly
-    // one executablePrice declaration on every idempotent build.
-    out = out.split(oldConfirmation).join('');
+    out = out.split(oldConfirmation).join('').split(previousConfirmation).join('');
     const firstEnhanced = out.indexOf(newConfirmation);
     if (firstEnhanced >= 0) {
       const head = out.slice(0, firstEnhanced + newConfirmation.length);
       const tail = out.slice(firstEnhanced + newConfirmation.length).split(newConfirmation).join('');
       out = head + tail;
     }
+  } else if (out.includes(previousConfirmation)) {
+    out = out.replace(previousConfirmation, newConfirmation);
   } else {
     out = replaceRequired(
       out,
@@ -208,6 +362,18 @@ function patchExecution(source) {
     throw new Error(
       `[ICT_RUNTIME_GATE_FIX] expected exactly one executable-price confirmation, found ${executablePriceDeclarations.length}`,
     );
+  }
+
+  const required = [
+    "selectIctPairQuote(pricingPayload, pair)",
+    "Final executable-price confirmation rejected for ${pair}",
+    "ICT_EXECUTION_TARGET_REBASE_MAX_PIPS || 5",
+    'sizing = computeFixedDollarSizing({',
+    'units = sizing.signedUnits;',
+  ];
+  const missing = required.filter((marker) => !out.includes(marker));
+  if (missing.length) {
+    throw new Error(`[ICT_RUNTIME_GATE_FIX] ICT execution accuracy markers missing: ${missing.join(', ')}`);
   }
   return out;
 }

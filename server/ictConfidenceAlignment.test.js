@@ -192,7 +192,9 @@ test('generated runtime source uses separated signal and execution quality acros
   assert.match(targetConfidence, /const rrFloorRaw =/);
   assert.match(targetConfidence, /signalQualityConfidence/);
   assert.match(targetConfidence, /executionQualityConfidence/);
-  assert.match(execution, /Final executable-price target-hit confirmation rejected/);
+  assert.match(execution, /selectIctPairQuote\(pricingPayload, pair\)/);
+  assert.match(execution, /Final executable-price confirmation rejected for \$\{pair\}/);
+  assert.match(execution, /accurateBlockers/);
   assert.match(execution, /authoritativeAnalysis/);
   assert.match(monitor, /ict_target_hit_lifecycle/);
   assert.match(reassessor, /source = 'ict_target_hit_lifecycle'/);
