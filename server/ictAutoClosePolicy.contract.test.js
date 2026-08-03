@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { evaluateActiveExit, closeUnitsForDecision } from '../web/lib/activeExitPolicy.js';
 
 const schedulerSource = readFileSync(new URL('./ictAutoScheduler.js', import.meta.url), 'utf8');
 const reassessorSource = readFileSync(new URL('./oandaActiveTradeReassessor.js', import.meta.url), 'utf8');
@@ -55,4 +56,36 @@ test('ICT exit policy prioritizes TP, limits partials, and supports loss rescue'
   assert.match(policySource, /action: 'PARTIAL_CLOSE'/);
   assert.match(policySource, /action: 'FULL_CLOSE'/);
   assert.match(policySource, /strongBreakoutContinuation/);
+});
+
+test('active policy holds strong continuation and protects a weakening breakout', () => {
+  const strong = evaluateActiveExit({
+    direction: 'long', initialRiskPips: 10, profitRMultiple: 1.1,
+    tpProgress: 0.55, marketState: 'BREAKOUT', momentumDecayScore: 25,
+    momentumStatus: 'stable', reversalRisk: 'low', givebackPercent: 4,
+  });
+  assert.equal(strong.action, 'HOLD_TO_TP');
+
+  const weakening = evaluateActiveExit({
+    direction: 'long', initialRiskPips: 10, profitRMultiple: 1.1,
+    tpProgress: 0.55, marketState: 'BREAKOUT', momentumDecayScore: 58,
+    momentumStatus: 'decaying', reversalRisk: 'medium', partialExitPercent: 33,
+  });
+  assert.equal(weakening.action, 'PARTIAL_CLOSE');
+  assert.equal(weakening.closePercent, 33);
+  assert.equal(closeUnitsForDecision(100000, weakening), 33000);
+});
+
+test('active policy closes hard invalidation and near-breakeven reversal risk', () => {
+  const invalidated = evaluateActiveExit({
+    initialRiskPips: 10, profitRMultiple: 0.7, invalidationDetected: true,
+  });
+  assert.equal(invalidated.action, 'FULL_CLOSE');
+
+  const rescue = evaluateActiveExit({
+    initialRiskPips: 10, profitRMultiple: -0.15, reversalRisk: 'high',
+    trendWeakeningDetected: true, momentumDecayScore: 75,
+  });
+  assert.equal(rescue.metrics.currentProfitPips, -1.5);
+  assert.equal(rescue.action, 'FULL_CLOSE');
 });
