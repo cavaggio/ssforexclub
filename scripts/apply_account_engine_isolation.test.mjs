@@ -31,17 +31,25 @@ test('generated runtime routes enforce one configured engine per account', () =>
   assert.doesNotMatch(route, /executionMode: 'all_enabled_engines'/);
 });
 
-test('ICT scan and execution paths enforce the immutable four-pair watchlist', () => {
+test('ICT scan includes seven approved instruments while execution remains limited to four FX pairs', () => {
   const watchlist = source('server/ictWatchlist.js');
   const auto = source('server/ictAutoTrade.js');
   const execution = source('server/ictExecution.js');
 
-  for (const pair of ['EUR_USD', 'GBP_USD', 'USD_JPY', 'GBP_JPY']) {
-    assert.match(watchlist, new RegExp(`'${pair}'`));
+  for (const instrument of [
+    'EUR_USD', 'GBP_USD', 'USD_JPY', 'GBP_JPY',
+    'XAU_USD', 'US30_USD', 'SPX500_USD',
+  ]) {
+    assert.match(watchlist, new RegExp(`'${instrument}'`));
   }
+
+  assert.match(watchlist, /ICT_EXECUTABLE_WATCHLIST/);
+  assert.match(watchlist, /ICT_ANALYSIS_ONLY_WATCHLIST/);
   assert.match(auto, /configuredIctWatchlist/);
   assert.match(auto, /requestedPairs\.filter\(\(pair\) => allowedPairs\.has\(pair\)\)/);
+  assert.match(auto, /isIctExecutionEligibleInstrument/);
   assert.match(execution, /ICT hard watchlist rejected/);
+  assert.match(execution, /signal-only in ICT Intelligence/);
 });
 
 test('V3 source remains compatible with the existing generated-source pipeline', () => {

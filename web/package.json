@@ -4,7 +4,7 @@
   "private": true,
   "description": "Signal Stack — multi-tenant Next.js 16 App Router front-end. Auth via Clerk; per-user broker connections in Supabase Postgres. Talks to the Express scanner in ../server as a separate service.",
   "scripts": {
-    "apply:ppr": "node scripts/prepare-ppr-counts-readiness.mjs && node scripts/apply-ppr-engine.mjs && node scripts/apply-ppr-trade-attribution-fallback.mjs && node scripts/apply-ppr-scanner-ui.mjs && node scripts/apply-ppr-scanner-watch-candidates.mjs && node scripts/apply-ppr-counts-readiness.mjs && node scripts/apply-ppr-pending-confidence.mjs && node scripts/apply-reassess-clear-decision.mjs && node scripts/verify-ict-close-policy.mjs",
+    "apply:ppr": "node scripts/prepare-ppr-counts-readiness.mjs && node scripts/apply-ppr-engine.mjs && node scripts/apply-ppr-trade-attribution-fallback.mjs && node scripts/apply-ppr-scanner-ui.mjs && node scripts/apply-ppr-scanner-watch-candidates.mjs && node scripts/apply-ppr-counts-readiness.mjs && node scripts/apply-ppr-pending-confidence.mjs && node scripts/apply-reassess-clear-decision.mjs && node scripts/verify-ict-close-policy.mjs && node scripts/apply-ict-analysis-instruments.mjs",
     "apply:account-isolation": "node ../scripts/prepare_actual_trade_learning_compat.mjs && node ../scripts/apply_account_engine_isolation.mjs && node ../scripts/restore_v3_watchlist_compat.mjs && node ../scripts/apply_actual_trade_learning_view.mjs",
     "apply:web-runtime": "npm run apply:ppr && npm run apply:account-isolation",
     "predev": "npm run apply:web-runtime",
