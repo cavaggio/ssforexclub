@@ -184,6 +184,8 @@ export async function POST(req: Request) {
         targetRiskUSD,
         riskPercent,
         manualExecution: true,
+        signalConfidence: finite(executionSignal.confidence),
+        signalRR: finite(executionSignal.rr),
         executionSource: 'qualified_signal_button_ict',
       },
       afterCall: auditExecution({ engine, signal: executionSignal, pair }),
