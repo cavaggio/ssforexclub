@@ -72,7 +72,7 @@ export function patchIctQualifiedExecution(source) {
 
   // A manual click can arrive just after the next scan cycle starts. When the
   // displayed signal is still inside its strict TTL, keep the qualified setup
-  // executable instead of treating a transient recompute `none` as invalid. All
+  // executable instead of treating a transient recompute "none" as invalid. All
   // broker, news, duplicate, margin, risk, price, spread, SL/TP, and final R:R
   // guards below still run against a fresh pair-specific OANDA quote.
   if (
