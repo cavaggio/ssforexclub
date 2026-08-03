@@ -34,6 +34,19 @@ export function patchExactIctConfidenceSource(source, kind) {
     return out;
   }
 
+  if (kind === 'autoTrade') {
+    out = out.replace(
+      /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )\d+(, minRR = 1\.5\))?/,
+      (_, prefix, minRrSuffix = '') => `${prefix}80${minRrSuffix}`,
+    );
+    out = out.replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5');
+    out = out.replaceAll('confidence >= 85 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5');
+    if (!out.includes('minConfidence = 80')) {
+      throw new Error('[RUNTIME_LOG_FINDINGS] ICT Auto AI exact 80% marker missing');
+    }
+    return out;
+  }
+
   if (kind === 'execution') {
     out = out.replace(
       /minConfidence:\s*Math\.max\(80,\s*Number\(rawConfig\?\.minConfidence\) \|\| 80\),/,
@@ -210,6 +223,9 @@ export function applyRuntimeLogFindings(root = DEFAULT_ROOT) {
   const changed = [];
   if (patchFile(root, 'server/ictEngine.js', (source) => patchExactIctConfidenceSource(source, 'engine'))) {
     changed.push('server/ictEngine.js');
+  }
+  if (patchFile(root, 'server/ictAutoTrade.js', (source) => patchExactIctConfidenceSource(source, 'autoTrade'))) {
+    changed.push('server/ictAutoTrade.js');
   }
   if (patchFile(root, 'server/ictExecution.js', (source) => patchExactIctConfidenceSource(source, 'execution'))) {
     changed.push('server/ictExecution.js');
