@@ -26,6 +26,8 @@ export function patchRuntimeStartExactConfidence(source) {
     '  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));';
   const aliasLine = '  process.env.ICT_MIN_CONFIDENCE = process.env.ICT_EXECUTION_MIN_CONFIDENCE;';
   let out = source
+    .replaceAll('Math.max(93', 'Math.max(80')
+    .replaceAll("|| '93'", "|| '80'")
     .replace(/^  process\.env\.ICT_MIN_CONFIDENCE = process\.env\.ICT_MIN_CONFIDENCE;\n?/gm, '')
     .replace(/^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = process\.env\.ICT_EXECUTION_MIN_CONFIDENCE;\n?/gm, '');
 
@@ -41,7 +43,7 @@ export function patchRuntimeStartExactConfidence(source) {
     out = out.replace(exactLine, `${exactLine}\n${aliasLine}`);
   }
 
-  if (!out.includes(exactLine) || !out.includes(aliasLine)) {
+  if (!out.includes(exactLine) || !out.includes(aliasLine) || out.includes('Math.max(93')) {
     throw new Error('[RUNTIME_LOG_FINDINGS] exact runtime startup confidence contract incomplete');
   }
   return out;
