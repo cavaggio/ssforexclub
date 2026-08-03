@@ -1,31 +1,36 @@
 /**
  * server/pipMath.js
  *
- * Shared pip-size / pip-distance helpers for the Signal Stack V3 execution
- * engines. Mirrors the (previously private) getPipSize/pricePrecision logic in
- * oandaInstitutionalFlow.js and oandaFibonacci.js so the new engines stay
- * consistent with the existing detectors without duplicating the table.
+ * Shared pip-size / point-distance helpers for the Signal Stack execution and
+ * intelligence engines. Forex continues to use conventional pip sizes. The
+ * analysis-only US index proxies use their native point/tick increments.
  */
 
 export function getPipSize(pair) {
-  if (String(pair || '').includes('JPY'))       return 0.01;
-  if (pair === 'XAU_USD' || pair === 'XAG_USD') return 0.01;
+  const instrument = String(pair || '').toUpperCase();
+  if (instrument === 'US30_USD') return 1;
+  if (instrument === 'SPX500_USD') return 0.25;
+  if (instrument.includes('JPY')) return 0.01;
+  if (instrument === 'XAU_USD' || instrument === 'XAG_USD') return 0.01;
   return 0.0001;
 }
 
 export function pricePrecision(pair) {
-  if (pair === 'XAU_USD' || pair === 'XAG_USD') return 2;
-  if (String(pair || '').includes('JPY'))       return 3;
+  const instrument = String(pair || '').toUpperCase();
+  if (instrument === 'US30_USD') return 0;
+  if (instrument === 'SPX500_USD') return 2;
+  if (instrument === 'XAU_USD' || instrument === 'XAG_USD') return 2;
+  if (instrument.includes('JPY')) return 3;
   return 5;
 }
 
-/** Absolute price distance → pips. */
+/** Absolute price distance → pips/points/ticks for the instrument. */
 export function toPips(priceDistance, pair) {
   const ps = getPipSize(pair);
   return +(Math.abs(priceDistance) / ps).toFixed(1);
 }
 
-/** Pips → price distance. */
+/** Pips/points/ticks → price distance. */
 export function fromPips(pips, pair) {
   return pips * getPipSize(pair);
 }
