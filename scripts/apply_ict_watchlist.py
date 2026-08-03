@@ -15,6 +15,7 @@ ENGINE = ROOT / "server" / "ictEngine.js"
 EXECUTION = ROOT / "server" / "ictExecution.js"
 AUTO_TRADE = ROOT / "server" / "ictAutoTrade.js"
 ACCOUNT_ISOLATION = ROOT / "scripts" / "apply_account_engine_isolation.mjs"
+SIGNAL_FORENSICS = ROOT / "scripts" / "apply_signal_forensics_alignment_v3.mjs"
 
 WATCHLIST_IMPORT = "import { configuredIctWatchlist } from './ictWatchlist.js';"
 CATALOG_IMPORT = "import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';"
@@ -28,6 +29,18 @@ OLD_WATCHLIST_BLOCK = re.compile(
     r"  : DEFAULT_ICT_PAIRS;"
 )
 NEW_WATCHLIST_BLOCK = "const ICT_PAIRS = configuredIctWatchlist();"
+
+DISPLAY_QUALIFICATION_OLD = """    if (isIctAutoQualified(item, cfg)) {
+      hotPairs.add(pair);
+      continue;
+    }"""
+DISPLAY_QUALIFICATION_NEW = """    const displayQualified = item?.signal !== 'none' &&
+      Number.isFinite(Number(item?.confidence)) && Number(item.confidence) >= cfg.minConfidence &&
+      Number.isFinite(Number(item?.rr)) && Number(item.rr) >= cfg.minRR;
+    if (displayQualified) {
+      hotPairs.add(pair);
+      continue;
+    }"""
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -131,9 +144,12 @@ def patch_auto_trade() -> None:
             raise SystemExit("ICT Auto AI eligibility import anchor not found")
         text = text.replace(anchor, f"{anchor}\n{ELIGIBILITY_IMPORT}", 1)
 
-    display_old = "    if (isIctAutoQualified(item, cfg)) {\n      hotPairs.add(pair);\n      continue;\n    }"
-    display_new = "    const displayQualified = item?.signal !== 'none' &&\n      Number.isFinite(Number(item?.confidence)) && Number(item.confidence) >= cfg.minConfidence &&\n      Number.isFinite(Number(item?.rr)) && Number(item.rr) >= cfg.minRR;\n    if (displayQualified) {\n      hotPairs.add(pair);\n      continue;\n    }"
-    text = replace_once(text, display_old, display_new, "ICT display qualification anchor not found")
+    text = replace_once(
+        text,
+        DISPLAY_QUALIFICATION_OLD,
+        DISPLAY_QUALIFICATION_NEW,
+        "ICT display qualification anchor not found",
+    )
 
     old = "  const rr = Number(analysis?.rr);\n  return analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
     new = "  const rr = Number(analysis?.rr);\n  const pairEligible = analysis?.pair\n    ? isIctExecutionEligibleInstrument(analysis.pair)\n    : analysis?.executionEligible !== false;\n  return pairEligible &&\n    analysis?.executionEligible !== false &&\n    analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
@@ -153,11 +169,24 @@ def patch_account_isolation_markers() -> None:
     ACCOUNT_ISOLATION.write_text(text, encoding="utf-8")
 
 
+def patch_signal_forensics_generator() -> None:
+    """Keep the later generator's replacement source identical and idempotent."""
+    text = SIGNAL_FORENSICS.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        DISPLAY_QUALIFICATION_OLD,
+        DISPLAY_QUALIFICATION_NEW,
+        "signal-forensics display qualification anchor not found",
+    )
+    SIGNAL_FORENSICS.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     patch_engine()
     patch_execution()
     patch_auto_trade()
     patch_account_isolation_markers()
+    patch_signal_forensics_generator()
     print("ICT watchlist enforced: 4 executable FX pairs + XAU/USD, US30 and US500 signal-only analysis")
 
 
