@@ -18,7 +18,7 @@ AUTO_TRADE = ROOT / "server" / "ictAutoTrade.js"
 WATCHLIST_IMPORT = "import { configuredIctWatchlist } from './ictWatchlist.js';"
 CATALOG_IMPORT = "import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';"
 MARKET_DATA_IMPORT = "import { getIctCandles } from './ictMarketData.js';"
-ELIGIBILITY_IMPORT = "import { isIctExecutionEligibleInstrument } from './ictWatchlist.js';"
+ELIGIBILITY_IMPORT = "import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictWatchlist.js';"
 
 OLD_WATCHLIST_BLOCK = re.compile(
     r"const DEFAULT_ICT_PAIRS = \[[^\n]+\];\n"
