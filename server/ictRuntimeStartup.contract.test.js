@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { selectExecutableQuote } from './oandaExecutableQuote.js';
 
 const runtimeSource = readFileSync(
   new URL('../scripts/runtime_execution_start.mjs', import.meta.url),
@@ -59,4 +60,24 @@ test('qualified ICT execution uses one authoritative signal and an equality-safe
     qualifiedRouteSource,
     /signalConfidence: finite\(executionSignal\.confidence\)/,
   );
+});
+
+test('ICT execution measures spread from executable OANDA PriceBuckets, never closeout fallback prices', () => {
+  const selected = selectExecutableQuote({
+    instrument: 'USD_JPY',
+    bids: [{ price: '156.866' }],
+    asks: [{ price: '156.870' }],
+    closeoutBid: '156.850',
+    closeoutAsk: '156.887',
+  });
+
+  assert.equal(selected.ok, true);
+  assert.equal(selected.source, 'top_of_book');
+  assert.equal(selected.bid, 156.866);
+  assert.equal(selected.ask, 156.870);
+  assert.ok(Math.abs(selected.spread - 0.004) < 1e-9);
+  assert.match(executionSource, /selectExecutableQuote\(q\)/);
+  assert.match(executionSource, /ICT_EXECUTION_QUOTE_RAW/);
+  assert.doesNotMatch(executionSource, /q\?\.closeoutBid\s*\?\?/);
+  assert.doesNotMatch(executionSource, /q\?\.closeoutAsk\s*\?\?/);
 });
