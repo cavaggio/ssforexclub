@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "server" / "ictEngine.js"
 EXECUTION = ROOT / "server" / "ictExecution.js"
 AUTO_TRADE = ROOT / "server" / "ictAutoTrade.js"
+ACCOUNT_ISOLATION = ROOT / "scripts" / "apply_account_engine_isolation.mjs"
 
 WATCHLIST_IMPORT = "import { configuredIctWatchlist } from './ictWatchlist.js';"
 CATALOG_IMPORT = "import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';"
@@ -136,10 +137,23 @@ def patch_auto_trade() -> None:
     AUTO_TRADE.write_text(text, encoding="utf-8")
 
 
+def patch_account_isolation_markers() -> None:
+    """Allow the downstream generator to accept a combined watchlist import."""
+    text = ACCOUNT_ISOLATION.read_text(encoding="utf-8")
+    exact_marker = '    "import { configuredIctWatchlist } from \'./ictWatchlist.js\';",'
+    flexible_marker = "    'configuredIctWatchlist',"
+    if exact_marker in text:
+        text = text.replace(exact_marker, flexible_marker)
+    if exact_marker in text:
+        raise SystemExit("ICT account-isolation marker compatibility patch failed")
+    ACCOUNT_ISOLATION.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     patch_engine()
     patch_execution()
     patch_auto_trade()
+    patch_account_isolation_markers()
     print("ICT watchlist enforced: 4 executable FX pairs + XAU/USD, US30 and US500 signal-only analysis")
 
 
