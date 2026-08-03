@@ -92,6 +92,7 @@ function patchIctManualRoute(segment) {
             pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
             signalConfidence, signalRR,
             manualExecution: manualExecution === true,
+            // Qualified-button invariant: manualExecution: true when the request flag is true.
             executionSource,
             targetRiskUSD: manualRisk.targetRiskUSD,
           },
