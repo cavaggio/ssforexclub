@@ -99,5 +99,5 @@ test('ICT engine and executors are enforced through the analysis router and elig
 
   assert.match(execution, /isIctExecutionEligibleInstrument\(pair\)/);
   assert.match(execution, /signal-only in ICT Intelligence/);
-  assert.match(autoTrade, /isIctExecutionEligibleInstrument\(analysis\?\.pair\)/);
+  assert.match(autoTrade, /isIctExecutionEligibleInstrument\(analysis\.pair\)/);
 });
