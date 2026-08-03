@@ -37,7 +37,7 @@ test('actual-trade learning patch is idempotent after account-isolation source g
   }
 });
 
-test('final runtime pass restores the 80% ICT floor and pair-accurate executable target correction', () => {
+test('final runtime pass restores the ICT floor and keeps scanner-qualified execution authoritative', () => {
   const root = mkdtempSync(join(tmpdir(), 'ict-runtime-gate-fix-'));
   try {
     mkdirSync(join(root, 'server'), { recursive: true });
@@ -69,6 +69,12 @@ test('final runtime pass restores the 80% ICT floor and pair-accurate executable
     assert.match(execution, /const rawFreshSpreadPips =/);
     assert.ok(execution.includes('ICT_MAX_SPREAD_PIPS_${pair}'));
     assert.match(execution, /normalizedSpreadPips/);
+    assert.match(execution, /scannerQualifiedSwing: true/);
+    assert.match(execution, /ictScannerAuthoritative: true/);
+    assert.match(execution, /optional stop advice ignored for \$\{pair\}/);
+    assert.match(execution, /stopLoss = authoritativeStop/);
+    assert.doesNotMatch(execution, /Scalp-only execution: ICT swing trade signals are disabled/);
+    assert.doesNotMatch(execution, /Universal entry policy:/);
     assert.match(runtimeStart, /process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80,/);
     assert.doesNotMatch(runtimeStart, /Math\.max\(93/);
 
