@@ -21,6 +21,31 @@ function replaceRouteSegment(source, startMarker, endMarker, patcher, label) {
   return source.slice(0, start) + after + source.slice(end);
 }
 
+export function patchRuntimeStartExactConfidence(source) {
+  const exact =
+    "  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));\n" +
+    "  process.env.ICT_MIN_CONFIDENCE = process.env.ICT_EXECUTION_MIN_CONFIDENCE;";
+  if (source.includes(exact)) return source;
+
+  const patterns = [
+    /  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80, finiteNumber\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE, 80\)\)\);/,
+    /  process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(93, finiteNumber\(process\.env\.ICT_MIN_CONFIDENCE, 80\)\)\);/,
+    /  process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(80, finiteNumber\(process\.env\.ICT_MIN_CONFIDENCE, 80\)\)\);/,
+  ];
+  let out = source;
+  let changed = false;
+  for (const pattern of patterns) {
+    if (!pattern.test(out)) continue;
+    out = out.replace(pattern, exact);
+    changed = true;
+    break;
+  }
+  if (!changed || !out.includes(exact)) {
+    throw new Error('[RUNTIME_LOG_FINDINGS] runtime startup confidence contract not found');
+  }
+  return out;
+}
+
 export function patchExactIctConfidenceSource(source, kind) {
   let out = source;
   if (kind === 'engine') {
@@ -221,6 +246,9 @@ export function applyRuntimeLogFindings(root = DEFAULT_ROOT) {
   process.env.ICT_MIN_CONFIDENCE = '80';
 
   const changed = [];
+  if (patchFile(root, 'scripts/runtime_execution_start.mjs', patchRuntimeStartExactConfidence)) {
+    changed.push('scripts/runtime_execution_start.mjs');
+  }
   if (patchFile(root, 'server/ictEngine.js', (source) => patchExactIctConfidenceSource(source, 'engine'))) {
     changed.push('server/ictEngine.js');
   }
