@@ -21,21 +21,20 @@ function replaceRouteSegment(source, startMarker, endMarker, patcher, label) {
 
 export function patchRuntimeStartExactConfidence(source) {
   let out = source
+    .replaceAll('ICT_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
+    .replaceAll('ICT_EXECUTION_EXECUTION_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
     .replaceAll('Math.max(93', 'Math.max(80')
     .replaceAll("|| '93'", "|| '80'")
-    .replace(/^  process\.env\.ICT_MIN_CONFIDENCE[^\n]*\n?/gm, '')
     .replace(/^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE[^\n]*\n?/gm, '');
 
   const functionMarker = 'function enforceRuntimeFloors() {\n';
-  if (!out.includes(functionMarker)) {
-    throw new Error('[RUNTIME_LOG_FINDINGS] enforceRuntimeFloors function not found');
-  }
+  if (!out.includes(functionMarker)) throw new Error('[RUNTIME_LOG_FINDINGS] enforceRuntimeFloors function not found');
   out = out.replace(functionMarker, `${functionMarker}${EXACT_CONFIDENCE_LINE}\n`);
 
   if (
     !out.includes(EXACT_CONFIDENCE_LINE) ||
     out.includes('Math.max(93') ||
-    out.includes('process.env.ICT_MIN_CONFIDENCE')
+    out.includes('ICT_MIN_CONFIDENCE')
   ) {
     throw new Error('[RUNTIME_LOG_FINDINGS] exact runtime startup confidence contract incomplete');
   }
