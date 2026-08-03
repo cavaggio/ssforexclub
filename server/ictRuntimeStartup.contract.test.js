@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { selectExecutableQuote } from './oandaExecutableQuote.js';
+import { configuredIctClaudeModel } from './ictClaudeAdvisor.js';
 
 const runtimeSource = readFileSync(
   new URL('../scripts/runtime_execution_start.mjs', import.meta.url),
@@ -8,6 +10,7 @@ const runtimeSource = readFileSync(
 );
 const engineSource = readFileSync(new URL('./ictEngine.js', import.meta.url), 'utf8');
 const executionSource = readFileSync(new URL('./ictExecution.js', import.meta.url), 'utf8');
+const advisorSource = readFileSync(new URL('./ictClaudeAdvisor.js', import.meta.url), 'utf8');
 const serverIndexSource = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
 const qualifiedRouteSource = readFileSync(
   new URL('../web/app/api/scanner/execute-qualified/route.ts', import.meta.url),
@@ -59,4 +62,46 @@ test('qualified ICT execution uses one authoritative signal and an equality-safe
     qualifiedRouteSource,
     /signalConfidence: finite\(executionSignal\.confidence\)/,
   );
+});
+
+test('ICT execution measures spread from executable OANDA PriceBuckets, never closeout fallback prices', () => {
+  const selected = selectExecutableQuote({
+    instrument: 'USD_JPY',
+    bids: [{ price: '156.866' }],
+    asks: [{ price: '156.870' }],
+    closeoutBid: '156.850',
+    closeoutAsk: '156.887',
+  });
+
+  assert.equal(selected.ok, true);
+  assert.equal(selected.source, 'top_of_book');
+  assert.equal(selected.bid, 156.866);
+  assert.equal(selected.ask, 156.870);
+  assert.ok(Math.abs(selected.spread - 0.004) < 1e-9);
+  assert.match(executionSource, /selectExecutableQuote\(q\)/);
+  assert.match(executionSource, /ICT_EXECUTION_QUOTE_RAW/);
+  assert.doesNotMatch(executionSource, /q\?\.closeoutBid\s*\?\?/);
+  assert.doesNotMatch(executionSource, /q\?\.closeoutAsk\s*\?\?/);
+});
+
+test('ICT Claude advisor defaults to the current model and opens an auth-failure circuit', () => {
+  const saved = {
+    ICT_CLAUDE_ADVISOR_MODEL: process.env.ICT_CLAUDE_ADVISOR_MODEL,
+    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+    CLAUDE_MODEL: process.env.CLAUDE_MODEL,
+  };
+  delete process.env.ICT_CLAUDE_ADVISOR_MODEL;
+  delete process.env.ANTHROPIC_MODEL;
+  delete process.env.CLAUDE_MODEL;
+  try {
+    assert.equal(configuredIctClaudeModel(), 'claude-sonnet-4-6');
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  assert.match(advisorSource, /advisor_auth_circuit_open:invalid_anthropic_api_key/);
+  assert.match(advisorSource, /authentication failed; advisor disabled for this process/);
+  assert.doesNotMatch(advisorSource, /claude-sonnet-4-20250514/);
 });

@@ -5,6 +5,8 @@ const finite = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+let advisorAuthCircuitReason = null;
+
 function extractText(message) {
   const blocks = Array.isArray(message?.content) ? message.content : [];
   return blocks
@@ -22,18 +24,28 @@ function parseJson(text) {
   try { return JSON.parse(candidate); } catch { return null; }
 }
 
-function configuredModel() {
+export function configuredIctClaudeModel() {
   return String(
     process.env.ICT_CLAUDE_ADVISOR_MODEL ||
     process.env.ANTHROPIC_MODEL ||
     process.env.CLAUDE_MODEL ||
-    'claude-sonnet-4-20250514'
+    'claude-sonnet-4-6'
   );
 }
 
 export function isIctClaudeAdvisorEnabled() {
   const enabled = String(process.env.ICT_CLAUDE_ADVISOR_ENABLED || 'true').toLowerCase() === 'true';
-  return enabled && Boolean(process.env.ANTHROPIC_API_KEY);
+  return enabled && Boolean(process.env.ANTHROPIC_API_KEY) && !advisorAuthCircuitReason;
+}
+
+export function resetIctClaudeAdvisorAuthCircuitForTests() {
+  advisorAuthCircuitReason = null;
+}
+
+function isAuthenticationFailure(error) {
+  const status = Number(error?.status ?? error?.statusCode);
+  const message = String(error?.message || error || '').toLowerCase();
+  return status === 401 || message.includes('invalid x-api-key') || message.includes('authentication_error');
 }
 
 /**
@@ -48,6 +60,9 @@ export async function requestIctStopAdvice({
   targetProfit,
   analysis = {},
 } = {}) {
+  if (advisorAuthCircuitReason) {
+    return { used: false, suggestedExtraPips: 0, reason: advisorAuthCircuitReason };
+  }
   if (!isIctClaudeAdvisorEnabled()) {
     return { used: false, suggestedExtraPips: 0, reason: 'advisor_disabled_or_missing_api_key' };
   }
@@ -73,7 +88,7 @@ export async function requestIctStopAdvice({
   };
 
   const request = client.messages.create({
-    model: configuredModel(),
+    model: configuredIctClaudeModel(),
     max_tokens: 220,
     temperature: 0,
     system:
@@ -97,6 +112,11 @@ export async function requestIctStopAdvice({
       new Promise((_, reject) => setTimeout(() => reject(new Error('ICT Claude advisor timeout')), timeoutMs)),
     ]);
   } catch (error) {
+    if (isAuthenticationFailure(error)) {
+      advisorAuthCircuitReason = 'advisor_auth_circuit_open:invalid_anthropic_api_key';
+      console.error('[ICT_CLAUDE_ADVISOR] authentication failed; advisor disabled for this process until credentials are corrected.');
+      return { used: false, suggestedExtraPips: 0, reason: advisorAuthCircuitReason };
+    }
     console.warn(`[ICT_CLAUDE_ADVISOR] skipped: ${error.message}`);
     return { used: false, suggestedExtraPips: 0, reason: `advisor_error:${error.message}` };
   }
@@ -108,7 +128,7 @@ export async function requestIctStopAdvice({
 
   return {
     used: true,
-    model: configuredModel(),
+    model: configuredIctClaudeModel(),
     suggestedExtraPips: +suggestion.toFixed(1),
     confidence: +confidence.toFixed(1),
     reason,

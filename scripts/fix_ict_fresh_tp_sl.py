@@ -13,8 +13,11 @@ txt = txt.replace(
 needle = "const priceDecimalsFor = (p) => (isMetal(p) ? 2 : String(p).includes('JPY') ? 3 : 5);\n"
 helper = r"""
 function quoteMidPrice(q) {
-  const bid = Number(q?.closeoutBid ?? q?.bid ?? q?.bids?.[0]?.price);
-  const ask = Number(q?.closeoutAsk ?? q?.ask ?? q?.asks?.[0]?.price);
+  // Opening orders must use the actual top-of-book PriceBuckets. OANDA's
+  // closeoutBid/closeoutAsk are fallback close-position prices and are never
+  // used to open a new position, so they must not drive entry spread checks.
+  const bid = Number(q?.bids?.[0]?.price ?? q?.bid);
+  const ask = Number(q?.asks?.[0]?.price ?? q?.ask);
   if (Number.isFinite(bid) && Number.isFinite(ask)) return { bid, ask, mid: (bid + ask) / 2, spread: ask - bid };
   return { bid: null, ask: null, mid: null, spread: null };
 }

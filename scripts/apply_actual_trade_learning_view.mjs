@@ -8,6 +8,7 @@ import { applyIctQualificationAuthority } from './apply_ict_qualification_author
 import { applyQualifiedRejectionAudit } from './apply_qualified_rejection_audit.mjs';
 import { applyScanRejectionDiagnostics } from './apply_scan_rejection_diagnostics.mjs';
 import { applyRuntimeLogFindings } from './apply_runtime_log_findings.mjs';
+import { applyOandaExecutableQuoteFix } from './apply_oanda_executable_quote_fix.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -86,6 +87,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   applyQualifiedRejectionAudit(root);
   applyScanRejectionDiagnostics(root);
   applyRuntimeLogFindings(root);
+  applyOandaExecutableQuoteFix(root);
 
   return { changed: after !== before, source: after };
 }
