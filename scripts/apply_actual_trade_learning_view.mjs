@@ -5,6 +5,7 @@ import { applySignalExecutionQualitySeparation } from './apply_signal_execution_
 import { applyIctRuntimeGateFix } from './apply_ict_runtime_gate_fix.mjs';
 import { applyIctQualifiedGateConsistency } from './apply_ict_qualified_gate_consistency.mjs';
 import { applyIctQualificationAuthority } from './apply_ict_qualification_authority.mjs';
+import { applyQualifiedRejectionAudit } from './apply_qualified_rejection_audit.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -45,8 +46,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   }
 
   // This runs last in prestart, after the legacy generators and account-isolation
-  // passes, so the operational floor, fresh-quote correction, qualified-snapshot
-  // consistency, and ICT-only execution authority cannot be overwritten.
+  // passes, so execution accuracy and its audit trail cannot be overwritten.
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
   if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
@@ -54,6 +54,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   }
   applyIctQualifiedGateConsistency(root);
   applyIctQualificationAuthority(root);
+  applyQualifiedRejectionAudit(root);
 
   return { changed: after !== before, source: after };
 }
