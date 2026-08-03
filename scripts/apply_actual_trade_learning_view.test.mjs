@@ -37,7 +37,7 @@ test('actual-trade learning patch is idempotent after account-isolation source g
   }
 });
 
-test('final runtime pass restores the 80% ICT floor and bounded executable-price target correction', () => {
+test('final runtime pass restores the 80% ICT floor and pair-accurate executable target correction', () => {
   const root = mkdtempSync(join(tmpdir(), 'ict-runtime-gate-fix-'));
   try {
     mkdirSync(join(root, 'server'), { recursive: true });
@@ -60,6 +60,9 @@ test('final runtime pass restores the 80% ICT floor and bounded executable-price
     assert.match(autoTrade, /confidence >= cfg\.minConfidence/);
     assert.match(execution, /minConfidence: Math\.max\(80/);
     assert.match(execution, /maybeRebaseIctTarget/);
+    assert.match(execution, /selectIctPairQuote\(pricingPayload, pair\)/);
+    assert.match(execution, /Final executable-price confirmation rejected for \$\{pair\}/);
+    assert.match(execution, /sizing = computeFixedDollarSizing/);
     assert.match(execution, /executionTargetRebase/);
     assert.match(runtimeStart, /process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80,/);
     assert.doesNotMatch(runtimeStart, /Math\.max\(93/);
@@ -88,7 +91,6 @@ test('a 0.04R fresh-quote shortfall rebases TP instead of rejecting a scanner-qu
     scannerRR: 1.5,
     executableRR: 1.46,
     minimumRR: 1.5,
-    maxShortfallR: 0.10,
     maxExtensionPips: 2,
   });
 
@@ -98,7 +100,7 @@ test('a 0.04R fresh-quote shortfall rebases TP instead of rejecting a scanner-qu
   assert.ok(result.extensionPips <= 2);
 });
 
-test('a large executable R:R collapse is still rejected rather than stretching TP', () => {
+test('a genuine large executable R:R collapse remains rejected by the pair-priced TP cap', () => {
   const result = maybeRebaseIctTarget({
     pair: 'EUR_USD',
     direction: 'long',
@@ -108,10 +110,11 @@ test('a large executable R:R collapse is still rejected rather than stretching T
     scannerRR: 1.5,
     executableRR: 0.73,
     minimumRR: 1.5,
-    maxShortfallR: 0.10,
     maxExtensionPips: 2,
   });
 
   assert.equal(result.adjusted, false);
-  assert.equal(result.reason, 'rr_shortfall_exceeds_tolerance');
+  assert.equal(result.reason, 'target_extension_exceeds_cap');
+  assert.match(result.blocker, /EUR_USD/);
+  assert.match(result.blocker, /execution cap/);
 });
