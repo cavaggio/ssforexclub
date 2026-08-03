@@ -12,6 +12,21 @@ function replaceOnce(oldText, newText, label) {
   source = source.replace(oldText, newText);
 }
 
+// First-class attribution is additive. Keep the public helper compatible with
+// existing callers and fixture builders by making the new read-model fields
+// optional while still writing them whenever a caller supplies them.
+if (!source.includes('  engine?: string | null;')) {
+  replaceOnce(
+    '  brokerTradeId?: string | null;\n',
+    '  brokerTradeId?: string | null;\n  engine?: string | null;\n  strategy?: string | null;\n',
+    'TradeLogInput attribution fields',
+  );
+}
+source = source.replace(
+  '  broker_trade_id: string | null;\n',
+  '  broker_trade_id?: string | null;\n  engine?: string | null;\n  strategy?: string | null;\n',
+);
+
 replaceOnce(
   "        event_type: input.eventType,\n        status: input.eventType === 'error' ? 'error' : 'ok',",
   "        event_type: input.eventType,\n" +
@@ -75,6 +90,8 @@ replaceOnce(
 );
 
 for (const marker of [
+  'engine?: string | null',
+  'broker_trade_id?: string | null',
   'broker_trade_id: input.brokerTradeId ?? input.tradeId ?? null',
   'attributed fallback unavailable',
   'retrying legacy fallback',
