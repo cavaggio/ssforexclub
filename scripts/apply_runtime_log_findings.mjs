@@ -22,26 +22,27 @@ function replaceRouteSegment(source, startMarker, endMarker, patcher, label) {
 }
 
 export function patchRuntimeStartExactConfidence(source) {
-  const exact =
-    "  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));\n" +
-    "  process.env.ICT_MIN_CONFIDENCE = process.env.ICT_EXECUTION_MIN_CONFIDENCE;";
-  if (source.includes(exact)) return source;
+  const exactLine =
+    '  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));';
+  const aliasLine = '  process.env.ICT_MIN_CONFIDENCE = process.env.ICT_EXECUTION_MIN_CONFIDENCE;';
+  let out = source
+    .replace(/^  process\.env\.ICT_MIN_CONFIDENCE = process\.env\.ICT_MIN_CONFIDENCE;\n?/gm, '')
+    .replace(/^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = process\.env\.ICT_EXECUTION_MIN_CONFIDENCE;\n?/gm, '');
 
-  const patterns = [
-    /  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80, finiteNumber\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE, 80\)\)\);/,
-    /  process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(93, finiteNumber\(process\.env\.ICT_MIN_CONFIDENCE, 80\)\)\);/,
-    /  process\.env\.ICT_MIN_CONFIDENCE = String\(Math\.max\(80, finiteNumber\(process\.env\.ICT_MIN_CONFIDENCE, 80\)\)\);/,
-  ];
-  let out = source;
-  let changed = false;
-  for (const pattern of patterns) {
-    if (!pattern.test(out)) continue;
-    out = out.replace(pattern, exact);
-    changed = true;
-    break;
+  if (!out.includes(exactLine)) {
+    const confidenceLine = /^  process\.env\.ICT_(?:EXECUTION_)?MIN_CONFIDENCE = String\([^\n]+\);$/m;
+    if (!confidenceLine.test(out)) {
+      throw new Error('[RUNTIME_LOG_FINDINGS] runtime startup confidence contract not found');
+    }
+    out = out.replace(confidenceLine, exactLine);
   }
-  if (!changed || !out.includes(exact)) {
-    throw new Error('[RUNTIME_LOG_FINDINGS] runtime startup confidence contract not found');
+
+  if (!out.includes(aliasLine)) {
+    out = out.replace(exactLine, `${exactLine}\n${aliasLine}`);
+  }
+
+  if (!out.includes(exactLine) || !out.includes(aliasLine)) {
+    throw new Error('[RUNTIME_LOG_FINDINGS] exact runtime startup confidence contract incomplete');
   }
   return out;
 }
