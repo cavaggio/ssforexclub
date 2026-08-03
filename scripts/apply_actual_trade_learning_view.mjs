@@ -52,6 +52,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   // approved 80% ICT threshold cannot be overwritten before scanning begins.
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
+  const serverIndexPath = resolve(root, 'server/index.js');
   if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
     const engineSource = readFileSync(ictEnginePath, 'utf8');
     const executionSource = readFileSync(ictExecutionPath, 'utf8');
@@ -64,7 +65,23 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
       console.log('[ACTUAL_TRADE_LEARNING] exact ICT 80% runtime gate already applied');
     }
   }
-  applyIctQualifiedGateConsistency(root);
+
+  const executionSource = existsSync(ictExecutionPath)
+    ? readFileSync(ictExecutionPath, 'utf8')
+    : '';
+  const indexSource = existsSync(serverIndexPath)
+    ? readFileSync(serverIndexPath, 'utf8')
+    : '';
+  const qualifiedRouteAlreadyApplied =
+    executionSource.includes('executionQualifiedSnapshotGrace') &&
+    indexSource.includes('signalConfidence, signalRR, manualExecution, executionSource') &&
+    indexSource.includes('targetRiskUSD: manualRisk.targetRiskUSD');
+  if (!qualifiedRouteAlreadyApplied) {
+    applyIctQualifiedGateConsistency(root);
+  } else {
+    console.log('[ACTUAL_TRADE_LEARNING] qualified ICT route and manual-risk propagation already applied');
+  }
+
   applyIctQualificationAuthority(root);
   applyQualifiedRejectionAudit(root);
   applyScanRejectionDiagnostics(root);
