@@ -7,6 +7,7 @@ import { applyIctQualifiedGateConsistency } from './apply_ict_qualified_gate_con
 import { applyIctQualificationAuthority } from './apply_ict_qualification_authority.mjs';
 import { applyQualifiedRejectionAudit } from './apply_qualified_rejection_audit.mjs';
 import { applyScanRejectionDiagnostics } from './apply_scan_rejection_diagnostics.mjs';
+import { applyRuntimeLogFindings } from './apply_runtime_log_findings.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,17 +48,44 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   }
 
   // This runs last in prestart, after the legacy generators and account-isolation
-  // passes, so execution accuracy, its audit trail, and exact scan reasons cannot
-  // be overwritten before the service begins scanning.
+  // passes, so execution accuracy, its audit trail, exact scan reasons, and the
+  // approved 80% ICT threshold cannot be overwritten before scanning begins.
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
+  const serverIndexPath = resolve(root, 'server/index.js');
   if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
-    applyIctRuntimeGateFix(root);
+    const engineSource = readFileSync(ictEnginePath, 'utf8');
+    const executionSource = readFileSync(ictExecutionPath, 'utf8');
+    const exactThresholdAlreadyApplied =
+      engineSource.includes('minConfidence: 80,') &&
+      executionSource.includes('minConfidence: 80,');
+    if (!exactThresholdAlreadyApplied) {
+      applyIctRuntimeGateFix(root);
+    } else {
+      console.log('[ACTUAL_TRADE_LEARNING] exact ICT 80% runtime gate already applied');
+    }
   }
-  applyIctQualifiedGateConsistency(root);
+
+  const executionSource = existsSync(ictExecutionPath)
+    ? readFileSync(ictExecutionPath, 'utf8')
+    : '';
+  const indexSource = existsSync(serverIndexPath)
+    ? readFileSync(serverIndexPath, 'utf8')
+    : '';
+  const qualifiedRouteAlreadyApplied =
+    executionSource.includes('executionQualifiedSnapshotGrace') &&
+    indexSource.includes('signalConfidence, signalRR, manualExecution, executionSource') &&
+    indexSource.includes('targetRiskUSD: manualRisk.targetRiskUSD');
+  if (!qualifiedRouteAlreadyApplied) {
+    applyIctQualifiedGateConsistency(root);
+  } else {
+    console.log('[ACTUAL_TRADE_LEARNING] qualified ICT route and manual-risk propagation already applied');
+  }
+
   applyIctQualificationAuthority(root);
   applyQualifiedRejectionAudit(root);
   applyScanRejectionDiagnostics(root);
+  applyRuntimeLogFindings(root);
 
   return { changed: after !== before, source: after };
 }

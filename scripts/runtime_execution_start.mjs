@@ -40,10 +40,10 @@ function finiteNumber(value, fallback) {
 }
 
 function enforceRuntimeFloors() {
+  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));
   // These are execution contracts, not optional tuning suggestions. A stale or
   // accidentally loosened Railway variable must never make the runtime less safe
   // or contradict the scanner's qualified status.
-  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80)));
   process.env.ICT_MIN_RR = String(Math.max(1.5, finiteNumber(process.env.ICT_MIN_RR, 1.5)));
   process.env.ICT_MAX_RISK_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.ICT_MAX_RISK_PERCENT, 1))));
   process.env.RISK_MAX_PER_TRADE_PERCENT = String(Math.min(1, Math.max(0.01, finiteNumber(process.env.RISK_MAX_PER_TRADE_PERCENT, 1))));
