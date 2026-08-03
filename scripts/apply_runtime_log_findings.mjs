@@ -24,26 +24,21 @@ function replaceRouteSegment(source, startMarker, endMarker, patcher, label) {
 export function patchRuntimeStartExactConfidence(source) {
   const exactLine =
     '  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));';
-  const aliasLine = '  process.env.ICT_MIN_CONFIDENCE = process.env.ICT_EXECUTION_MIN_CONFIDENCE;';
   let out = source
     .replaceAll('Math.max(93', 'Math.max(80')
     .replaceAll("|| '93'", "|| '80'")
-    .replace(/^  process\.env\.ICT_MIN_CONFIDENCE = process\.env\.ICT_MIN_CONFIDENCE;\n?/gm, '')
+    .replace(/^  process\.env\.ICT_MIN_CONFIDENCE[^\n]*\n?/gm, '')
     .replace(/^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = process\.env\.ICT_EXECUTION_MIN_CONFIDENCE;\n?/gm, '');
 
   if (!out.includes(exactLine)) {
-    const confidenceLine = /^  process\.env\.ICT_(?:EXECUTION_)?MIN_CONFIDENCE = String\([^\n]+\);$/m;
+    const confidenceLine = /^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\([^\n]+\);$/m;
     if (!confidenceLine.test(out)) {
       throw new Error('[RUNTIME_LOG_FINDINGS] runtime startup confidence contract not found');
     }
     out = out.replace(confidenceLine, exactLine);
   }
 
-  if (!out.includes(aliasLine)) {
-    out = out.replace(exactLine, `${exactLine}\n${aliasLine}`);
-  }
-
-  if (!out.includes(exactLine) || !out.includes(aliasLine) || out.includes('Math.max(93')) {
+  if (!out.includes(exactLine) || out.includes('Math.max(93') || out.includes('process.env.ICT_MIN_CONFIDENCE')) {
     throw new Error('[RUNTIME_LOG_FINDINGS] exact runtime startup confidence contract incomplete');
   }
   return out;
@@ -246,7 +241,6 @@ export function applyRuntimeLogFindings(root = DEFAULT_ROOT) {
   // The approved ICT execution threshold is exactly 80%. A stale Railway value
   // of 85 previously overrode that policy and could suppress valid 80–84 signals.
   process.env.ICT_EXECUTION_MIN_CONFIDENCE = '80';
-  process.env.ICT_MIN_CONFIDENCE = '80';
 
   const changed = [];
   if (patchFile(root, 'scripts/runtime_execution_start.mjs', patchRuntimeStartExactConfidence)) {
