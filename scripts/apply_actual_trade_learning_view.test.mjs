@@ -64,6 +64,11 @@ test('final runtime pass restores the 80% ICT floor and pair-accurate executable
     assert.match(execution, /Final executable-price confirmation rejected for \$\{pair\}/);
     assert.match(execution, /sizing = computeFixedDollarSizing/);
     assert.match(execution, /executionTargetRebase/);
+    assert.match(execution, /authoritativeAnalysis = null/);
+    assert.match(execution, /executionQualifiedSnapshotGrace/);
+    assert.match(execution, /const rawFreshSpreadPips =/);
+    assert.ok(execution.includes('ICT_MAX_SPREAD_PIPS_${pair}'));
+    assert.match(execution, /normalizedSpreadPips/);
     assert.match(runtimeStart, /process\.env\.ICT_EXECUTION_MIN_CONFIDENCE = String\(Math\.max\(80,/);
     assert.doesNotMatch(runtimeStart, /Math\.max\(93/);
 

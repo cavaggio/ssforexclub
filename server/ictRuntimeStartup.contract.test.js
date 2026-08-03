@@ -7,6 +7,12 @@ const runtimeSource = readFileSync(
   'utf8',
 );
 const engineSource = readFileSync(new URL('./ictEngine.js', import.meta.url), 'utf8');
+const executionSource = readFileSync(new URL('./ictExecution.js', import.meta.url), 'utf8');
+const serverIndexSource = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+const qualifiedRouteSource = readFileSync(
+  new URL('../web/app/api/scanner/execute-qualified/route.ts', import.meta.url),
+  'utf8',
+);
 
 test('Railway startup recognizes the evolved ICT R:R contract before invoking the legacy patcher', () => {
   const guardIndex = runtimeSource.indexOf('if (hasIctRrRuntimeContract(before))');
@@ -35,4 +41,22 @@ test('Railway startup enforces the authoritative 80% ICT confidence floor withou
   );
   assert.doesNotMatch(runtimeSource, /Math\.max\(93/);
   assert.doesNotMatch(runtimeSource, /process\.env\.ICT_MIN_CONFIDENCE/);
+});
+
+test('qualified ICT execution uses one authoritative signal and an equality-safe pair spread gate', () => {
+  assert.match(executionSource, /authoritativeAnalysis = null/);
+  assert.match(executionSource, /executionQualifiedSnapshotGrace/);
+  assert.match(executionSource, /usedQualifiedSnapshotGrace/);
+  assert.match(executionSource, /const rawFreshSpreadPips =/);
+  assert.ok(
+    executionSource.includes('ICT_MAX_SPREAD_PIPS_${pair}'),
+    'pair-specific spread override marker is missing',
+  );
+  assert.match(executionSource, /normalizedSpreadPips/);
+  assert.match(serverIndexSource, /manualExecution: manualExecution === true/);
+  assert.match(serverIndexSource, /signalConfidence, signalRR/);
+  assert.match(
+    qualifiedRouteSource,
+    /signalConfidence: finite\(executionSignal\.confidence\)/,
+  );
 });
