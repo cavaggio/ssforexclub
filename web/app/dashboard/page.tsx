@@ -16,6 +16,7 @@ import {
 import { ScannerStatusCard } from '@/components/scanner-status-card';
 import { ScannerWatchStatus } from '@/components/scanner-watch-status';
 import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
+import { AutoCloseToggle } from '@/components/auto-close-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
 
@@ -178,6 +179,7 @@ export default async function DashboardPage() {
 
       {hasAnyConnection && <RiskManagementPanel />}
       {hasAnyConnection && <AutoAiTradingToggle />}
+      {hasAnyConnection && <AutoCloseToggle />}
 
       <TradeActivityLog hasBroker={hasAnyConnection} />
 

@@ -34,6 +34,29 @@ reassessor = replaceRequired(reassessor, "    minutesElapsed,\n    tpProgress: +
 fs.writeFileSync(REASSESSOR, reassessor);
 
 let route = fs.readFileSync(ROUTE, 'utf8');
+
+// Active Exit Intelligence owns the current authenticated management route.
+// Its five-minute TP-first policy consumes the ICT lifecycle fields produced
+// above, so the legacy post-hold/near-SL source transformer must not rewrite it.
+if (route.includes("from '@/lib/activeExitPolicy.js'")) {
+  for (const marker of [
+    'evaluateActiveExit',
+    'trade_exit_management_state',
+    ".eq('auto_close_enabled', true)",
+    "decision.action === 'PARTIAL_CLOSE'",
+    "ictClosePolicy: 'active_exit_intelligence_v1'",
+  ]) {
+    if (!route.includes(marker)) {
+      throw new Error(`ICT lifecycle marker missing from Active Exit Intelligence route: ${marker}`);
+    }
+  }
+  fs.writeFileSync(ROUTE, route);
+  console.log('ICT lifecycle aligned with Active Exit Intelligence route.');
+  process.exit(0);
+}
+
+// Backward-compatible migration for older branches that still use the retired
+// post-hold/high-reversal/near-SL ICT close route.
 route = replaceRequired(route, "  const reassessmentDue = minutesElapsed >= ICT_MIN_REASSESSMENT_AGE_MINUTES;", `  const expectedHoldTimeMinutes = finiteNumber(\n    plan.expectedHoldTimeMinutes ?? plan.detail?.entryContext?.entryExpectedHoldTimeMinutes,\n  ) ?? Math.max(120, ICT_MIN_REASSESSMENT_AGE_MINUTES);\n  const lifecyclePastHold = plan.ictLifecycle?.pastHold !== false;\n  const reassessmentDue = minutesElapsed >= expectedHoldTimeMinutes && lifecyclePastHold;`, 'post-hold close gate');
 route = insertAfter(route, "  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toUpperCase();\n", "  const ictLifecycleAction = String(plan.ictLifecycle?.action ?? '').toUpperCase();\n  const hasIctLifecycle = Boolean(plan.ictLifecycle && typeof plan.ictLifecycle === 'object');\n", 'ICT action');
 route = replaceRequired(route, /  const explicitHighReversal =\n    reversalRisk === 'high' \|\|[\s\S]*?      \(momentum\.includes\('reversal'\) \|\| momentum\.includes\('reversed'\)\)\n    \);/, `  const legacyHighReversal =\n    reversalRisk === 'high' ||\n    (plan.invalidationDetected === true && invalidationSeverity === 'high') ||\n    (lifecycleUrgency === 'high' &&\n      (lifecycleSource === 'thesis_invalidation' || lifecycleSource === 'institutional_reversal')) ||\n    (plan.trendWeakeningDetected === true && trendWeakeningSeverity === 'high' &&\n      plan.institutionalFlow?.opposes === true &&\n      (momentum.includes('reversal') || momentum.includes('reversed')));\n  const explicitHighReversal = hasIctLifecycle ? ictLifecycleAction === 'CLOSE' : legacyHighReversal;`, 'ICT reversal');

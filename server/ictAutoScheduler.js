@@ -3,7 +3,7 @@ import { etParts } from './ictTime.js';
 
 export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
 export const AUTO_AI_EXECUTION_WINDOW = { startMin: 135, endMin: 600 }; // entries: 02:15–10:00 ET
-export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET
+export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 135, endMin: 1050 }; // 02:15–17:30 ET
 export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1020, endMin: 1035 }; // 17:00–17:15 ET
 
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
@@ -16,7 +16,7 @@ function interval(name, fallback) {
 export const AUTO_AI_FULL_SCAN_INTERVAL_MS = interval('AUTO_AI_FULL_SCAN_INTERVAL_MS', 120000);
 export const AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS = interval('AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS', 60000);
 export const AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS = interval('AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS', 30000);
-export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math.max(1800000, interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000));
+export const ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math.max(300000, interval('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 300000));
 export const OANDA_TRANSACTION_SYNC_INTERVAL_MS = interval('OANDA_TRANSACTION_SYNC_INTERVAL_MS', 1800000);
 export const DAILY_MARKET_STUDY_INTERVAL_MS = interval('DAILY_MARKET_STUDY_INTERVAL_MS', 300000);
 
@@ -139,7 +139,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
     `[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ` +
     `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
     `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
-    `management=10:00–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
+    `management=02:15–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
   );
 
   addTimer(setInterval(() => void tick(nextUrl, secret, {
@@ -152,7 +152,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
   addTimer(setInterval(() => void dailyMarketStudyTick(nextUrl, secret), DAILY_MARKET_STUDY_INTERVAL_MS));
 
   void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
-  // Do not run active management immediately on process startup. The first close-capable review must occur on the 30-minute scheduler cadence.
+  // Do not run active management immediately on process startup. The first close-capable review occurs on the five-minute scheduler cadence.
   void transactionSyncTick(nextUrl, secret);
   void dailyMarketStudyTick(nextUrl, secret);
   return {

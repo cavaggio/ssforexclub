@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
-import { listTradeLogsForUser } from '@/lib/tradeLogs';
+import { listTradeLogsForUser, logTradeEvent } from '@/lib/tradeLogs';
+import { evaluateActiveExit, closeUnitsForDecision } from '@/lib/activeExitPolicy.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -10,16 +11,25 @@ export const runtime = 'nodejs';
 const mask = (id: string) => id && id.length > 6 ? `${id.slice(0, 4)}…${id.slice(-2)}` : '***';
 
 type AutoAiEngine = 'ict' | 'v3' | 'ppr';
-type CloseDecision = {
-  close: boolean;
-  reason: string | null;
+type ExitState = {
+  partial_count?: number | null;
+  cumulative_partial_percent?: number | null;
+  peak_profit_r?: number | null;
+  peak_profit_pips?: number | null;
+  last_action?: string | null;
+  last_action_at?: string | null;
+};
+type ManagementDecision = {
+  action: 'HOLD_TO_TP' | 'PARTIAL_CLOSE' | 'FULL_CLOSE';
+  closePercent: number;
+  reason: string;
+  confidence: number;
   policy: string;
-  details?: Record<string, unknown>;
+  metrics?: Record<string, any>;
+  evidence?: string[];
 };
 
-const ICT_MIN_REASSESSMENT_AGE_MINUTES = 30;
-const ICT_NEAR_SL_RISK_FRACTION = 0.25;
-const ICT_NEAR_SL_MIN_PIPS = 2;
+const ACTION_COOLDOWN_MS = 4 * 60 * 1000;
 
 function normalizeEngine(value: unknown): AutoAiEngine {
   if (value === 'v3' || value === 'ppr') return value;
@@ -29,6 +39,12 @@ function normalizeEngine(value: unknown): AutoAiEngine {
 function finiteNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isMissingAutoCloseSchema(error: { code?: string; message?: string } | null | undefined) {
+  const message = String(error?.message || '');
+  return error?.code === '42703' || error?.code === '42P01' ||
+    /auto_close_enabled|trade_exit_management_state|does not exist/i.test(message);
 }
 
 function nyContext(now = new Date()) {
@@ -46,139 +62,63 @@ function nyContext(now = new Date()) {
     weekday,
     minutes,
     isWeekend: weekday === 'Sat' || weekday === 'Sun',
-    afterEntryCutoff: minutes >= 10 * 60,
+    managementStarted: minutes >= 2 * 60 + 15,
     beforeManagementEnd: minutes < 17 * 60 + 30,
     afterVolatilityCutoff: minutes >= 17 * 60,
   };
 }
 
-/**
- * ICT positions are intentionally protected from scanner/requalification exits.
- * An ICT broker close is permitted only when ALL of these are true:
- *   1. The position has exceeded its recorded ICT hold time (30 minutes remains only the scheduler cadence).
- *   2. The active-trade reassessment reports HIGH reversal/invalidation risk.
- *   3. The reassessment explicitly recommends CLOSE/EXIT, not merely REVIEW.
- *   4. Price is within the final 25% of the original stop distance (minimum 2 pips).
- */
-function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {
-  const minutesElapsed = finiteNumber(plan.minutesElapsed) ?? 0;
-  const expectedHoldTimeMinutes = finiteNumber(
-    plan.expectedHoldTimeMinutes ?? plan.detail?.entryContext?.entryExpectedHoldTimeMinutes,
-  ) ?? Math.max(120, ICT_MIN_REASSESSMENT_AGE_MINUTES);
-  const lifecyclePastHold = plan.ictLifecycle?.pastHold !== false;
-  const reassessmentDue = minutesElapsed >= expectedHoldTimeMinutes && lifecyclePastHold;
-
+function v3ExitDecision(plan: Record<string, any>, afterVolatilityCutoff: boolean): ManagementDecision {
   const reversalRisk = String(
-    plan.reversalRisk ??
-    plan.detail?.invalidation?.reversalRisk ??
-    '',
-  ).toLowerCase();
-  const invalidationSeverity = String(plan.invalidationSeverity ?? '').toLowerCase();
-  const trendWeakeningSeverity = String(plan.trendWeakeningSeverity ?? '').toLowerCase();
-  const momentum = String(plan.momentumStatus ?? '').toLowerCase();
-  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toUpperCase();
-  const ictLifecycleAction = String(plan.ictLifecycle?.action ?? '').toUpperCase();
-  const hasIctLifecycle = Boolean(plan.ictLifecycle && typeof plan.ictLifecycle === 'object');
-  const lifecycleUrgency = String(plan.lifecycleRecommendation?.urgency ?? '').toLowerCase();
-  const lifecycleSource = String(plan.lifecycleRecommendation?.source ?? '').toLowerCase();
-  const recommendedAction = String(plan.recommendedAction ?? '').toUpperCase();
-
-  const legacyHighReversal =
-    reversalRisk === 'high' ||
-    (plan.invalidationDetected === true && invalidationSeverity === 'high') ||
-    (lifecycleUrgency === 'high' &&
-      (lifecycleSource === 'thesis_invalidation' || lifecycleSource === 'institutional_reversal')) ||
-    (plan.trendWeakeningDetected === true && trendWeakeningSeverity === 'high' &&
-      plan.institutionalFlow?.opposes === true &&
-      (momentum.includes('reversal') || momentum.includes('reversed')));
-  const explicitHighReversal = hasIctLifecycle ? ictLifecycleAction === 'CLOSE' : legacyHighReversal;
-
-  const legacyCloseRecommendation =
-    plan.invalidationDetected === true || recommendedAction === 'EXIT_INVALIDATED' ||
-    lifecycleAction === 'CLOSE' || lifecycleAction === 'EXIT' || lifecycleAction === 'EXIT_NOW';
-  const explicitCloseRecommendation = hasIctLifecycle ? ictLifecycleAction === 'CLOSE' : legacyCloseRecommendation;
-
-  const distanceToSL = finiteNumber(plan.distanceToSL);
-  const initialRiskPips = finiteNumber(
-    plan.initialRiskPips ??
-    plan.originalRiskPips ??
-    plan.detail?.lifecycle?.originalSlPips,
-  );
-  const nearSlThresholdPips = initialRiskPips != null && initialRiskPips > 0
-    ? Math.max(ICT_NEAR_SL_MIN_PIPS, initialRiskPips * ICT_NEAR_SL_RISK_FRACTION)
-    : null;
-  const closeToStop =
-    distanceToSL != null &&
-    distanceToSL >= 0 &&
-    nearSlThresholdPips != null &&
-    distanceToSL <= nearSlThresholdPips;
-
-  const close = Boolean(
-    reassessmentDue &&
-    explicitHighReversal &&
-    explicitCloseRecommendation &&
-    closeToStop,
-  );
-
-  return {
-    close,
-    reason: close ? 'ict_post_hold_high_reversal_near_sl' : null,
-    // Legacy build marker: ict_30m_high_reversal_near_sl_only
-    policy: 'ict_post_hold_high_reversal_near_sl_only',
-    details: {
-      minutesElapsed,
-      reassessmentDue,
-      expectedHoldTimeMinutes,
-      lifecyclePastHold,
-      hasIctLifecycle,
-      ictLifecycleAction: ictLifecycleAction || null,
-      explicitHighReversal,
-      explicitCloseRecommendation,
-      closeToStop,
-      distanceToSL,
-      initialRiskPips,
-      nearSlThresholdPips,
-      reversalRisk: reversalRisk || null,
-      invalidationSeverity: invalidationSeverity || null,
-      lifecycleAction: lifecycleAction || null,
-      lifecycleUrgency: lifecycleUrgency || null,
-      lifecycleSource: lifecycleSource || null,
-    },
-  };
-}
-
-// Preserve the existing V3 management policy. ICT never uses this function.
-function shouldCloseV3Trade(plan: Record<string, any>, afterVolatilityCutoff: boolean): CloseDecision {
-  const reversalRisk = String(
-    plan.reversalRisk ??
-    plan.detail?.invalidation?.reversalRisk ??
-    plan.detail?.trendWeakening?.severity ??
-    plan.trendWeakeningSeverity ??
-    '',
+    plan.reversalRisk ?? plan.detail?.invalidation?.reversalRisk ??
+    plan.detail?.trendWeakening?.severity ?? plan.trendWeakeningSeverity ?? '',
   ).toLowerCase();
   const momentum = String(plan.momentumStatus ?? '').toLowerCase();
   const action = String(plan.recommendedAction ?? '').toUpperCase();
-  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toUpperCase();
-  const mediumOrHigherReversal =
-    reversalRisk === 'medium' || reversalRisk === 'high' ||
+  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toLowerCase();
+  const profitR = finiteNumber(plan.profitRMultiple) ?? 0;
+
+  if (lifecycleAction === 'partial_close' && profitR > 0) {
+    const requested = finiteNumber(
+      plan.partialExitPercent ?? plan.partialClose?.recommendedPartialClosePercent,
+    ) ?? 25;
+    return {
+      action: 'PARTIAL_CLOSE',
+      closePercent: Math.max(25, Math.min(50, Math.round(requested))),
+      reason: plan.lifecycleRecommendation?.reason || 'V3 lifecycle recommends protecting a profitable position with a partial exit.',
+      confidence: finiteNumber(plan.lifecycleRecommendation?.confidence) ?? 75,
+      policy: 'v3_existing_active_management',
+    };
+  }
+
+  const mediumOrHigherReversal = reversalRisk === 'medium' || reversalRisk === 'high' ||
     momentum.includes('reversal') || momentum.includes('reversed');
-  const immediateExit =
-    plan.invalidationDetected === true ||
+  const immediateExit = plan.invalidationDetected === true ||
     action === 'EXIT_INVALIDATED' || action === 'EXIT_REVIEW' ||
-    lifecycleAction.includes('EXIT') || lifecycleAction.includes('CLOSE') ||
+    lifecycleAction.includes('exit') || lifecycleAction.includes('close') ||
     mediumOrHigherReversal;
   const slowedByFive = afterVolatilityCutoff && (
-    plan.volatilityCollapsed === true ||
-    momentum.includes('decay') || momentum.includes('slowing') ||
-    plan.trendWeakeningDetected === true
+    plan.volatilityCollapsed === true || momentum.includes('decay') ||
+    momentum.includes('slowing') || plan.trendWeakeningDetected === true
   );
+
+  if (immediateExit || slowedByFive) {
+    return {
+      action: 'FULL_CLOSE',
+      closePercent: 100,
+      reason: immediateExit
+        ? 'V3 invalidation or medium/high reversal risk requires an active exit.'
+        : 'Late-session volatility or momentum deterioration requires an active exit.',
+      confidence: immediateExit ? 84 : 72,
+      policy: 'v3_existing_active_management',
+    };
+  }
+
   return {
-    close: immediateExit || slowedByFive,
-    reason: immediateExit
-      ? 'medium_or_higher_reversal_or_invalidation'
-      : slowedByFive
-        ? '5pm_et_volatility_or_momentum_slowdown'
-        : null,
+    action: 'HOLD_TO_TP',
+    closePercent: 0,
+    reason: 'V3 thesis remains active; hold the original take profit.',
+    confidence: 70,
     policy: 'v3_existing_active_management',
   };
 }
@@ -235,6 +175,69 @@ async function openTradeStrategies(userId: string): Promise<Map<string, AutoAiEn
   return strategies;
 }
 
+async function loadExitStates(
+  supabase: ReturnType<typeof getServerSupabase>,
+  userId: string,
+  accountId: string,
+  tradeIds: string[],
+): Promise<Map<string, ExitState>> {
+  if (!tradeIds.length) return new Map();
+  const { data, error } = await supabase
+    .from('trade_exit_management_state')
+    .select('trade_id, partial_count, cumulative_partial_percent, peak_profit_r, peak_profit_pips, last_action, last_action_at')
+    .eq('user_id', userId)
+    .eq('broker_account_id', accountId)
+    .in('trade_id', tradeIds);
+  if (error) throw error;
+  return new Map((data ?? []).map((row: Record<string, any>) => [String(row.trade_id), row]));
+}
+
+async function saveExitState(args: {
+  supabase: ReturnType<typeof getServerSupabase>;
+  userId: string;
+  accountId: string;
+  tradeId: string;
+  instrument: string;
+  engine: AutoAiEngine;
+  state: ExitState;
+  decision: ManagementDecision;
+  action?: string | null;
+  actionAt?: string | null;
+}) {
+  const currentPeakR = finiteNumber(args.decision.metrics?.peakProfitR);
+  const currentPeakPips = finiteNumber(args.decision.metrics?.peakProfitPips);
+  const row = {
+    user_id: args.userId,
+    broker_account_id: args.accountId,
+    trade_id: args.tradeId,
+    instrument: args.instrument,
+    engine: args.engine,
+    partial_count: Math.max(0, Number(args.state.partial_count || 0)),
+    cumulative_partial_percent: Math.max(0, Number(args.state.cumulative_partial_percent || 0)),
+    peak_profit_r: currentPeakR ?? args.state.peak_profit_r ?? null,
+    peak_profit_pips: currentPeakPips ?? args.state.peak_profit_pips ?? null,
+    last_action: args.action ?? args.state.last_action ?? null,
+    last_action_at: args.actionAt ?? args.state.last_action_at ?? null,
+    last_decision: args.decision,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await args.supabase
+    .from('trade_exit_management_state')
+    .upsert(row, { onConflict: 'user_id,broker_account_id,trade_id' });
+  if (error) throw error;
+}
+
+function recentAction(state: ExitState): boolean {
+  const at = Date.parse(String(state.last_action_at || ''));
+  return Number.isFinite(at) && Date.now() - at < ACTION_COOLDOWN_MS;
+}
+
+function logEnvironment(value: unknown): 'practice' | 'live' | 'paper' {
+  if (value === 'live') return 'live';
+  if (value === 'paper') return 'paper';
+  return 'practice';
+}
+
 export async function POST(req: Request) {
   const secret = process.env.AUTO_AI_CRON_SECRET;
   if (!secret || req.headers.get('x-cron-secret') !== secret) {
@@ -242,21 +245,27 @@ export async function POST(req: Request) {
   }
 
   const ny = nyContext();
-  if (ny.isWeekend || !ny.afterEntryCutoff || !ny.beforeManagementEnd) {
-    return NextResponse.json({ ok: true, skipped: 'outside_management_window_10:00-17:30_ET', ny });
+  if (ny.isWeekend || !ny.managementStarted || !ny.beforeManagementEnd) {
+    return NextResponse.json({ ok: true, skipped: 'outside_management_window_02:15-17:30_ET', ny });
   }
 
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('user_trading_settings')
-    .select('user_id, auto_ai_engine')
-    .eq('auto_ai_trading_enabled', true);
+    .select('user_id, auto_ai_engine, auto_close_enabled')
+    .eq('auto_close_enabled', true);
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) {
+    if (isMissingAutoCloseSchema(error)) {
+      return NextResponse.json({ ok: true, skipped: 'active_exit_intelligence_migration_required', ny });
+    }
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  }
 
   const results: Record<string, unknown>[] = [];
   let reviewed = 0;
   let closed = 0;
+  let partials = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const userId = row.user_id;
@@ -264,16 +273,6 @@ export async function POST(req: Request) {
 
     try {
       const tradeStrategies = await openTradeStrategies(userId);
-
-      if (selectedEngine === 'ppr') {
-        results.push({
-          user: mask(userId),
-          engine: selectedEngine,
-          skipped: 'ppr_native_management_not_configured_sl_tp_only',
-        });
-        continue;
-      }
-
       const resolved = await resolveActiveBrokerForUser(userId);
       if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials || !resolved.baseUrl) {
         results.push({ user: mask(userId), engine: selectedEngine, skipped: resolved.brokerCredentialStatus });
@@ -284,6 +283,7 @@ export async function POST(req: Request) {
         results.push({ user: mask(userId), engine: selectedEngine, skipped: 'decrypt_failed' });
         continue;
       }
+
       const credentialBody = {
         apiKey: credentials.token,
         accountId: credentials.accountId,
@@ -295,60 +295,144 @@ export async function POST(req: Request) {
         results.push({ user: mask(userId), engine: selectedEngine, reassessError: reassess.error });
         continue;
       }
+
       const allPlans = ((reassess.data as any)?.trades ?? []) as Array<Record<string, any>>;
+      const tradeIds = allPlans.map((plan) => String(plan.tradeId ?? '')).filter(Boolean);
+      let stateByTrade: Map<string, ExitState>;
+      try {
+        stateByTrade = await loadExitStates(supabase, userId, credentials.accountId, tradeIds);
+      } catch (stateError) {
+        if (isMissingAutoCloseSchema(stateError as { code?: string; message?: string })) {
+          results.push({ user: mask(userId), skipped: 'active_exit_state_migration_required' });
+          continue;
+        }
+        throw stateError;
+      }
+
       const userResults: Record<string, unknown>[] = [];
       const evaluations: Record<string, unknown>[] = [];
       reviewed += allPlans.length;
 
       for (const plan of allPlans) {
         const tradeId = String(plan.tradeId ?? '');
+        if (!tradeId) continue;
         const tradeEngine = tradeStrategies.get(tradeId) ?? selectedEngine;
-
         if (tradeEngine === 'ppr') {
           evaluations.push({ tradeId, instrument: plan.instrument, engine: tradeEngine, skipped: 'ppr_sl_tp_only' });
           continue;
         }
 
-        const decision = tradeEngine === 'ict'
-          ? shouldCloseIctTrade(plan)
-          : shouldCloseV3Trade(plan, ny.afterVolatilityCutoff);
+        const previousState = stateByTrade.get(tradeId) ?? {};
+        const decision = (tradeEngine === 'ict'
+          ? evaluateActiveExit(plan, {
+              priorPartialCount: previousState.partial_count ?? 0,
+              peakProfitR: previousState.peak_profit_r ?? null,
+              peakProfitPips: previousState.peak_profit_pips ?? null,
+            })
+          : v3ExitDecision(plan, ny.afterVolatilityCutoff)) as ManagementDecision;
 
         evaluations.push({
           tradeId,
           instrument: plan.instrument,
           engine: tradeEngine,
-          close: decision.close,
+          action: decision.action,
+          closePercent: decision.closePercent,
           policy: decision.policy,
           reason: decision.reason,
-          details: decision.details,
+          confidence: decision.confidence,
+          metrics: decision.metrics,
         });
 
-        if (tradeEngine === 'ict') {
-          console.log(
-            `[ACTIVE_TRADE_MANAGEMENT][ICT] tradeId=${tradeId} pair=${plan.instrument} ` +
-            `close=${decision.close} ${JSON.stringify(decision.details ?? {})}`,
-          );
+        if (decision.action === 'HOLD_TO_TP') {
+          await saveExitState({
+            supabase, userId, accountId: credentials.accountId, tradeId,
+            instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+            state: previousState, decision,
+          });
+          continue;
         }
 
-        if (!decision.close) continue;
+        if (recentAction(previousState)) {
+          evaluations.push({ tradeId, skipped: 'exit_action_cooldown', lastAction: previousState.last_action });
+          continue;
+        }
+
+        const units = closeUnitsForDecision(plan.units, decision);
+        if (units == null) {
+          evaluations.push({ tradeId, skipped: 'partial_units_unavailable', currentUnits: plan.units ?? null });
+          continue;
+        }
+
+        const actionAt = new Date().toISOString();
+        await saveExitState({
+          supabase, userId, accountId: credentials.accountId, tradeId,
+          instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+          state: previousState, decision,
+          action: `PENDING_${decision.action}`,
+          actionAt,
+        });
+
         const closeResult = await callInternalEndpoint('/api/internal/oanda/close', {
           ...credentialBody,
-          tradeId: plan.tradeId,
+          tradeId,
           instrument: plan.instrument,
-          units: 'ALL',
-          reason: decision.reason,
+          units,
+          reason: `${decision.policy}:${decision.reason}`,
         });
-        if (closeResult.ok) closed += 1;
+
+        const nextState: ExitState = { ...previousState };
+        if (closeResult.ok && decision.action === 'PARTIAL_CLOSE') {
+          nextState.partial_count = Number(previousState.partial_count || 0) + 1;
+          nextState.cumulative_partial_percent = Math.min(
+            100,
+            Number(previousState.cumulative_partial_percent || 0) + decision.closePercent,
+          );
+          partials += 1;
+        }
+        if (closeResult.ok && decision.action === 'FULL_CLOSE') closed += 1;
+
+        await saveExitState({
+          supabase, userId, accountId: credentials.accountId, tradeId,
+          instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+          state: nextState, decision,
+          action: closeResult.ok ? decision.action : `FAILED_${decision.action}`,
+          actionAt,
+        });
+
+        if (closeResult.ok) {
+          await logTradeEvent({
+            userId,
+            broker: 'oanda',
+            brokerAccountId: credentials.accountId,
+            environment: logEnvironment(resolved.activeEnvironment),
+            eventType: decision.action === 'PARTIAL_CLOSE' ? 'partial_closed' : 'closed',
+            instrument: String(plan.instrument ?? ''),
+            tradeId,
+            side: plan.direction === 'short' ? 'short' : 'long',
+            units: finiteNumber(plan.units),
+            unitsClosed: units === 'ALL' ? finiteNumber(plan.units) : finiteNumber(units),
+            unrealizedPL: finiteNumber(plan.currentPnL),
+            recommendation: decision.action,
+            confidence: decision.confidence,
+            reason: decision.reason,
+            rawPayload: { policy: decision.policy, decision, closeResult: closeResult.data },
+          });
+        }
+
         userResults.push({
-          tradeId: plan.tradeId,
+          tradeId,
           instrument: plan.instrument,
           engine: tradeEngine,
+          action: decision.action,
+          closePercent: decision.closePercent,
+          units,
           policy: decision.policy,
           reason: decision.reason,
           ok: closeResult.ok,
           result: closeResult.ok ? closeResult.data : closeResult.error,
         });
       }
+
       results.push({
         user: mask(userId),
         engine: selectedEngine,
@@ -367,7 +451,9 @@ export async function POST(req: Request) {
     users: results.length,
     reviewed,
     closed,
-    ictClosePolicy: '30m_high_reversal_near_sl_only',
+    partials,
+    autoCloseToggle: 'user_trading_settings.auto_close_enabled',
+    ictClosePolicy: 'active_exit_intelligence_v1',
     results,
   });
 }

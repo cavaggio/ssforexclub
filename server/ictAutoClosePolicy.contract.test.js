@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { evaluateActiveExit, closeUnitsForDecision } from '../web/lib/activeExitPolicy.js';
 
 const schedulerSource = readFileSync(new URL('./ictAutoScheduler.js', import.meta.url), 'utf8');
 const reassessorSource = readFileSync(new URL('./oandaActiveTradeReassessor.js', import.meta.url), 'utf8');
@@ -8,27 +9,25 @@ const routeSource = readFileSync(
   new URL('../web/app/api/cron/active-trade-management/route.ts', import.meta.url),
   'utf8',
 );
+const policySource = readFileSync(
+  new URL('../web/lib/activeExitPolicy.js', import.meta.url),
+  'utf8',
+);
 
-test('ICT close-capable management has a hard 30-minute cadence without startup close review', () => {
+test('active exit management reviews every five minutes from 02:15 to 17:30 ET', () => {
   assert.match(
     schedulerSource,
-    /ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math\.max\(1800000, interval\('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 1800000\)\)/,
+    /ACTIVE_TRADE_MANAGEMENT_WINDOW = \{ startMin: 135, endMin: 1050 \}/,
   );
   assert.match(
     schedulerSource,
-    /first close-capable review must occur on the 30-minute scheduler cadence/i,
+    /ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS = Math\.max\(300000, interval\('ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS', 300000\)\)/,
   );
-  assert.doesNotMatch(
-    schedulerSource,
-    /void activeTradeManagementTick\(nextUrl, secret\);\s*void transactionSyncTick/,
-  );
+  assert.match(schedulerSource, /management=02:15–17:30_ET/);
+  assert.match(schedulerSource, /five-minute scheduler cadence/i);
 });
 
-test('generic reassessor cannot directly close broker trades', () => {
-  assert.match(
-    reassessorSource,
-    /REASSESSMENT_INTERVAL_MS = Math\.max\(30 \* 60 \* 1000, Number\(process\.env\.ACTIVE_TRADE_REASSESS_INTERVAL_MS/,
-  );
+test('generic reassessor remains recommendation-only', () => {
   assert.match(reassessorSource, /const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false/);
   assert.match(
     reassessorSource,
@@ -38,21 +37,55 @@ test('generic reassessor cannot directly close broker trades', () => {
   assert.match(reassessorSource, /currentStopLoss:/);
 });
 
-test('ICT route requires 30m age, HIGH reversal, explicit exit, and near-SL proximity', () => {
-  assert.match(routeSource, /ICT_MIN_REASSESSMENT_AGE_MINUTES = 30/);
-  assert.match(routeSource, /ICT_NEAR_SL_RISK_FRACTION = 0\.25/);
-  assert.match(routeSource, /reassessmentDue &&\s*explicitHighReversal &&\s*explicitCloseRecommendation &&\s*closeToStop/);
-  assert.match(routeSource, /lifecycleSource === 'thesis_invalidation'/);
-  assert.match(routeSource, /lifecycleSource === 'institutional_reversal'/);
-  assert.match(routeSource, /recommendedAction === 'EXIT_INVALIDATED'/);
-  assert.doesNotMatch(routeSource, /export function shouldCloseIctTrade/);
-  assert.doesNotMatch(
-    routeSource.slice(
-      routeSource.indexOf('function shouldCloseIctTrade'),
-      routeSource.indexOf('// Preserve the existing V3 management policy'),
-    ),
-    /EXIT_REVIEW|confidence_breakdown|mediumOrHigherReversal|volatilityCollapsed/,
-  );
-  assert.match(routeSource, /tradeEngine === 'ict'\s*\? shouldCloseIctTrade\(plan\)/);
-  assert.match(routeSource, /ict_30m_high_reversal_near_sl_only/);
+test('authenticated route is controlled by the per-user auto-close toggle', () => {
+  assert.match(routeSource, /\.eq\('auto_close_enabled', true\)/);
+  assert.match(routeSource, /trade_exit_management_state/);
+  assert.match(routeSource, /evaluateActiveExit/);
+  assert.match(routeSource, /closeUnitsForDecision/);
+  assert.match(routeSource, /decision\.action === 'PARTIAL_CLOSE'/);
+  assert.match(routeSource, /active_exit_intelligence_v1/);
+  assert.match(routeSource, /outside_management_window_02:15-17:30_ET/);
+  assert.doesNotMatch(routeSource, /ict_30m_high_reversal_near_sl_only/);
+});
+
+test('ICT exit policy prioritizes TP, limits partials, and supports loss rescue', () => {
+  assert.match(policySource, /action: 'HOLD_TO_TP'/);
+  assert.match(policySource, /priorPartialCount < 1/);
+  assert.match(policySource, /lossRescueZone/);
+  assert.match(policySource, /currentProfitPips >= -2/);
+  assert.match(policySource, /action: 'PARTIAL_CLOSE'/);
+  assert.match(policySource, /action: 'FULL_CLOSE'/);
+  assert.match(policySource, /strongBreakoutContinuation/);
+});
+
+test('active policy holds strong continuation and protects a weakening breakout', () => {
+  const strong = evaluateActiveExit({
+    direction: 'long', initialRiskPips: 10, profitRMultiple: 1.1,
+    tpProgress: 0.55, marketState: 'BREAKOUT', momentumDecayScore: 25,
+    momentumStatus: 'stable', reversalRisk: 'low', givebackPercent: 4,
+  });
+  assert.equal(strong.action, 'HOLD_TO_TP');
+
+  const weakening = evaluateActiveExit({
+    direction: 'long', initialRiskPips: 10, profitRMultiple: 1.1,
+    tpProgress: 0.55, marketState: 'BREAKOUT', momentumDecayScore: 58,
+    momentumStatus: 'decaying', reversalRisk: 'medium', partialExitPercent: 33,
+  });
+  assert.equal(weakening.action, 'PARTIAL_CLOSE');
+  assert.equal(weakening.closePercent, 33);
+  assert.equal(closeUnitsForDecision(100000, weakening), 33000);
+});
+
+test('active policy closes hard invalidation and near-breakeven reversal risk', () => {
+  const invalidated = evaluateActiveExit({
+    initialRiskPips: 10, profitRMultiple: 0.7, invalidationDetected: true,
+  });
+  assert.equal(invalidated.action, 'FULL_CLOSE');
+
+  const rescue = evaluateActiveExit({
+    initialRiskPips: 10, profitRMultiple: -0.15, reversalRisk: 'high',
+    trendWeakeningDetected: true, momentumDecayScore: 75,
+  });
+  assert.equal(rescue.metrics.currentProfitPips, -1.5);
+  assert.equal(rescue.action, 'FULL_CLOSE');
 });

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS,
   AUTO_AI_FULL_SCAN_INTERVAL_MS,
   AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS,
   AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS,
@@ -30,9 +31,10 @@ test('auto-AI scan window: weekends are closed even mid-window', () => {
   assert.equal(inAutoAiWindow(new Date('2026-06-07T13:00:00Z')), false); // Sunday 09:00 ET
 });
 
-test('active-trade management runs 10:00–17:30 ET on weekdays', () => {
-  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T13:59:00Z')), false); // 09:59 ET Tue
-  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T14:00:00Z')), true); // 10:00 ET Tue
+test('active exit management runs 02:15–17:30 ET on weekdays', () => {
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T06:15:00Z')), true); // 02:15 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:29:00Z')), true); // 17:29 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:30:00Z')), false); // 17:30 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-06T16:00:00Z')), false); // Saturday
@@ -46,10 +48,11 @@ test('daily market study runs in the 17:00–17:15 ET weekday window', () => {
   assert.equal(inDailyMarketStudyWindow(new Date('2026-06-06T21:05:00Z')), false); // Saturday
 });
 
-test('auto-AI scheduler intervals default to staged cadence plus five-minute daily study checks', () => {
+test('auto-AI scheduler intervals include five-minute active exits and daily study checks', () => {
   assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 120000);
   assert.equal(AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS, 60000);
   assert.equal(AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS, 30000);
+  assert.equal(ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS, 300000);
   assert.equal(DAILY_MARKET_STUDY_INTERVAL_MS, 300000);
 });
 
