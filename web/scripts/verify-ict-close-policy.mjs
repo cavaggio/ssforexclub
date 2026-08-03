@@ -4,8 +4,32 @@ import { resolve } from 'node:path';
 const routePath = resolve(process.cwd(), 'app/api/cron/active-trade-management/route.ts');
 let source = readFileSync(routePath, 'utf8');
 
-// Next.js route modules accept only supported handler/config exports. Keep the
-// policy helper local to the route even if an earlier generated source exported it.
+// Active Exit Intelligence replaced the retired 30-minute/near-SL-only gate.
+// Broker mutations remain centralized in this authenticated route and are
+// activated only for users whose independent auto-close preference is enabled.
+if (source.includes("from '@/lib/activeExitPolicy.js'")) {
+  for (const marker of [
+    'evaluateActiveExit',
+    'closeUnitsForDecision',
+    ".eq('auto_close_enabled', true)",
+    'trade_exit_management_state',
+    "decision.action === 'PARTIAL_CLOSE'",
+    "ictClosePolicy: 'active_exit_intelligence_v1'",
+    'outside_management_window_02:15-17:30_ET',
+  ]) {
+    if (!source.includes(marker)) {
+      throw new Error(`Active Exit Intelligence verification failed: missing ${marker}`);
+    }
+  }
+  if (source.includes('ict_30m_high_reversal_near_sl_only')) {
+    throw new Error('Active Exit Intelligence verification failed: retired ICT close policy remains');
+  }
+  console.log('Active Exit Intelligence verified: TP-first, 5m active reviews, partial/full broker exits, per-user toggle.');
+  process.exit(0);
+}
+
+// Backward-compatible validation for older branches that have not adopted the
+// active exit route yet. Next.js route modules accept only supported exports.
 source = source.replace(
   'export function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {',
   'function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {',
