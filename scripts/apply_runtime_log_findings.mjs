@@ -31,11 +31,7 @@ export function patchRuntimeStartExactConfidence(source) {
   if (!out.includes(functionMarker)) throw new Error('[RUNTIME_LOG_FINDINGS] enforceRuntimeFloors function not found');
   out = out.replace(functionMarker, `${functionMarker}${EXACT_CONFIDENCE_LINE}\n`);
 
-  if (
-    !out.includes(EXACT_CONFIDENCE_LINE) ||
-    out.includes('Math.max(93') ||
-    out.includes('ICT_MIN_CONFIDENCE')
-  ) {
+  if (!out.includes(EXACT_CONFIDENCE_LINE) || out.includes('Math.max(93') || out.includes('ICT_MIN_CONFIDENCE')) {
     throw new Error('[RUNTIME_LOG_FINDINGS] exact runtime startup confidence contract incomplete');
   }
   return out;
@@ -95,7 +91,7 @@ function patchIctManualRoute(segment) {
           {
             pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
             signalConfidence, signalRR,
-            manualExecution: true,
+            manualExecution: manualExecution === true,
             executionSource,
             targetRiskUSD: manualRisk.targetRiskUSD,
           },
@@ -176,25 +172,13 @@ export function patchManualTargetRiskIndex(source) {
     );
   }
 
-  out = replaceRouteSegment(
-    out,
-    "app.post('/api/internal/oanda/ict/trade'",
-    '// POST /api/internal/oanda/ict/auto',
-    patchIctManualRoute,
-    'ICT manual route segment',
-  );
-  out = replaceRouteSegment(
-    out,
-    "app.post('/api/internal/oanda/auto'",
-    '// POST /api/internal/oanda/ict/reassess',
-    patchPprManualRoute,
-    'engine-routed Auto AI segment',
-  );
+  out = replaceRouteSegment(out, "app.post('/api/internal/oanda/ict/trade'", '// POST /api/internal/oanda/ict/auto', patchIctManualRoute, 'ICT manual route segment');
+  out = replaceRouteSegment(out, "app.post('/api/internal/oanda/auto'", '// POST /api/internal/oanda/ict/reassess', patchPprManualRoute, 'engine-routed Auto AI segment');
 
   const required = [
     importLine,
     'targetRiskUSD: manualRisk.targetRiskUSD',
-    'manualExecution: true',
+    'manualExecution: manualExecution === true',
     'qualified_signal_button_ppr',
     'targetRiskUSD: manualRisk?.targetRiskUSD ?? null',
   ];
