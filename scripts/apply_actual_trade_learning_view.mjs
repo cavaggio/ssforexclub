@@ -53,7 +53,16 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
   if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
-    applyIctRuntimeGateFix(root);
+    const engineSource = readFileSync(ictEnginePath, 'utf8');
+    const executionSource = readFileSync(ictExecutionPath, 'utf8');
+    const exactThresholdAlreadyApplied =
+      engineSource.includes('minConfidence: 80,') &&
+      executionSource.includes('minConfidence: 80,');
+    if (!exactThresholdAlreadyApplied) {
+      applyIctRuntimeGateFix(root);
+    } else {
+      console.log('[ACTUAL_TRADE_LEARNING] exact ICT 80% runtime gate already applied');
+    }
   }
   applyIctQualifiedGateConsistency(root);
   applyIctQualificationAuthority(root);
