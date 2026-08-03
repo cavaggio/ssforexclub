@@ -13,7 +13,9 @@ import { applyActualTradeLearningView } from './apply_actual_trade_learning_view
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled', 'active']);
 const ICT_ENGINE_PATH = resolve(ROOT, 'server/ictEngine.js');
+const ICT_EXECUTION_PATH = resolve(ROOT, 'server/ictExecution.js');
 const ICT_AUTO_TRADE_PATH = resolve(ROOT, 'server/ictAutoTrade.js');
+const SERVER_INDEX_PATH = resolve(ROOT, 'server/index.js');
 const ICT_RR_RUNTIME_MARKERS = [
   'export const ICT_MIN_RR = 1.5;',
   'minRR: configuredIctMinRR()',
@@ -100,13 +102,53 @@ async function ensureSignalForensicsRuntime() {
   }
 }
 
+function hasEquivalentIctStudyCalibration(source) {
+  return [
+    "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
+    "applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })",
+    "applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })",
+  ].some((marker) => source.includes(marker));
+}
+
+async function ensureDailyIctPolicyRuntime() {
+  try {
+    await import('./apply_daily_ict_policy.mjs');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const execution = readFileSync(ICT_EXECUTION_PATH, 'utf8');
+    const evolvedCalibrationOnly =
+      message.includes("missing applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
+      hasEquivalentIctStudyCalibration(execution) &&
+      execution.includes('await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });') &&
+      execution.includes('markTradeOpened({ accountId, balanceUSD, now });') &&
+      execution.includes('await persistDailyRiskState({ accountId, balanceUSD, now });');
+
+    if (evolvedCalibrationOnly) {
+      console.warn(
+        '[RUNTIME_EXECUTION_START] accepted evolved ICT calibration path; legacy daily-policy literal marker is stale',
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
+function markerSatisfied(source, marker) {
+  if (Array.isArray(marker)) return marker.some((candidate) => source.includes(candidate));
+  return source.includes(marker);
+}
+
+function markerLabel(marker) {
+  return Array.isArray(marker) ? `one of [${marker.join(' | ')}]` : marker;
+}
+
 function patchFile(relativePath, patcher, requiredMarkers) {
   const path = resolve(ROOT, relativePath);
   const before = readFileSync(path, 'utf8');
   const after = patcher(before);
-  const missing = requiredMarkers.filter((marker) => !after.includes(marker));
+  const missing = requiredMarkers.filter((marker) => !markerSatisfied(after, marker));
   if (missing.length) {
-    throw new Error(`${relativePath} missing required runtime execution markers: ${missing.join(', ')}`);
+    throw new Error(`${relativePath} missing required runtime execution markers: ${missing.map(markerLabel).join(', ')}`);
   }
   if (after !== before) writeFileSync(path, after, 'utf8');
   console.log(`[RUNTIME_EXECUTION_START] verified ${relativePath}${after !== before ? ' (patched)' : ''}`);
@@ -115,7 +157,7 @@ function patchFile(relativePath, patcher, requiredMarkers) {
 enforceRuntimeFloors();
 ensureIctRrFloorRuntime();
 prepareEngineTradeLearningCompatibility(ROOT);
-await import('./apply_daily_ict_policy.mjs');
+await ensureDailyIctPolicyRuntime();
 await import('./apply_daily_bot_policy.mjs');
 await import('./apply_daily_risk_persistence.mjs');
 await ensureSignalForensicsRuntime();
@@ -127,15 +169,22 @@ restoreV3WatchlistCompatibility(ROOT);
 applyActualTradeLearningView(ROOT);
 
 // Manual target-risk propagation is a compatibility patch, not a prerequisite
-// for starting the API. A stale source marker must never take the entire scanner,
-// active-trade monitor, reassessor, and calibration endpoints offline. The
-// execution modules still enforce the central 1% risk cap independently.
-try {
-  applyManualTargetRiskRuntime();
-} catch (error) {
-  console.error(
-    `[RUNTIME_EXECUTION_START] manual target-risk compatibility patch skipped: ${error instanceof Error ? error.message : String(error)}`,
-  );
+// for starting the API. Skip the obsolete patcher when the final generated route
+// already contains the trusted manual-risk contract.
+const indexSource = readFileSync(SERVER_INDEX_PATH, 'utf8');
+const manualRiskAlreadyApplied =
+  indexSource.includes('targetRiskUSD: manualRisk.targetRiskUSD') &&
+  indexSource.includes('manualExecution: manualExecution === true');
+if (manualRiskAlreadyApplied) {
+  console.log('[RUNTIME_EXECUTION_START] manual target-risk contract already enforced by final generator');
+} else {
+  try {
+    applyManualTargetRiskRuntime();
+  } catch (error) {
+    console.error(
+      `[RUNTIME_EXECUTION_START] manual target-risk compatibility patch skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 patchFile(
@@ -163,7 +212,10 @@ patchFile(
     ),
   [
     "ICT_MODE === 'active'",
-    "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+    [
+      'minConfidence: 80,',
+      "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+    ],
     'export const ICT_MIN_RR = 1.5;',
     'minRR: configuredIctMinRR()',
     'export function enforceMinimumRRTarget',
