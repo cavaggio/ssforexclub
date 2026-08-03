@@ -310,7 +310,7 @@ function patchExecution(source) {
   });
   units = sizing.signedUnits;
   if (!units || Math.abs(units) < 1) {
-    return blocked(\`\${pair} final executable sizing produced 0 units for $\${targetRiskUSD} risk at \${slPips}p stop.\`);
+    return blocked(\`\${pair} final executable sizing produced 0 units; riskUSD=\${targetRiskUSD}, stopPips=\${slPips}.\`);
   }
   const finalMarginCheck = checkMargin({
     marginAvailable,
