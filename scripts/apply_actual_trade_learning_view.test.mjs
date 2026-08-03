@@ -5,12 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyActualTradeLearningView } from './apply_actual_trade_learning_view.mjs';
+import { patchQualifiedRejectionAudit } from './apply_qualified_rejection_audit.mjs';
 import { maybeRebaseIctTarget } from '../server/ictExecutionTarget.js';
 
 const source = readFileSync(new URL('../server/engineTradeLearning.js', import.meta.url), 'utf8');
 const ictEngineSource = readFileSync(new URL('../server/ictEngine.js', import.meta.url), 'utf8');
 const ictAutoTradeSource = readFileSync(new URL('../server/ictAutoTrade.js', import.meta.url), 'utf8');
 const ictExecutionSource = readFileSync(new URL('../server/ictExecution.js', import.meta.url), 'utf8');
+const autoAiRouteSource = readFileSync(new URL('../web/app/api/cron/auto-ai-trading-extended/route.ts', import.meta.url), 'utf8');
 const runtimeStartSource = readFileSync(new URL('./runtime_execution_start.mjs', import.meta.url), 'utf8');
 const legacyRuntimeStartSource = runtimeStartSource
   .replaceAll('ICT_EXECUTION_MIN_CONFIDENCE', 'ICT_MIN_CONFIDENCE')
@@ -90,6 +92,16 @@ test('final runtime pass restores the ICT floor and keeps scanner-qualified exec
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('qualified execution skips are persisted with the matching signal and concrete reason', () => {
+  const patched = patchQualifiedRejectionAudit(autoAiRouteSource);
+  assert.match(patched, /const skippedList = Array\.isArray\(payload\.skipped\)/);
+  assert.match(patched, /executionSource: 'auto_ai_qualified_rejection'/);
+  assert.match(patched, /eventType: 'error'/);
+  assert.match(patched, /rejection: item/);
+  assert.match(patched, /signal,/);
+  assert.equal(patchQualifiedRejectionAudit(patched), patched);
 });
 
 test('a 0.04R fresh-quote shortfall rebases TP instead of rejecting a scanner-qualified 1.50R setup', () => {
