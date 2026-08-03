@@ -12,7 +12,7 @@ delete process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT;
 const { executeIctTrade } = await import('./ictExecution.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
-const ACTIVE_CFG = { mode: 'active', autoTradeEnabled: true, minConfidence: 93, minRR: 1.5, maxRiskPercent: 1, signalTtlSec: 300 };
+const ACTIVE_CFG = { mode: 'active', autoTradeEnabled: true, minConfidence: 80, minRR: 1.5, maxRiskPercent: 1, signalTtlSec: 300 };
 const freshId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 30_000}`;
 
 const validParams = (over = {}) => ({
@@ -69,10 +69,10 @@ test('ICT shadow mode remains blocked', async () => {
   assert.match(r.reason, /ICT execution disabled/);
 });
 
-test('auto execution rejects confidence below the 93 threshold', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 92 }) }));
+test('auto execution rejects confidence below the approved 80 threshold', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /92 < 93/);
+  assert.match(r.reason, /79 < 80/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {
