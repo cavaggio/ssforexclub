@@ -64,7 +64,10 @@ export function patchIctQualifiedExecution(source) {
     rec(\`using scanner-authoritative qualified snapshot for \${pair} \${wantSignal}\`);
   } else {
     try {
-      analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });
+      const rawAnalysis = await analyze(pair);
+      analysis = typeof applyStoredStudyCalibration === 'function'
+        ? await applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })
+        : rawAnalysis;
     } catch (err) {
       recomputeError = err;
     }
