@@ -12,6 +12,11 @@ function replaceOnce(oldText, newText, label) {
   source = source.replace(oldText, newText);
 }
 
+const attributionTypeFields =
+  '  broker_trade_id?: string | null;\n' +
+  '  engine?: string | null;\n' +
+  '  strategy?: string | null;\n';
+
 // First-class attribution is additive. Keep the public helper compatible with
 // existing callers and fixture builders by making the new read-model fields
 // optional while still writing them whenever a caller supplies them.
@@ -24,7 +29,18 @@ if (!source.includes('  engine?: string | null;')) {
 }
 source = source.replace(
   '  broker_trade_id: string | null;\n',
-  '  broker_trade_id?: string | null;\n  engine?: string | null;\n  strategy?: string | null;\n',
+  attributionTypeFields,
+);
+
+// The web runtime patch runs once for typecheck and again for build. A legacy
+// generator can reinsert broker_trade_id between those passes, so collapse any
+// repeated attribution type block before TypeScript sees the file.
+while (source.includes(attributionTypeFields + attributionTypeFields)) {
+  source = source.replace(attributionTypeFields + attributionTypeFields, attributionTypeFields);
+}
+source = source.replace(
+  attributionTypeFields + '  broker_trade_id?: string | null;\n',
+  attributionTypeFields,
 );
 
 replaceOnce(
@@ -97,6 +113,11 @@ for (const marker of [
   'retrying legacy fallback',
 ]) {
   if (!source.includes(marker)) throw new Error(`PPR attribution fallback incomplete: missing ${marker}`);
+}
+
+const brokerTradeTypeCount = (source.match(/  broker_trade_id\?: string \| null;/g) || []).length;
+if (brokerTradeTypeCount !== 1) {
+  throw new Error(`PPR attribution fallback produced ${brokerTradeTypeCount} broker_trade_id type declarations`);
 }
 
 fs.writeFileSync(target, source);
