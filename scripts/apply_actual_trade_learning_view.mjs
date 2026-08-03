@@ -6,6 +6,7 @@ import { applyIctRuntimeGateFix } from './apply_ict_runtime_gate_fix.mjs';
 import { applyIctQualifiedGateConsistency } from './apply_ict_qualified_gate_consistency.mjs';
 import { applyIctQualificationAuthority } from './apply_ict_qualification_authority.mjs';
 import { applyQualifiedRejectionAudit } from './apply_qualified_rejection_audit.mjs';
+import { applyScanRejectionDiagnostics } from './apply_scan_rejection_diagnostics.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -46,7 +47,8 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   }
 
   // This runs last in prestart, after the legacy generators and account-isolation
-  // passes, so execution accuracy and its audit trail cannot be overwritten.
+  // passes, so execution accuracy, its audit trail, and exact scan reasons cannot
+  // be overwritten before the service begins scanning.
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
   if (existsSync(ictEnginePath) && existsSync(ictExecutionPath)) {
@@ -55,6 +57,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   applyIctQualifiedGateConsistency(root);
   applyIctQualificationAuthority(root);
   applyQualifiedRejectionAudit(root);
+  applyScanRejectionDiagnostics(root);
 
   return { changed: after !== before, source: after };
 }
