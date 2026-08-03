@@ -10,6 +10,17 @@ function replaceRequired(source, before, after, label) {
   return source.replace(before, after);
 }
 
+function replaceRouteSegment(source, startMarker, endMarker, patcher, label) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0) {
+    throw new Error(`[RUNTIME_LOG_FINDINGS] could not locate ${label}`);
+  }
+  const before = source.slice(start, end);
+  const after = patcher(before);
+  return source.slice(0, start) + after + source.slice(end);
+}
+
 export function patchExactIctConfidenceSource(source, kind) {
   let out = source;
   if (kind === 'engine') {
@@ -37,27 +48,44 @@ export function patchExactIctConfidenceSource(source, kind) {
   throw new Error(`[RUNTIME_LOG_FINDINGS] unsupported confidence source kind: ${kind}`);
 }
 
-export function patchManualTargetRiskIndex(source) {
-  let out = source;
-  const importLine = "import { deriveQualifiedManualRisk } from './manualExecutionRisk.js';";
-  if (!out.includes(importLine)) {
-    out = replaceRequired(
-      out,
-      "import { getRiskStatus, resetDailyRisk } from './riskManager.js';",
-      "import { getRiskStatus, resetDailyRisk } from './riskManager.js';\n" + importLine,
-      'current risk-manager import',
-    );
+function patchIctManualRoute(segment) {
+  if (segment.includes('targetRiskUSD: manualRisk.targetRiskUSD')) return segment;
+
+  const generatedCallback = `      () => executeIctTrade(
+        {
+          pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
+          signalConfidence, signalRR,
+          manualExecution: manualExecution === true,
+          executionSource,
+        },
+        { client },
+      ),`;
+  const generatedReplacement = `      async () => {
+        const manualRisk = await deriveQualifiedManualRisk({ client });
+        req.body.targetRiskUSD = manualRisk.targetRiskUSD;
+        return executeIctTrade(
+          {
+            pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
+            signalConfidence, signalRR,
+            manualExecution: true,
+            executionSource,
+            targetRiskUSD: manualRisk.targetRiskUSD,
+          },
+          { client },
+        );
+      },`;
+
+  if (segment.includes(generatedCallback)) {
+    return segment.replace(generatedCallback, generatedReplacement);
   }
 
-  out = replaceRequired(
-    out,
-    `  try {
+  const legacyBlock = `  try {
     const { pair, direction, units, entry, stopLoss, targetProfit, ictSignalId } = req.body || {};
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
       () => executeIctTrade({ pair, direction, units, entry, stopLoss, targetProfit, ictSignalId }, { client }),
-    );`,
-    `  try {
+    );`;
+  const legacyReplacement = `  try {
     const { pair, direction, units, entry, stopLoss, targetProfit, ictSignalId } = req.body || {};
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
@@ -76,17 +104,25 @@ export function patchManualTargetRiskIndex(source) {
           manualExecution: true,
         }, { client });
       },
-    );`,
-    'ICT qualified manual execution route',
-  );
+    );`;
 
-  out = replaceRequired(
-    out,
-    `    const result = await runUserScoped(
+  if (segment.includes(legacyBlock)) {
+    return segment.replace(legacyBlock, legacyReplacement);
+  }
+
+  throw new Error('[RUNTIME_LOG_FINDINGS] missing ICT qualified manual execution route');
+}
+
+function patchPprManualRoute(segment) {
+  if (segment.includes('qualified_signal_button_ppr') && segment.includes('targetRiskUSD: manualRisk?.targetRiskUSD ?? null')) {
+    return segment;
+  }
+
+  const before = `    const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
       () => runAutoForUser({ client, engine, runId: req.body?.runId, scanMode, pairs }),
-    );`,
-    `    const result = await runUserScoped(
+    );`;
+  const after = `    const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
       async () => {
         const manualExecution = engine === 'ppr' &&
@@ -105,8 +141,40 @@ export function patchManualTargetRiskIndex(source) {
           manualExecution,
         });
       },
-    );`,
-    'PPR qualified manual execution route',
+    );`;
+
+  if (!segment.includes(before)) {
+    throw new Error('[RUNTIME_LOG_FINDINGS] missing PPR qualified manual execution route');
+  }
+  return segment.replace(before, after);
+}
+
+export function patchManualTargetRiskIndex(source) {
+  let out = source;
+  const importLine = "import { deriveQualifiedManualRisk } from './manualExecutionRisk.js';";
+  if (!out.includes(importLine)) {
+    out = replaceRequired(
+      out,
+      "import { getRiskStatus, resetDailyRisk } from './riskManager.js';",
+      "import { getRiskStatus, resetDailyRisk } from './riskManager.js';\n" + importLine,
+      'current risk-manager import',
+    );
+  }
+
+  out = replaceRouteSegment(
+    out,
+    "app.post('/api/internal/oanda/ict/trade'",
+    "// POST /api/internal/oanda/ict/auto",
+    patchIctManualRoute,
+    'ICT manual route segment',
+  );
+
+  out = replaceRouteSegment(
+    out,
+    "app.post('/api/internal/oanda/auto'",
+    "// POST /api/internal/oanda/ict/reassess",
+    patchPprManualRoute,
+    'engine-routed Auto AI segment',
   );
 
   const required = [
