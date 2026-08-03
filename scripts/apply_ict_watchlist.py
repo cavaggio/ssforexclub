@@ -131,6 +131,10 @@ def patch_auto_trade() -> None:
             raise SystemExit("ICT Auto AI eligibility import anchor not found")
         text = text.replace(anchor, f"{anchor}\n{ELIGIBILITY_IMPORT}", 1)
 
+    display_old = "    if (isIctAutoQualified(item, cfg)) {\n      hotPairs.add(pair);\n      continue;\n    }"
+    display_new = "    const displayQualified = item?.signal !== 'none' &&\n      Number.isFinite(Number(item?.confidence)) && Number(item.confidence) >= cfg.minConfidence &&\n      Number.isFinite(Number(item?.rr)) && Number(item.rr) >= cfg.minRR;\n    if (displayQualified) {\n      hotPairs.add(pair);\n      continue;\n    }"
+    text = replace_once(text, display_old, display_new, "ICT display qualification anchor not found")
+
     old = "  const rr = Number(analysis?.rr);\n  return analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
     new = "  const rr = Number(analysis?.rr);\n  const pairEligible = analysis?.pair\n    ? isIctExecutionEligibleInstrument(analysis.pair)\n    : analysis?.executionEligible !== false;\n  return pairEligible &&\n    analysis?.executionEligible !== false &&\n    analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
     text = replace_once(text, old, new, "ICT Auto AI qualification anchor not found")
