@@ -16,6 +16,13 @@ function replaceRequired(text, pattern, replacement, label) {
     text.includes('setupType: analysis.setupType') &&
     text.includes('riskModel: analysis.riskModel')
   ) return text;
+  if (
+    label === 'mutable levels' &&
+    text.includes('const { pair, direction, ictSignalId } = params;') &&
+    text.includes('let entry = Number(params.entry);') &&
+    text.includes('let stopLoss = Number(params.stopLoss);') &&
+    text.includes('let targetProfit = Number(params.targetProfit);')
+  ) return text;
   const next = text.replace(pattern, replacement);
   if (next === text) throw new Error(`ICT entry-policy marker missing: ${label}`);
   return next;
@@ -35,6 +42,17 @@ function insertAfter(text, anchor, addition, label) {
     text.includes("entryStrategy: 'ICT'") &&
     text.includes('entryTpHitConfidence:')
   ) return text;
+  if (
+    label === 'authoritative recompute after staleness' &&
+    text.includes('Fresh server-side ICT recomputation owns execution levels') &&
+    text.includes('const authoritativeEntry = Number(analysis.entry);') &&
+    text.includes('requestIctStopAdvice({ pair, direction, entry, stopLoss, targetProfit, analysis })')
+  ) return text;
+  if (
+    label === 'fresh spread guard' &&
+    text.includes('const rawFreshSpreadPips = Number.isFinite(protectiveCheck.spread)') &&
+    text.includes('const pairSpreadLimit = process.env[`ICT_MAX_SPREAD_PIPS_${pair}`]')
+  ) return text;
   if (!text.includes(anchor)) throw new Error(`ICT entry-policy anchor missing: ${label}`);
   return text.replace(anchor, `${anchor}${addition}`);
 }
@@ -42,12 +60,18 @@ function insertAfter(text, anchor, addition, label) {
 let engine = fs.readFileSync(ENGINE, 'utf8');
 engine = insertAfter(engine, "import { detectSMT, correlatedPeers } from './ictSMT.js';\n", "import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';\n", 'ICT policy import');
 const confidencePolicy = `    // Operational ICT qualification floor. Raise ICT_EXECUTION_MIN_CONFIDENCE only when intentionally required.\n    minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80')),`;
-engine = replaceRequired(
-  engine,
-  /(?:    \/\/[^\n]*(?:ICT_MIN_CONFIDENCE|ICT_EXECUTION_MIN_CONFIDENCE)[^\n]*\n)?    minConfidence: Math\.max\(\d+, parseFloat\(process\.env\.(?:ICT_MIN_CONFIDENCE|ICT_EXECUTION_MIN_CONFIDENCE) \|\| '\d+'\)\),/,
-  confidencePolicy,
-  '80% execution floor',
+engine = engine.replace(
+  /(?:    \/\/ Operational ICT qualification floor\.[^\n]*\n)+(?=    minConfidence: 80,)/,
+  '    // Operational ICT qualification floor. Entry-timing gates remain mandatory.\n',
 );
+if (!engine.includes('    minConfidence: 80,')) {
+  engine = replaceRequired(
+    engine,
+    /(?:    \/\/[^\n]*(?:ICT_MIN_CONFIDENCE|ICT_EXECUTION_MIN_CONFIDENCE)[^\n]*\n)?    minConfidence: Math\.max\(\d+, parseFloat\(process\.env\.(?:ICT_MIN_CONFIDENCE|ICT_EXECUTION_MIN_CONFIDENCE) \|\| '\d+'\)\),|    minConfidence: \d+,/,
+    confidencePolicy,
+    '80% execution floor',
+  );
+}
 engine = replaceRequired(engine, /function computeSetup\(\{ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep(?:, candles)? \}\) \{/, 'function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles }) {', 'computeSetup candles');
 engine = engine.replace(/  const buffer = Math\.max\(atrPrice \? atrPrice \* 0\.25 : 0, 5 \* pip\);\n/, '');
 engine = replaceRequired(engine, /  \/\/ Stop beyond the protected liquidity \(zone edge \/ swept level\), never inside it\.\n  const stopLoss = bull\n    \? roundPrice\(Math\.min\(zoneLow, sweptLevel \?\? zoneLow\) - buffer, pair\)\n    : roundPrice\(Math\.max\(zoneHigh, sweptLevel \?\? zoneHigh\) \+ buffer, pair\);/, `  // Stop beyond true structural invalidation with an adaptive ATR/liquidity-raid buffer.\n  // This is calculated before entry; an open protective stop is never widened.\n  const adaptiveStop = computeAdaptiveIctStop({\n    pair, direction: dir, entry, zoneLow, zoneHigh, sweptLevel, atrPrice,\n    pipSize: pip, candles, sweep,\n  });\n  if (!adaptiveStop.ok) return adaptiveStop;\n  const stopLoss = roundPrice(adaptiveStop.stopLoss, pair);`, 'adaptive structural stop');
@@ -78,7 +102,7 @@ let execution = fs.readFileSync(EXECUTION, 'utf8');
 execution = insertAfter(execution, "import { estimateHoldMinutes } from './ictLifecycleEngine.js';\n", "import { applyBoundedIctStopWidening } from './ictPolicy.js';\nimport { requestIctStopAdvice } from './ictClaudeAdvisor.js';\nimport { recordTrade } from './oandaTradeHistory.js';\n", 'execution imports');
 execution = replaceRequired(
   execution,
-  /  const config = cfg \|\| ictExecConfig\(\);|  const rawConfig = cfg \|\| ictExecConfig\(\);\n  const config = \{\n    \.\.\.rawConfig,\n    minConfidence: Math\.max\(\d+, Number\(rawConfig\?\.minConfidence\) \|\| \d+\),\n  \};/,
+  /  const config = cfg \|\| ictExecConfig\(\);|  const rawConfig = cfg \|\| ictExecConfig\(\);\n  const config = \{\n    \.\.\.rawConfig,\n    minConfidence: (?:Math\.max\(\d+, Number\(rawConfig\?\.minConfidence\) \|\| \d+\)|\d+),\n  \};/,
   `  const rawConfig = cfg || ictExecConfig();\n  const config = {\n    ...rawConfig,\n    minConfidence: Math.max(80, Number(rawConfig?.minConfidence) || 80),\n  };`,
   'hard 80 execution floor',
 );

@@ -122,7 +122,10 @@ if (!execution.includes('hydrateDailyRiskState,')) {
   );
 }
 
-if (!execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })")) {
+if (
+  !execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
+  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })")
+) {
   execution = execution.replace(
     "  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
     "  try {\n    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
@@ -152,12 +155,17 @@ for (const marker of [
   'markTradeOpened,',
   'hydrateDailyRiskState,',
   'persistDailyRiskState,',
-  "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
   'await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });',
   'markTradeOpened({ accountId, balanceUSD, now });',
   'await persistDailyRiskState({ accountId, balanceUSD, now });',
 ]) {
   if (!execution.includes(marker)) throw new Error(`ICT execution daily policy incomplete: missing ${marker}`);
+}
+if (
+  !execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
+  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })")
+) {
+  throw new Error('ICT execution daily policy incomplete: missing stored-study calibration');
 }
 
 if (execution !== executionBefore) writeFileSync(executionPath, execution, 'utf8');

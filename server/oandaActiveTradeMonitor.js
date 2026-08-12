@@ -201,16 +201,12 @@ async function analyzeOneTrade(oandaTrade, session, { client } = {}) {
   const probs = pureIctTrade
     ? ictProbabilitiesFromConfidence(currentConfidence)
     : computeTradeProbabilities({ alignment, macro, structure, momentum, riskReward: remainingRR });
-  const ictExitRecommendation = ictLifecycle?.action === 'CLOSE'
-    ? 'EXIT_NOW'
-    : ictLifecycle?.action === 'PARTIAL_CLOSE'
-      ? 'PARTIAL_EXIT'
-      : ictLifecycle?.action === 'TIGHTEN_STOP'
-        ? 'HOLD_WITH_CAUTION'
-        : 'HOLD';
-  const ictTradeState = ictLifecycle?.action === 'CLOSE'
-    ? 'REVERSAL_RISK'
-    : ictLifecycle?.pastHold && ictLifecycle?.action !== 'HOLD'
+  const ictExitRecommendation = ictLifecycle?.action === 'PARTIAL_CLOSE'
+    ? 'PARTIAL_EXIT'
+    : ictLifecycle?.action === 'MOVE_BREAKEVEN'
+      ? 'HOLD_WITH_PROTECTION'
+      : 'HOLD';
+  const ictTradeState = ictLifecycle?.pastHold && ictLifecycle?.action !== 'HOLD'
       ? 'MANAGEMENT_DUE'
       : 'THESIS_ACTIVE';
 

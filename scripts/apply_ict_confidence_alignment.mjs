@@ -18,6 +18,11 @@ function replaceRequired(text, pattern, replacement, label) {
 
 function insertAfter(text, anchor, addition, label) {
   if (text.includes(addition.trim())) return text;
+  if (
+    label === 'final executable target confirmation' &&
+    text.includes("const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;") &&
+    text.includes('repriceIctTargetHitConfidence({')
+  ) return text;
   if (!text.includes(anchor)) throw new Error(`ICT confidence-alignment anchor missing: ${label}`);
   return text.replace(anchor, `${anchor}${addition}`);
 }
@@ -58,7 +63,7 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
   const confluenceScore = computeIctConfidence({
     htfAligned,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
-    sweepAligned, drawPresent, entryTrigger,
+    sweepAligned, drawPresent, entryTrigger, hourlyTransition: h1Transition.ready,
     displacementAligned, mssOrChoch: reversalConfirmed || bosAligned,
     fvgInDir, obInDir, inOteZone, smt: smt.smtDetected,
     inducementSwept: inducement.inducementSwept, labels: labelCount,
@@ -173,6 +178,7 @@ engine = replaceRequired(
     targetHitConfidence: confidence,
     confluenceScore,
     targetConfidence,
+    h1Transition,
     freshImpulse,
     triggerAgeBars,
     idealEntry: setup?.ok ? setup.idealEntry ?? null : null,
@@ -314,16 +320,12 @@ const monitorConfidenceBlock = `  const pureV3Trade = false; // V3 trades return
   const probs = pureIctTrade
     ? ictProbabilitiesFromConfidence(currentConfidence)
     : computeTradeProbabilities({ alignment, macro, structure, momentum, riskReward: remainingRR });
-  const ictExitRecommendation = ictLifecycle?.action === 'CLOSE'
-    ? 'EXIT_NOW'
-    : ictLifecycle?.action === 'PARTIAL_CLOSE'
-      ? 'PARTIAL_EXIT'
-      : ictLifecycle?.action === 'TIGHTEN_STOP'
-        ? 'HOLD_WITH_CAUTION'
-        : 'HOLD';
-  const ictTradeState = ictLifecycle?.action === 'CLOSE'
-    ? 'REVERSAL_RISK'
-    : ictLifecycle?.pastHold && ictLifecycle?.action !== 'HOLD'
+  const ictExitRecommendation = ictLifecycle?.action === 'PARTIAL_CLOSE'
+    ? 'PARTIAL_EXIT'
+    : ictLifecycle?.action === 'MOVE_BREAKEVEN'
+      ? 'HOLD_WITH_PROTECTION'
+      : 'HOLD';
+  const ictTradeState = ictLifecycle?.pastHold && ictLifecycle?.action !== 'HOLD'
       ? 'MANAGEMENT_DUE'
       : 'THESIS_ACTIVE';
 `;
@@ -380,24 +382,21 @@ reassessor = insertAfter(
 `,
   `  if (pureIctTrade && ictLifecycle) {
     const actionMap = {
-      CLOSE: 'close', PARTIAL_CLOSE: 'partial_close', MOVE_BREAKEVEN: 'tighten_sl',
-      TIGHTEN_STOP: 'tighten_sl', HOLD: 'hold',
+      PARTIAL_CLOSE: 'partial_close', MOVE_BREAKEVEN: 'tighten_sl', HOLD: 'hold',
     };
     const ictAction = actionMap[ictLifecycle.action] || 'hold';
     lifecycleRecommendation.action = ictAction;
-    lifecycleRecommendation.urgency = ictLifecycle.action === 'CLOSE'
-      ? 'high'
-      : ictLifecycle.action === 'HOLD' ? 'low' : 'medium';
+    lifecycleRecommendation.urgency = ictLifecycle.action === 'HOLD' ? 'low' : 'medium';
     lifecycleRecommendation.confidence = currentConfidence;
     lifecycleRecommendation.reason = (ictLifecycle.reasons || ['ICT entry thesis remains active.']).join(' ');
     lifecycleRecommendation.unifiedSummary = lifecycleRecommendation.reason;
     lifecycleRecommendation.source = 'ict_target_hit_lifecycle';
     lifecycleRecommendation.shouldAutoClose = false;
-    lifecycleRecommendation.autoCloseCandidate = ictLifecycle.action === 'CLOSE';
-    lifecycleRecommendation.autoCloseReviewTriggered = ictLifecycle.action === 'CLOSE';
+    lifecycleRecommendation.autoCloseCandidate = false;
+    lifecycleRecommendation.autoCloseReviewTriggered = false;
     lifecycleRecommendation.confidenceBelowThreshold = currentConfidence < confidenceReviewThreshold;
-    lifecycleRecommendation.signalMisaligned = ictLifecycle.action === 'CLOSE';
-    lifecycleRecommendation.signalMisalignmentReasons = ictLifecycle.action === 'CLOSE' ? ictLifecycle.reasons : [];
+    lifecycleRecommendation.signalMisaligned = false;
+    lifecycleRecommendation.signalMisalignmentReasons = [];
   }
 `,
   'ICT reassessment recommendation override',

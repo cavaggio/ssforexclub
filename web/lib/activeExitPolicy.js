@@ -1,19 +1,15 @@
 /**
- * Active Exit Intelligence v1.
+ * Profit Protection v2.
  *
- * Pure, deterministic decision policy for an already-open trade. The original
- * take-profit remains the default objective. The policy intervenes only when
- * fresh market evidence shows material reversal/giveback risk or when a
- * profitable breakout should be partially protected.
- *
- * Actions:
- *   HOLD_TO_TP     — preserve the original target and position size.
- *   PARTIAL_CLOSE  — close a bounded percentage once; keep a runner for TP.
- *   FULL_CLOSE     — exit on hard invalidation, loss rescue, or confirmed
- *                    momentum-peak/giveback conditions.
+ * Automated management is deliberately unable to liquidate a full trade.
+ * The broker stop remains the sole loss authority. Management can only:
+ *   - move the stop to breakeven after sufficient favorable movement;
+ *   - bank one partial while momentum is still favorable;
+ *   - remove the runner's fixed TP after that partial; and
+ *   - trail the runner only after price reaches the original TP threshold.
  */
 
-export const ACTIVE_EXIT_POLICY = 'active_exit_intelligence_v1';
+export const ACTIVE_EXIT_POLICY = 'profit_protection_v2';
 
 const finite = (value, fallback = null) => {
   const parsed = Number(value);
@@ -47,10 +43,10 @@ function breakoutConfirmed(plan) {
     : Array.isArray(plan?.detail?.institutionalFlow?.signals)
       ? plan.detail.institutionalFlow.signals
       : [];
+  const side = text(plan?.direction ?? plan?.side);
   const directionalRetest = signals.some((signal) => {
     const type = text(signal?.type);
     const direction = text(signal?.direction);
-    const side = text(plan?.direction ?? plan?.side);
     return type.includes('retest') && (
       !direction ||
       (side === 'long' && direction === 'bullish') ||
@@ -64,12 +60,34 @@ function opposingStructure(plan) {
   const action = lifecycleActionOf(plan);
   const momentum = text(plan?.momentumStatus);
   return Boolean(
-    action === 'close' || action === 'exit' || action === 'exit_now' || action === 'exit_invalidated' ||
+    action === 'close' || action === 'exit' || action === 'exit_now' ||
+    action === 'exit_invalidated' ||
     plan?.institutionalFlow?.opposes === true ||
     plan?.detail?.institutionalFlow?.opposes === true ||
     plan?.m15TrendReversed === true ||
     momentum.includes('reversal') || momentum.includes('reversed')
   );
+}
+
+function trailingStopFor(plan, direction, entryPrice, currentPrice) {
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) return null;
+
+  const structureStop = finite(plan?.recommendedStopLoss, null);
+  const favorableMove = direction === 'short'
+    ? entryPrice - currentPrice
+    : currentPrice - entryPrice;
+  if (!(favorableMove > 0)) return entryPrice;
+
+  // Lock 60% of the move beyond the original target when no stronger valid
+  // structure stop is available. The broker updater still enforces price
+  // buffer, breakeven, and never-move-backward rules.
+  const fallback = direction === 'short'
+    ? entryPrice - favorableMove * 0.6
+    : entryPrice + favorableMove * 0.6;
+  if (!Number.isFinite(structureStop)) return fallback;
+  return direction === 'short'
+    ? Math.min(fallback, structureStop)
+    : Math.max(fallback, structureStop);
 }
 
 function actionResult({
@@ -79,6 +97,8 @@ function actionResult({
   confidence,
   evidence,
   metrics,
+  stopLoss = null,
+  cancelTakeProfit = false,
 }) {
   return {
     action,
@@ -86,7 +106,13 @@ function actionResult({
     reason,
     confidence: Math.round(clamp(confidence, 0, 100)),
     policy: ACTIVE_EXIT_POLICY,
-    preserveOriginalTakeProfit: action !== 'FULL_CLOSE',
+    stopLoss: Number.isFinite(stopLoss) ? stopLoss : null,
+    cancelTakeProfit,
+    automaticFullCloseAllowed: false,
+    preserveOriginalTakeProfit: !cancelTakeProfit,
+    originalTakeProfitRole: cancelTakeProfit
+      ? 'runner_trailing_activation_threshold'
+      : 'broker_target',
     evidence,
     metrics,
   };
@@ -98,9 +124,14 @@ function actionResult({
  *   priorPartialCount?: number,
  *   peakProfitR?: number|null,
  *   peakProfitPips?: number|null,
+ *   runnerArmed?: boolean,
+ *   breakEvenSet?: boolean,
  * }} state persisted management state for this broker trade
  */
 export function evaluateActiveExit(plan = {}, state = {}) {
+  const direction = text(plan.direction ?? plan.side) === 'short' ? 'short' : 'long';
+  const entryPrice = finite(plan.entryPrice, null);
+  const currentPrice = finite(plan.currentPrice, null);
   const profitR = finite(plan.profitRMultiple ?? plan.profitR, 0);
   const initialRiskPips = Math.abs(finite(
     plan.initialRiskPips ?? plan.originalRiskPips ?? plan.detail?.lifecycle?.originalSlPips,
@@ -110,11 +141,13 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     ? profitR * initialRiskPips
     : finite(plan.unrealizedPips, 0);
   const tpProgressRaw = finite(plan.tpProgress ?? plan.partialClose?.tpProgress, 0);
-  const tpProgress = tpProgressRaw > 1 ? tpProgressRaw / 100 : tpProgressRaw;
+  const tpProgress = tpProgressRaw > 10 ? tpProgressRaw / 100 : tpProgressRaw;
   const momentumDecayScore = finite(plan.momentumDecayScore, 0);
   const momentumStatus = text(plan.momentumStatus);
   const reversalRisk = reversalRiskOf(plan);
   const priorPartialCount = Math.max(0, Math.floor(finite(state.priorPartialCount, 0)));
+  const runnerArmed = state.runnerArmed === true;
+  const breakEvenSet = state.breakEvenSet === true;
 
   const persistedPeakR = finite(state.peakProfitR, profitR);
   const persistedPeakPips = finite(state.peakProfitPips, currentProfitPips);
@@ -143,12 +176,19 @@ export function evaluateActiveExit(plan = {}, state = {}) {
       momentumStatus.includes('decay')
     )
   );
-  const reversalMedium = reversalHigh || reversalRisk === 'medium' ||
-    plan.trendWeakeningDetected === true || momentumDecayScore >= 50 ||
-    momentumStatus.includes('slowing') || momentumStatus.includes('decay');
   const breakout = breakoutConfirmed(plan);
-  const nearStop = finite(plan.distanceToSL, Infinity) <= Math.max(2, initialRiskPips * 0.25);
-  const lossRescueZone = currentProfitPips >= -2 && currentProfitPips <= Math.max(1, initialRiskPips * 0.15);
+  const favorableMomentum = profitR > 0 && !reversalHigh && !structureOpposes && (
+    breakout ||
+    momentumDecayScore < 45 ||
+    momentumStatus.includes('strong') ||
+    momentumStatus.includes('accelerat') ||
+    momentumStatus.includes('continu') ||
+    momentumStatus.includes('stable')
+  );
+  const targetReached = Boolean(
+    plan.originalTargetReached === true ||
+    tpProgress >= 1
+  );
 
   const metrics = {
     profitR: +profitR.toFixed(3),
@@ -160,120 +200,88 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     momentumDecayScore,
     reversalRisk: reversalRisk || null,
     priorPartialCount,
+    favorableMomentum,
+    runnerArmed,
+    breakEvenSet,
+    targetReached,
     breakoutConfirmed: breakout,
-    nearStop,
   };
 
-  if (hardInvalidation) {
+  if (priorPartialCount > 0 && !runnerArmed) {
     return actionResult({
-      action: 'FULL_CLOSE',
-      percent: 100,
-      reason: 'The live market invalidated the original trade thesis; exit instead of waiting for the protective stop.',
+      action: 'ARM_RUNNER',
+      reason: 'A partial is already banked; move the remainder to breakeven and remove its fixed TP so it can trail only after the original target is reached.',
+      confidence: 96,
+      evidence: ['partial_already_taken', 'breakeven_runner', 'original_tp_becomes_threshold'],
+      metrics,
+      stopLoss: entryPrice,
+      cancelTakeProfit: true,
+    });
+  }
+
+  if (runnerArmed && targetReached) {
+    return actionResult({
+      action: 'TRAIL_PROFIT',
+      reason: 'The runner reached the original TP threshold; trail the protective stop to secure additional profit without guessing a market exit.',
       confidence: 94,
-      evidence: ['hard_invalidation', lifecycleAction || 'invalidation_detected'],
+      evidence: ['original_target_reached', 'post_tp_trailing', 'no_discretionary_close'],
       metrics,
+      stopLoss: trailingStopFor(plan, direction, entryPrice, currentPrice),
+      cancelTakeProfit: true,
     });
   }
 
-  if (reversalHigh && (lossRescueZone || nearStop || profitR < 0)) {
-    return actionResult({
-      action: 'FULL_CLOSE',
-      percent: 100,
-      reason: lossRescueZone
-        ? 'Reversal risk is high while the trade is near breakeven; close in the minimal-loss rescue zone before a full stop loss.'
-        : 'Reversal risk is high and the trade is deteriorating toward its stop; close to reduce the avoidable loss.',
-      confidence: lossRescueZone ? 88 : 86,
-      evidence: ['high_reversal_risk', lossRescueZone ? 'minimal_loss_rescue' : 'stop_risk'],
-      metrics,
-    });
-  }
-
-  const confirmedMomentumPeak = profitR >= 0.5 && (
-    (reversalHigh && givebackPercent >= 12) ||
-    (momentumDecayScore >= 75 && givebackPercent >= 20) ||
-    (givebackPercent >= 35 && reversalMedium)
-  );
-  if (confirmedMomentumPeak) {
-    return actionResult({
-      action: 'FULL_CLOSE',
-      percent: 100,
-      reason: 'Favorable momentum has peaked and reversal/giveback risk is now high; realize the remaining profit rather than returning it to the market.',
-      confidence: reversalHigh ? 89 : 82,
-      evidence: ['momentum_peak', 'profit_giveback', reversalHigh ? 'high_reversal_risk' : 'momentum_decay'],
-      metrics,
-    });
-  }
-
-  const strongBreakoutContinuation = breakout && profitR > 0 &&
-    momentumDecayScore < 45 && !reversalMedium && givebackPercent < 12;
-  if (strongBreakoutContinuation) {
+  if (runnerArmed) {
     return actionResult({
       action: 'HOLD_TO_TP',
-      reason: 'Breakout continuation remains strong with limited giveback; preserve the full position for the original take profit.',
-      confidence: 84,
-      evidence: ['breakout_continuation', 'momentum_intact', 'original_tp_priority'],
+      reason: 'The partial is banked and the runner is protected at breakeven; wait for the original TP threshold before trailing profit.',
+      confidence: 88,
+      evidence: ['runner_armed', 'breakeven_protected', 'await_original_target'],
       metrics,
     });
   }
 
-  const existingPartial = Boolean(
-    plan.partialExitRecommended === true ||
-    plan.partialClose?.recommendedPartialClosePercent > 0 ||
-    finite(plan.partialExitPercent, 0) > 0 ||
-    lifecycleAction === 'partial_close' || lifecycleAction === 'partial_exit'
-  );
-  const breakoutProtection = breakout && profitR >= 0.8 && (
-    reversalMedium || momentumDecayScore >= 45 || givebackPercent >= 12
-  );
-  const nearTargetProtection = tpProgress >= 0.7 && profitR > 0 && (
-    reversalMedium || momentumDecayScore >= 45 || givebackPercent >= 10
-  );
-  const profitableWeakening = profitR >= 1 && (
-    existingPartial || reversalMedium || momentumDecayScore >= 55 || givebackPercent >= 15
-  );
-
-  if (priorPartialCount < 1 && (breakoutProtection || nearTargetProtection || profitableWeakening)) {
-    const recommended = finite(
-      plan.partialExitPercent ?? plan.partialClose?.recommendedPartialClosePercent,
-      0,
-    );
-    const percent = clamp(
-      recommended > 0 ? Math.round(recommended) : reversalHigh ? 50 : profitR >= 1.5 ? 33 : 25,
-      25,
-      50,
-    );
+  if (priorPartialCount < 1 && favorableMomentum && (profitR >= 1 || (profitR >= 0.5 && tpProgress >= 0.65))) {
+    const percent = profitR >= 1 ? 50 : 33;
     return actionResult({
       action: 'PARTIAL_CLOSE',
       percent,
-      reason: breakoutProtection
-        ? `The breakout is profitable but continuation quality is weakening; close ${percent}% to lock profit and keep the remainder for TP.`
-        : nearTargetProtection
-          ? `The trade is near its target while momentum/reversal risk is increasing; close ${percent}% and keep a TP runner.`
-          : `The position is at least +1R and live momentum is weakening; close ${percent}% to protect the gain while preserving upside.`,
-      confidence: reversalMedium ? 80 : 74,
-      evidence: [
-        breakoutProtection ? 'breakout_profit_protection' : nearTargetProtection ? 'near_target_protection' : 'profitable_weakening',
-        'single_partial_limit',
-        'runner_preserved',
-      ],
+      reason: `Momentum remains favorable; bank ${percent}% now, move the remainder to breakeven, and convert the original TP into the runner's trailing-activation threshold.`,
+      confidence: breakout ? 90 : 84,
+      evidence: ['favorable_momentum', 'single_partial_limit', 'breakeven_runner'],
       metrics,
+      stopLoss: entryPrice,
+      cancelTakeProfit: true,
+    });
+  }
+
+  if (!breakEvenSet && profitR >= 1) {
+    return actionResult({
+      action: 'MOVE_STOP_TO_BREAKEVEN',
+      reason: 'The position has reached +1R; remove the original capital risk by moving the stop to breakeven without closing the trade.',
+      confidence: 92,
+      evidence: ['one_r_reached', 'breakeven_protection', 'no_discretionary_close'],
+      metrics,
+      stopLoss: entryPrice,
     });
   }
 
   return actionResult({
     action: 'HOLD_TO_TP',
-    reason: priorPartialCount >= 1 && reversalMedium
-      ? 'A partial profit has already been taken; the remaining runner stays on the original TP until a full-close condition is confirmed.'
-      : 'The original thesis remains valid and exit risk is not strong enough to override the take-profit objective.',
-    confidence: reversalMedium ? 62 : 76,
-    evidence: ['original_tp_priority', priorPartialCount >= 1 ? 'partial_already_taken' : 'no_exit_trigger'],
+    reason: reversalHigh || structureOpposes
+      ? 'Contrary evidence is recorded, but automatic early liquidation is disabled; the protective SL remains the loss authority.'
+      : 'No profit-protection milestone is due; keep the original SL/TP and let the trade thesis resolve.',
+    confidence: reversalHigh || structureOpposes ? 95 : 78,
+    evidence: [
+      'protective_sl_is_loss_authority',
+      reversalHigh || structureOpposes ? 'no_discretionary_early_close' : 'await_profit_milestone',
+    ],
     metrics,
   });
 }
 
 export function closeUnitsForDecision(currentUnits, decision) {
   const units = Math.floor(Math.abs(finite(currentUnits, 0)));
-  if (decision?.action === 'FULL_CLOSE') return 'ALL';
   if (decision?.action !== 'PARTIAL_CLOSE' || units <= 1) return null;
   const requested = Math.floor(units * clamp(finite(decision.closePercent, 0), 1, 99) / 100);
   return Math.max(1, Math.min(units - 1, requested));

@@ -27,7 +27,7 @@ reassessor = replaceRequired(reassessor, "  const expectedHoldTimeMinutes = entr
 const ictLifecycleBlock = `  const ictLifecycle = pureIctTrade\n    ? reassessIctTrade({\n        pair, direction: side, entryPrice, currentPrice, target1: currentTP ?? originalTP,\n        candles: m5Candles, now: new Date(), openedAtMs: openTimeMs, holdMinutes: expectedHoldTimeMinutes,\n        lastReassessMs: historyRecord?.lastReassessedAt ? Date.parse(historyRecord.lastReassessedAt) : null,\n      })\n    : null;\n  const lockedIctEntryConfidence = pureIctTrade ? ictEntryConfidence(historyRecord || {}, 93) : null;\n\n`;
 reassessor = replaceRequired(reassessor, "  const liveV3Confidence = pureV3Trade\n", `${ictLifecycleBlock}  const liveV3Confidence = pureV3Trade\n`, 'ICT lifecycle evaluation');
 reassessor = replaceRequired(reassessor, "  const currentConfidence = liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;", `  let currentConfidence = pureIctTrade\n    ? lockedIctEntryConfidence\n    : liveV3Confidence?.tpHitConfidence ?? legacyCurrentConfidence;`, 'ICT confidence baseline');
-const ictOverride = `\n  if (pureIctTrade && ictLifecycle) {\n    if (!ictLifecycle.pastHold) {\n      recommendedAction = 'HOLD';\n      managementReasons.unshift(\n        \`ICT hold protection: preserving qualified \${lockedIctEntryConfidence}% entry confidence until \` +\n        \`\${expectedHoldTimeMinutes} minutes; scanner requalification and legacy confidence are ignored.\`\n      );\n    } else if (ictLifecycle.reassessDue) {\n      const actionMap = { CLOSE: 'EXIT_INVALIDATED', PARTIAL_CLOSE: 'PARTIAL_EXIT',\n        MOVE_BREAKEVEN: 'MOVE_SL_TO_BREAKEVEN', TIGHTEN_STOP: 'TRAIL_SL', HOLD: 'HOLD' };\n      recommendedAction = actionMap[ictLifecycle.action] || 'HOLD';\n      managementReasons.unshift(...ictLifecycle.reasons);\n    } else {\n      recommendedAction = 'HOLD';\n      managementReasons.unshift(...ictLifecycle.reasons);\n    }\n    currentConfidence = computeIctLifecycleConfidence({\n      entryConfidence: lockedIctEntryConfidence, minutesElapsed, holdMinutes: expectedHoldTimeMinutes,\n      lifecycleAction: ictLifecycle.action, profitR, tpProgress,\n    });\n  }\n`;
+const ictOverride = `\n  if (pureIctTrade && ictLifecycle) {\n    if (!ictLifecycle.pastHold) {\n      recommendedAction = 'HOLD';\n      managementReasons.unshift(\n        \`ICT hold protection: preserving qualified \${lockedIctEntryConfidence}% entry confidence until \` +\n        \`\${expectedHoldTimeMinutes} minutes; scanner requalification and legacy confidence are ignored.\`\n      );\n    } else if (ictLifecycle.reassessDue) {\n      const actionMap = { PARTIAL_CLOSE: 'PARTIAL_EXIT',\n        MOVE_BREAKEVEN: 'MOVE_SL_TO_BREAKEVEN', HOLD: 'HOLD' };\n      recommendedAction = actionMap[ictLifecycle.action] || 'HOLD';\n      managementReasons.unshift(...ictLifecycle.reasons);\n    } else {\n      recommendedAction = 'HOLD';\n      managementReasons.unshift(...ictLifecycle.reasons);\n    }\n    currentConfidence = computeIctLifecycleConfidence({\n      entryConfidence: lockedIctEntryConfidence, minutesElapsed, holdMinutes: expectedHoldTimeMinutes,\n      lifecycleAction: ictLifecycle.action, profitR, tpProgress,\n    });\n  }\n`;
 reassessor = insertAfter(reassessor, "  if (\n    pureV3Trade &&\n    liveV3Confidence &&\n    (liveV3Confidence.exitRecommendation === 'EXIT_NOW' || liveV3Confidence.exitRecommendation === 'EXIT_REVIEW') &&\n    recommendedAction === 'HOLD'\n  ) {\n    recommendedAction = 'EXIT_REVIEW';\n    managementReasons.push(\n      `V3 live TP-hit confidence fell to ${liveV3Confidence.tpHitConfidence}% ` +\n      `(${liveV3Confidence.state}); entry V3 score is not used as a post-entry floor.`\n    );\n  }\n", ictOverride, 'ICT hold override');
 reassessor = replaceRequired(reassessor, "    confidenceModel: pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',", `    confidenceModel: pureIctTrade\n      ? 'ict_entry_locked_until_hold_then_ict_lifecycle'\n      : pureV3Trade ? 'v3_live_tp_hit' : 'legacy_mtf',`, 'confidence model');
 reassessor = replaceRequired(reassessor, "    minutesElapsed,\n    tpProgress: +tpProgress.toFixed(2),", `    minutesElapsed,\n    expectedHoldTimeMinutes,\n    entryIctConfidence: lockedIctEntryConfidence,\n    ictLifecycle,\n    tpProgress: +tpProgress.toFixed(2),`, 'lifecycle fields');
@@ -35,23 +35,28 @@ fs.writeFileSync(REASSESSOR, reassessor);
 
 let route = fs.readFileSync(ROUTE, 'utf8');
 
-// Active Exit Intelligence owns the current authenticated management route.
-// Its five-minute TP-first policy consumes the ICT lifecycle fields produced
-// above, so the legacy post-hold/near-SL source transformer must not rewrite it.
+// Profit Protection v2 owns the current authenticated management route. Its
+// five-minute policy consumes the ICT lifecycle fields produced above without
+// ever granting lifecycle analysis authority to liquidate the full position.
 if (route.includes("from '@/lib/activeExitPolicy.js'")) {
   for (const marker of [
     'evaluateActiveExit',
     'trade_exit_management_state',
     ".eq('auto_close_enabled', true)",
     "decision.action === 'PARTIAL_CLOSE'",
-    "ictClosePolicy: 'active_exit_intelligence_v1'",
+    "'/api/internal/oanda/protection'",
+    'automaticFullCloseDisabled: true',
+    'profitProtectionPolicy: ACTIVE_EXIT_POLICY',
   ]) {
     if (!route.includes(marker)) {
-      throw new Error(`ICT lifecycle marker missing from Active Exit Intelligence route: ${marker}`);
+      throw new Error(`ICT lifecycle marker missing from Profit Protection v2 route: ${marker}`);
     }
   }
+  for (const forbidden of ["units: 'ALL'", "action: 'FULL_CLOSE'"]) {
+    if (route.includes(forbidden)) throw new Error(`Profit Protection v2 route contains forbidden ${forbidden}`);
+  }
   fs.writeFileSync(ROUTE, route);
-  console.log('ICT lifecycle aligned with Active Exit Intelligence route.');
+  console.log('ICT lifecycle aligned with Profit Protection v2 route.');
   process.exit(0);
 }
 

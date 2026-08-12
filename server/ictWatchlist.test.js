@@ -96,6 +96,9 @@ test('ICT engine and executors are enforced through the analysis router and elig
   assert.match(engine, /const ICT_PAIRS = configuredIctWatchlist\(\);/);
   assert.match(engine, /executionEligible: instrumentMeta\.executionEligible/);
   assert.doesNotMatch(engine, /getCandles\(pair, g, n, \{ client \}\)/);
+  assert.doesNotMatch(engine, /TF\.map\(\(\[key, g, n\]\) => getCandles\(/);
+  assert.match(engine, /TF\.map\(\(\[key, g, n\]\) => getIctCandles\(/);
+  assert.match(engine, /includeIncomplete: key === 'h1'/);
 
   assert.match(execution, /isIctExecutionEligibleInstrument\(pair\)/);
   assert.match(execution, /signal-only in ICT Intelligence/);

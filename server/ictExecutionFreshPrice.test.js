@@ -4,12 +4,12 @@ import { executeIctTrade } from './ictExecution.js';
 
 function baseParams(overrides = {}) {
   return {
-    pair: 'EUR_JPY',
+    pair: 'GBP_JPY',
     direction: 'long',
     entry: 184.915,
     stopLoss: 184.864,
     targetProfit: 185.000,
-    ictSignalId: `EUR_JPY:${Date.now()}`,
+    ictSignalId: `GBP_JPY:${Date.now()}`,
     environment: 'practice',
     ...overrides,
   };
@@ -26,11 +26,28 @@ function fakeAccount() {
 function fakeAnalysis() {
   return {
     signal: 'buy',
-    confidence: 90,
+    confidence: 95,
+    confluenceScore: 95,
     rr: 1.7,
+    entry: 184.915,
+    idealEntry: 184.915,
+    entryZoneLow: 184.905,
+    entryZoneHigh: 184.925,
+    entrySource: 'FVG',
+    stopLoss: 184.864,
+    target1: 185.000,
+    atrPips: 10,
+    freshImpulse: true,
+    triggerAgeBars: 0,
+    minimumRR: 1.5,
+    h1Transition: {
+      ready: true,
+      transitionId: 'bullish:2026-06-04T15:00:00Z',
+      reason: 'Test H1 transition is ready.',
+    },
     setupType: 'Turtle Soup',
     concepts: { killzone: 'New York PM' },
-    signalId: `EUR_JPY:${Date.now()}`,
+    signalId: `GBP_JPY:${Date.now()}`,
   };
 }
 
@@ -38,6 +55,13 @@ test('ICT execution blocks stale BUY target before OANDA TAKE_PROFIT_ON_FILL_LOS
   const client = {
     accountId: 'test',
     environment: 'practice',
+    get: async () => ({
+      prices: [{
+        instrument: 'GBP_JPY',
+        bids: [{ price: '185.000' }],
+        asks: [{ price: '185.010' }],
+      }],
+    }),
     post: async () => {
       throw new Error('post should not be called');
     },
@@ -48,6 +72,7 @@ test('ICT execution blocks stale BUY target before OANDA TAKE_PROFIT_ON_FILL_LOS
     cfg: { mode: 'live', autoTradeEnabled: true, minConfidence: 80, minRR: 1.5, maxRiskPercent: 1.25, signalTtlSec: 300 },
     getAnalysis: async () => fakeAnalysis(),
     getAccount: async () => fakeAccount(),
+    getOpen: async () => [],
     reconcile: async () => false,
   });
 

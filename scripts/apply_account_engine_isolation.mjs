@@ -80,7 +80,7 @@ export function applyAccountEngineIsolation(root = DEFAULT_ROOT) {
     );
     return out;
   }, [
-    "import { configuredIctWatchlist } from './ictWatchlist.js';",
+    'configuredIctWatchlist',
     'hard-watchlist blocked pairs=',
     'ICT hard watchlist rejected every requested pair',
   ]);
@@ -101,7 +101,7 @@ export function applyAccountEngineIsolation(root = DEFAULT_ROOT) {
     );
     return out;
   }, [
-    "import { configuredIctWatchlist } from './ictWatchlist.js';",
+    'configuredIctWatchlist',
     'ICT hard watchlist rejected',
   ]);
 

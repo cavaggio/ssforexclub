@@ -23,6 +23,11 @@ const goodAnalysis = (over = {}) => async () => ({
   entry: 1.1000, idealEntry: 1.1000, entryZoneLow: 1.0998, entryZoneHigh: 1.1002,
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
+  h1Transition: {
+    ready: true,
+    transitionId: 'bullish:2026-06-04T15:00:00.000Z',
+    reason: 'Test H1 countertrend-to-bias transition is ready.',
+  },
   minimumRR: 1.5, targetAdjustedToMinRR: false,
   setupType: 'ICT 2022 Model', conceptsDetected: [], concepts: {},
   ...over,
@@ -73,13 +78,13 @@ test('low confidence is rejected', async () => {
   assert.match(r.reason, /confidence/i);
 });
 
-test('an injected lower threshold cannot bypass the hard 80% ICT floor', async () => {
+test('an injected lower threshold cannot bypass the authoritative ICT floor', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     cfg: { ...LIVE_CFG, minConfidence: 0 },
     getAnalysis: goodAnalysis({ confidence: 79 }),
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /79 < 80/);
+  assert.match(r.reason, /79 < (?:80|93)/);
 });
 
 test('low RR is rejected', async () => {
@@ -105,6 +110,16 @@ test('direction mismatch with the recomputed signal is rejected', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ signal: 'sell' }) }));
   assert.equal(r.blocked, true);
   assert.match(r.reason, /no current ICT buy signal/i);
+});
+
+test('a qualified score cannot bypass the H1 countertrend-to-bias transition gate', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({
+    getAnalysis: goodAnalysis({
+      h1Transition: { ready: false, transitionId: null, reason: 'Wait for the new bullish H1 candle.' },
+    }),
+  }));
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /hourly transition gate failed/i);
 });
 
 test('valid trade submits through the existing OANDA client', async () => {

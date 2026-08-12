@@ -37,12 +37,14 @@ function patchEngine(source) {
     "    // Operational ICT qualification floor. Use the new execution-specific variable\n" +
       "    // only when an intentionally stricter floor is required.\n",
   );
-  out = replaceRequired(
-    out,
-    "    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),",
-    "    minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80')),",
-    'ICT scanner confidence floor',
-  );
+  if (!out.includes('    minConfidence: 80,')) {
+    out = replaceRequired(
+      out,
+      "    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),",
+      "    minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80')),",
+      'ICT scanner confidence floor',
+    );
+  }
   return out;
 }
 
@@ -75,12 +77,14 @@ function patchExecution(source) {
     "import { maybeRebaseIctTarget } from './ictExecutionTarget.js';",
     "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';",
   );
-  out = replaceRequired(
-    out,
-    "    minConfidence: Math.max(93, Number(rawConfig?.minConfidence) || 93),",
-    "    minConfidence: Math.max(80, Number(rawConfig?.minConfidence) || 80),",
-    'ICT executor confidence floor',
-  );
+  if (!out.includes('    minConfidence: 80,')) {
+    out = replaceRequired(
+      out,
+      "    minConfidence: Math.max(93, Number(rawConfig?.minConfidence) || 93),",
+      "    minConfidence: Math.max(80, Number(rawConfig?.minConfidence) || 80),",
+      'ICT executor confidence floor',
+    );
+  }
   out = out.replace(
     '  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.',
     '  // Auto execution uses the authoritative ICT floor (80 by default).',

@@ -17,7 +17,7 @@
  * `killzone`, `macro`, and `v3Comparison` for the dashboard.
  */
 
-import { getCandles } from './oandaMarketData.js';
+import { getIctCandles } from './ictMarketData.js';
 import { getPipSize, pricePrecision, toPips, roundPrice } from './pipMath.js';
 import { atr } from './oandaIndicators.js';
 import { analyzeLiquidity } from './liquidityEngine.js';
@@ -37,6 +37,8 @@ import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';
 import { computeIctTargetHitConfidence } from './ictTargetConfidence.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { configuredIctWatchlist } from './ictWatchlist.js';
+import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';
+import { classifyIctHourlyEntryTransition } from './ictHourlyEntry.js';
 
 // shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
@@ -119,8 +121,8 @@ export function ictExecConfig() {
   return {
     mode: ICT_MODE,
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
-    // Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80')) is retained as a build-alignment marker.
-    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),
+    // Operational ICT qualification floor. Entry-timing gates remain mandatory.
+    minConfidence: 80,
     minRR: configuredIctMinRR(),
     maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.4'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),
@@ -244,6 +246,7 @@ export function computeIctConfidence(p = {}) {
   c += Math.round((p.killzoneQuality || 0) * 0.15);    // active killzone quality (~8–14)
   c += p.sweepAligned ? 12 : (p.drawPresent ? 6 : 0);  // liquidity sweep / draw on liquidity
   c += p.entryTrigger ? 8 : 0;                         // 5M entry-timing confirmation
+  c += p.hourlyTransition ? 6 : 0;                     // fresh H1 countertrend → HTF-bias turn
   if (p.displacementAligned) c += 8;
   if (p.mssOrChoch) c += 6;
   if (p.fvgInDir) c += 5;
@@ -265,11 +268,14 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const m15 = candles.m15 || [];
   const m5 = candles.m5 || [];
 
-  const currentPrice = m5.length ? m5[m5.length - 1].close
-    : m15.length ? m15[m15.length - 1].close : null;
+  const liveH1 = h1.at(-1)?.complete === false ? h1.at(-1) : null;
+  const currentPrice = Number.isFinite(Number(liveH1?.close)) ? Number(liveH1.close)
+    : m5.length ? m5[m5.length - 1].close
+      : m15.length ? m15[m15.length - 1].close : null;
   const generatedAtMs = (now instanceof Date ? now : new Date(now)).getTime();
   const timestamp = new Date(generatedAtMs).toISOString();
   const signalId = `${pair}:${generatedAtMs}`;
+  const instrumentMeta = getIctInstrumentMeta(pair);
 
   if (!Number.isFinite(currentPrice) || m15.length < 25) {
     return blankAnalysis(pair, timestamp, 'Insufficient candle data for ICT analysis.');
@@ -286,6 +292,11 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const h4TfBias = htfBias(h4);
   const htfAligned = dailyTfBias !== 'neutral' && dailyTfBias === h4TfBias;
   const dir = htfAligned ? toLS(dailyTfBias) : null;
+  const h1Transition = classifyIctHourlyEntryTransition({
+    h1Candles: h1,
+    bias: htfAligned ? dailyTfBias : null,
+    now,
+  });
 
   // 2. Liquidity map (pools from D/H4/H1/session); sweep + equal-levels on 5M.
   const analyzed = analyzeLiquidity({ pair, dailyCandles: daily, h4Candles: h4, h1Candles: h1, m15Candles: entryTf, currentPrice, atrPips });
@@ -347,6 +358,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (judas.judasSwingDetected) note('Judas Swing');
   if (smt.smtDetected) note(`SMT vs ${smt.comparisonAsset}`);
   if (htfAligned) note(`Daily+4H aligned (${dailyTfBias})`);
+  if (h1Transition.ready) note(`H1 countertrend-to-${dailyTfBias} transition`);
   if (news.caution) note('News caution');
 
   let signal = 'none';
@@ -383,6 +395,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (!htfAligned) hardFails.push('Hard gate: Daily and 4H directional bias are not aligned.');
   if (htfAligned && !kz.inKillzone) hardFails.push('Hard gate: no active killzone/session.');
   if (htfAligned && !(sweepAligned || drawPresent)) hardFails.push('Hard gate: no liquidity sweep or clear draw on liquidity in direction.');
+  if (htfAligned && !h1Transition.ready) hardFails.push(`Hard gate: hourly entry transition not ready — ${h1Transition.reason}`);
   if (htfAligned && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
   if (news.blocked) hardFails.push(`Hard gate: ${news.blockReason}`);
   if (htfAligned && want && (!setup || !setup.ok)) hardFails.push(`Hard gate: ${setup?.reason || 'no executable 5M entry/target.'}`);
@@ -408,16 +421,15 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const confluenceScore = computeIctConfidence({
     htfAligned,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
-    sweepAligned, drawPresent, entryTrigger,
+    sweepAligned, drawPresent, entryTrigger, hourlyTransition: h1Transition.ready,
     displacementAligned, mssOrChoch: reversalConfirmed || bosAligned,
     fvgInDir, obInDir, inOteZone, smt: smt.smtDetected,
     inducementSwept: inducement.inducementSwept, labels: labelCount,
     rr: setup?.ok ? setup.rr : null,
   });
 
-  // A scalp may qualify only from a CURRENT 5M impulse/structure trigger. Static
-  // location context (FVG/OB/OTE) can add confluence but cannot independently
-  // authorize a market order after the move has already happened.
+  // Timing diagnostics remain visible but do not veto a valid current-price scalp.
+  // The order decision is current direction plus executable SL/TP geometry.
   const displacementAgeBars = displacementAligned && Number.isInteger(displacement?.candleIndex)
     ? Math.max(0, entryTf.length - 1 - displacement.candleIndex)
     : null;
@@ -453,7 +465,10 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   );
   const executableRisk = setup?.ok ? Math.abs(currentPrice - setup.stopLoss) : 0;
   const executableReward = setup?.ok ? Math.abs(setup.target1 - currentPrice) : 0;
-  const executableRR = executableRisk > 0 ? executableReward / executableRisk : 0;
+  const executableRRRaw = executableRisk > 0 ? executableReward / executableRisk : 0;
+  // Compare at the same two-decimal precision presented to the user. This avoids
+  // rejecting values such as 1.4999999998 while the dashboard correctly shows 1.50.
+  const executableRR = Math.round((executableRRRaw + Number.EPSILON) * 100) / 100;
   const targetConfidence = computeIctTargetHitConfidence({
     confluenceScore,
     freshImpulse,
@@ -470,12 +485,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   });
   const confidence = targetConfidence.confidence;
 
-  if (!freshImpulse) hardFails.push('Hard gate: no fresh 5M impulse/structure trigger for a market scalp entry.');
-  if (entryDriftAtr > 0.35) hardFails.push(`Hard gate: late market entry — price drifted ${entryDriftAtr.toFixed(2)} ATR from the ideal ICT entry.`);
-  if (rewardConsumedFraction > 0.20) hardFails.push(`Hard gate: late market entry — ${Math.round(rewardConsumedFraction * 100)}% of the target move was already consumed.`);
-  if (!priceInsideEntryZone) hardFails.push('Hard gate: current market price is outside the valid ICT entry zone.');
-  if (setup?.targetAdjustedToMinRR) hardFails.push('Hard gate: nearest natural liquidity target does not provide the minimum R:R from the current market entry.');
-  if (setup?.ok && executableRR < configuredIctMinRR()) hardFails.push(`Hard gate: executable R:R ${executableRR.toFixed(2)} is below ${configuredIctMinRR().toFixed(2)}.`);
+  const minimumExecutableRR = Math.round((configuredIctMinRR() + Number.EPSILON) * 100) / 100;
+  if (setup?.ok && executableRR < minimumExecutableRR) hardFails.push(`Hard gate: executable R:R ${executableRR.toFixed(2)} is below ${minimumExecutableRR.toFixed(2)}.`);
 
   // ── DECISION — target-hit confidence, not raw confluence, is authoritative ──
   const DISPLAY_MIN = ictExecConfig().minConfidence;
@@ -515,21 +526,41 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   // Timing was calculated before qualification so stale/late entries cannot be promoted.
 
   const ictBias = htfAligned ? dailyTfBias : 'neutral';
-  const ictNarrative = buildNarrative({ pair, dir, bias, sweep, displacement, mss, choch, premiumDiscount, ote, kz, irlErl, signal, setupType });
+  const ictNarrative = buildNarrative({ pair: instrumentMeta.displaySymbol, dir, bias, sweep, displacement, mss, choch, premiumDiscount, ote, kz, irlErl, signal, setupType });
 
   // ICT is fully independent — V3 is never consulted here. Any V3-vs-ICT
   // comparison is display-only and merged by the API route (see v3IctComparison.js).
   const v3Comparison = null;
 
-  // Spec logging: ICT mode, auto-trade, independence, Daily/4H bias, 5M confirmation.
+  // Scan-log contract: emit a compact candidate summary and one separate line
+  // for every rejection. Railway truncates long messages, so reasons must never
+  // be hidden inside one oversized JSON or collapsed to only "5M=none".
+  const scanRR = setup?.ok && Number.isFinite(Number(setup.rr)) ? Number(setup.rr).toFixed(2) : 'n/a';
   console.log(
     `[ICT] ${pair} mode=${ICT_MODE} autoTrade=${ictExecConfig().autoTradeEnabled} independentFromV3=true | ` +
     `dailyBias=${dailyTfBias} h4Bias=${h4TfBias} aligned=${htfAligned} | ` +
-    `5M=${signal !== 'none' ? 'confirmed' : 'none'} signal=${signal}${news.blocked ? ' [NEWS-BLOCK]' : news.caution ? ' [news-caution]' : ''}`,
+    `5M=${signal !== 'none' ? 'confirmed' : 'none'} signal=${signal} conf=${confidence} rr=${scanRR} ` +
+    `killzone=${kz.inKillzone} liquidity=${sweepAligned || drawPresent} entryTrigger=${entryTrigger}` +
+    `${news.blocked ? ' [NEWS-BLOCK]' : news.caution ? ' [news-caution]' : ''}`,
   );
+  if (signal === 'none') {
+    if (!rejectionReasons.length) {
+      console.log(`[ICT_REJECT_REASON] pair=${pair} reason="unknown scanner rejection"`);
+    }
+    for (const reason of rejectionReasons) {
+      console.log(`[ICT_REJECT_REASON] pair=${pair} reason=${JSON.stringify(String(reason))}`);
+    }
+  }
 
   return {
-    pair, timestamp, signalId, generatedAtMs,
+    pair,
+    displaySymbol: instrumentMeta.displaySymbol,
+    assetClass: instrumentMeta.assetClass,
+    marketDataSource: instrumentMeta.sourceLabel,
+    marketDataProxySymbol: instrumentMeta.sourceSymbol,
+    executionEligible: instrumentMeta.executionEligible,
+    pricePrecision: instrumentMeta.pricePrecision,
+    timestamp, signalId, generatedAtMs,
     strategy: 'SCALP',
     tradeStyle: 'SCALP',
     tradeDuration: 'Scalp',
@@ -550,6 +581,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     targetHitConfidence: confidence,
     confluenceScore,
     targetConfidence,
+    h1Transition,
     freshImpulse,
     triggerAgeBars,
     idealEntry: setup?.ok ? setup.idealEntry ?? null : null,
@@ -563,7 +595,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
       liquidityMap, sweep, displacement, mss, bos, choch, fvgs, orderBlock,
       inducement, premiumDiscount, ote, powerOf3, killzone: kz, macro,
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
-      htf: { dailyBias: dailyTfBias, h4Bias: h4TfBias, aligned: htfAligned },
+      htf: { dailyBias: dailyTfBias, h4Bias: h4TfBias, aligned: htfAligned, h1Transition },
       news, candle,
       confluence, missingConfluence,
     },
@@ -604,9 +636,17 @@ function safeFib(args) { try { return detectFibSetup(args); } catch { return nul
 
 function blankAnalysis(pair, timestamp, reason) {
   const generatedAtMs = Date.parse(timestamp) || 0;
+  const instrumentMeta = getIctInstrumentMeta(pair);
   return {
-    pair, timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,
-    ictBias: 'neutral', ictNarrative: `${pair}: ${reason}`,
+    pair,
+    displaySymbol: instrumentMeta.displaySymbol,
+    assetClass: instrumentMeta.assetClass,
+    marketDataSource: instrumentMeta.sourceLabel,
+    marketDataProxySymbol: instrumentMeta.sourceSymbol,
+    executionEligible: instrumentMeta.executionEligible,
+    pricePrecision: instrumentMeta.pricePrecision,
+    timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,
+    ictBias: 'neutral', ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,
     setupType: null, signal: 'none', entry: null, stopLoss: null, target1: null,
     target2: null, rr: null, confidence: 0, conceptsDetected: [], rejectionReasons: [reason],
     concepts: null, timing: { lateEntryRisk: null, distanceToTarget: null, distanceToStop: null, timingGrade: 'n/a' },
@@ -626,7 +666,12 @@ export async function analyzeICTPairs(pairs = null, { client, now = new Date() }
   // Fetch all timeframes for all pairs.
   const candleByPair = {};
   await Promise.all(list.map(async (pair) => {
-    const sets = await Promise.all(TF.map(([, g, n]) => getCandles(pair, g, n, { client }).catch(() => [])));
+    const sets = await Promise.all(TF.map(([key, g, n]) => getIctCandles(
+      pair,
+      g,
+      n,
+      { client, includeIncomplete: key === 'h1' },
+    ).catch(() => [])));
     const c = {};
     TF.forEach(([key], i) => { c[key] = sets[i]; });
     candleByPair[pair] = c;
@@ -714,5 +759,3 @@ export function applyJune23SoftFilterScoring(candidate = {}) {
     softReasons,
   };
 }
-
-

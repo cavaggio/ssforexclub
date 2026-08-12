@@ -62,7 +62,7 @@ export function AutoCloseToggle() {
         setState({
           ...previous,
           saving: false,
-          saveError: json?.error || `Could not save Auto Exit Management (HTTP ${response.status}).`,
+          saveError: json?.error || `Could not save Auto Profit Protection (HTTP ${response.status}).`,
         });
         return;
       }
@@ -76,16 +76,16 @@ export function AutoCloseToggle() {
       setState({
         ...previous,
         saving: false,
-        saveError: err instanceof Error ? err.message : 'Could not save Auto Exit Management.',
+        saveError: err instanceof Error ? err.message : 'Could not save Auto Profit Protection.',
       });
     }
   };
 
   if (state.kind === 'loading') {
-    return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto Exit Management…</span></Box>;
+    return <Box><span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading Auto Profit Protection…</span></Box>;
   }
   if (state.kind === 'error') {
-    return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto Exit Management: {state.message}</span></Box>;
+    return <Box><span style={{ color: 'var(--bad)', fontSize: 13 }}>Auto Profit Protection: {state.message}</span></Box>;
   }
 
   const isPaper = state.environment === 'practice' || state.environment === 'paper';
@@ -97,16 +97,16 @@ export function AutoCloseToggle() {
     <Box>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 540px' }}>
-          <div style={{ fontWeight: 800, fontSize: 14 }}>Auto Exit Management</div>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>Auto Profit Protection</div>
           <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>
-            Actively reviews open trades every five minutes. The original TP remains the first objective,
-            but the bot can execute one partial close or a full close when momentum peaks, reversal risk
-            rises, or a near-breakeven loss rescue is confirmed.
+            Reviews open trades every five minutes. It can move the stop to breakeven when applicable,
+            bank one partial while momentum is favorable, and trail the protected runner only after price
+            reaches the original take-profit threshold.
           </div>
           <div style={{ marginTop: 7, fontSize: 12 }}>
             Status:{' '}
             <strong style={{ color: active ? 'var(--good)' : 'var(--muted)' }}>
-              {active ? 'ACTIVE — broker exits enabled' : 'OFF — recommendations only'}
+              {active ? 'ACTIVE — broker profit protection enabled' : 'OFF — recommendations only'}
             </strong>
           </div>
         </div>
@@ -134,7 +134,7 @@ export function AutoCloseToggle() {
       </div>
 
       <div style={{ marginTop: 10, padding: '9px 11px', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--muted)', fontSize: 11, lineHeight: 1.5 }}>
-        Automatic management never widens a stop, adds to a losing trade, or takes more than one automatic partial. A hard invalidation may close the remaining position immediately.
+        Automatic management never widens a stop, adds to a losing trade, or fully closes before the protective SL. The SL remains the loss authority; the bot protects profit instead of guessing an early exit.
       </div>
 
       {state.migrationRequired && (
@@ -144,12 +144,12 @@ export function AutoCloseToggle() {
       )}
       {!isPaper && !state.platformEnabled && (
         <div role="alert" style={{ marginTop: 9, color: 'var(--warn)', fontSize: 12 }}>
-          Live Auto Exit Management is blocked while PLATFORM_LIVE_TRADING_ENABLED is off.
+          Live Auto Profit Protection is blocked while PLATFORM_LIVE_TRADING_ENABLED is off.
         </div>
       )}
       {!isPaper && state.platformEnabled && !state.liveAck && (
         <div role="alert" style={{ marginTop: 9, color: 'var(--warn)', fontSize: 12 }}>
-          Accept the live-trading risk acknowledgement before activating automatic exits.
+          Accept the live-trading risk acknowledgement before activating automatic profit protection.
         </div>
       )}
       {state.saveError && (

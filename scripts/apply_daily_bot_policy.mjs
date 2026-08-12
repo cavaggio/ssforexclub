@@ -8,9 +8,14 @@ function patchFile(relativePath, patcher, requiredMarkers = []) {
   const path = resolve(ROOT, relativePath);
   const before = readFileSync(path, 'utf8');
   const after = patcher(before);
-  const missing = requiredMarkers.filter((marker) => !after.includes(marker));
+  const missing = requiredMarkers.filter((marker) => (
+    Array.isArray(marker)
+      ? !marker.some((alternative) => after.includes(alternative))
+      : !after.includes(marker)
+  ));
   if (missing.length) {
-    throw new Error(`${relativePath} missing daily bot policy markers: ${missing.join(', ')}`);
+    const labels = missing.map((marker) => Array.isArray(marker) ? marker.join(' OR ') : marker);
+    throw new Error(`${relativePath} missing daily bot policy markers: ${labels.join(', ')}`);
   }
   if (after !== before) writeFileSync(path, after, 'utf8');
   console.log(`[DAILY_BOT_POLICY] verified ${relativePath}${after !== before ? ' (patched)' : ''}`);
@@ -166,7 +171,10 @@ patchFile(
         "  reserveDailyLossBudget,\n  checkAutoExecutionConfidence,\n  markTradeOpened,\n} from './riskManager.js';",
       );
     }
-    if (!out.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })")) {
+    if (
+      !out.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
+      !out.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })")
+    ) {
       out = out.replace(
         "  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
         "  try {\n    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
@@ -181,7 +189,10 @@ patchFile(
     return out;
   },
   [
-    "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
+    [
+      "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
+      "applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })",
+    ],
     'markTradeOpened,',
     'markTradeOpened({ accountId, balanceUSD, now });',
   ],
@@ -284,7 +295,10 @@ patchFile(
     'inDailyMarketStudyWindow',
     'export async function dailyMarketStudyTick',
     "scanMode: 'daily_study'",
-    'entries=V3_02:15/PPR_03:00/ICT_05:00',
+    [
+      'entries=V3_02:15/PPR_03:00/ICT_05:00',
+      'entries=V3/PPR/ICT_02:15',
+    ],
   ],
 );
 

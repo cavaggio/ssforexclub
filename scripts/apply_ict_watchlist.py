@@ -79,6 +79,10 @@ def patch_engine() -> None:
         "getCandles(pair, g, n, { client }).catch(() => [])",
         "getIctCandles(pair, g, n, { client }).catch(() => [])",
     )
+    text = text.replace(
+        "TF.map(([key, g, n]) => getCandles(",
+        "TF.map(([key, g, n]) => getIctCandles(",
+    )
 
     signal_anchor = "  const signalId = `${pair}:${generatedAtMs}`;\n"
     meta_line = "  const instrumentMeta = getIctInstrumentMeta(pair);\n"
@@ -108,7 +112,7 @@ def patch_engine() -> None:
         raise SystemExit("ICT analysis imports are not unique")
     if text.count(NEW_WATCHLIST_BLOCK) != 1:
         raise SystemExit("ICT configured watchlist assignment is not unique")
-    if "getCandles(pair, g, n, { client })" in text:
+    if "getCandles(pair, g, n, { client })" in text or "=> getCandles(" in text:
         raise SystemExit("ICT batch still calls OANDA candles directly")
 
     ENGINE.write_text(text, encoding="utf-8")
@@ -152,8 +156,15 @@ def patch_auto_trade() -> None:
     )
 
     old = "  const rr = Number(analysis?.rr);\n  return analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
-    new = "  const rr = Number(analysis?.rr);\n  const pairEligible = analysis?.pair\n    ? isIctExecutionEligibleInstrument(analysis.pair)\n    : analysis?.executionEligible !== false;\n  return pairEligible &&\n    analysis?.executionEligible !== false &&\n    analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
-    text = replace_once(text, old, new, "ICT Auto AI qualification anchor not found")
+    enhanced_old = "  const rr = Number(analysis?.rr);\n  return analysis?.executionEligible !== false &&"
+    new = "  const rr = Number(analysis?.rr);\n  const pairEligible = analysis?.pair\n    ? isIctExecutionEligibleInstrument(analysis.pair)\n    : analysis?.executionEligible !== false;\n  return pairEligible &&\n    analysis?.executionEligible !== false &&"
+    if new not in text:
+        if enhanced_old in text:
+            text = text.replace(enhanced_old, new, 1)
+        elif old in text:
+            text = text.replace(old, new + "\n    analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&", 1)
+        else:
+            raise SystemExit("ICT analysis instrument patch failed: ICT Auto AI qualification anchor not found")
     AUTO_TRADE.write_text(text, encoding="utf-8")
 
 

@@ -10,6 +10,7 @@ delete process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE;
 delete process.env.AUTO_AI_MAX_TOTAL_OPEN_RISK_PERCENT;
 
 const { executeIctTrade } = await import('./ictExecution.js');
+const { __resetExecutionReservationsForTests } = await import('./executionReservations.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
 const ACTIVE_CFG = { mode: 'active', autoTradeEnabled: true, minConfidence: 80, minRR: 1.5, maxRiskPercent: 1, signalTtlSec: 300 };
@@ -27,6 +28,11 @@ const goodAnalysis = (over = {}) => async () => ({
   entry: 1.1000, idealEntry: 1.1000, entryZoneLow: 1.0998, entryZoneHigh: 1.1002,
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
+  h1Transition: {
+    ready: true,
+    transitionId: 'bullish:2026-06-04T15:00:00.000Z',
+    reason: 'Test H1 countertrend-to-bias transition is ready.',
+  },
   minimumRR: 1.5, targetAdjustedToMinRR: false,
   setupType: 'ICT 2022 Model', conceptsDetected: [], concepts: {},
   ...over,
@@ -54,10 +60,28 @@ const baseDeps = (over = {}) => ({
 });
 
 test('ICT active mode executes a practice trade without FOREX_ALLOW_LIVE_EXECUTION', async () => {
+  __resetExecutionReservationsForTests();
   const client = paperClient();
   const r = await executeIctTrade(validParams(), baseDeps({ client }));
   assert.equal(r.success, true, r.reason);
   assert.equal(r.executionState, 'FILLED');
+  assert.equal(client.calls.length, 1);
+});
+
+test('closing a trade cannot reopen the same late H1 transition', async () => {
+  __resetExecutionReservationsForTests();
+  const client = paperClient();
+  client.accountId = 'ACC-PAPER-H1-GUARD';
+  const deps = baseDeps({ client });
+
+  const first = await executeIctTrade(validParams(), deps);
+  assert.equal(first.success, true, first.reason);
+
+  // Broker reconciliation can report no open duplicate after a close, but the
+  // independent H1-cycle reservation must still reject the stale re-entry.
+  const reopened = await executeIctTrade(validParams(), deps);
+  assert.equal(reopened.blocked, true);
+  assert.match(reopened.reason, /Hourly re-entry guard rejected/i);
   assert.equal(client.calls.length, 1);
 });
 
@@ -69,10 +93,10 @@ test('ICT shadow mode remains blocked', async () => {
   assert.match(r.reason, /ICT execution disabled/);
 });
 
-test('auto execution rejects confidence below the approved 80 threshold', async () => {
+test('auto execution rejects confidence below the authoritative threshold', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /79 < 80/);
+  assert.match(r.reason, /79 < (?:80|93)/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {

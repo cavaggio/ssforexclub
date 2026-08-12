@@ -12,6 +12,7 @@
 
 import { analyzeICTPairs, ictExecConfig } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
+import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictWatchlist.js';
 import { runDailyMarketStudy } from './dailyMarketStudy.js';
 import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 
@@ -29,7 +30,11 @@ function rejectionReasonsOf(item) {
 function isWaitableTriggerReason(reason) {
   const text = String(reason || '').toLowerCase();
   return text.includes('no 5m entry-timing trigger') ||
-    text.includes('no fresh 5m impulse/structure trigger');
+    text.includes('no fresh 5m impulse/structure trigger') ||
+    text.includes('await for it to turn') ||
+    text.includes('wait for it to turn') ||
+    text.includes('last completed h1 candle') ||
+    text.includes('current live h1 candle is unavailable');
 }
 
 function hasBlockingHardReject(item) {
@@ -42,6 +47,8 @@ function hasLateOrInvalidTiming(item) {
   return rejectionReasonsOf(item).some((reason) => {
     const text = reason.toLowerCase();
     return text.includes('late market entry') ||
+      text.includes('transition window has ended') ||
+      text.includes('do not chase the end of momentum') ||
       text.includes('outside the valid ict entry zone') ||
       text.includes('nearest natural liquidity target does not provide') ||
       text.includes('executable r:r') ||
@@ -83,7 +90,7 @@ export function maskAccountForLog(id) {
 
 const maskAccount = maskAccountForLog;
 
-export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.5) {
+export function buildIctWatchState(analyses = [], minConfidence = 80, minRR = 1.5) {
   const nearQualifiedPairs = new Set();
   const hotPairs = new Set();
   const lateEntryPairs = new Set();
@@ -93,7 +100,10 @@ export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.
   for (const item of analyses) {
     const pair = item?.pair;
     if (!pair) continue;
-    if (isIctAutoQualified(item, cfg)) {
+    const displayQualified = item?.signal !== 'none' &&
+      Number.isFinite(Number(item?.confidence)) && Number(item.confidence) >= cfg.minConfidence &&
+      Number.isFinite(Number(item?.rr)) && Number(item.rr) >= cfg.minRR;
+    if (displayQualified) {
       hotPairs.add(pair);
       continue;
     }
@@ -134,7 +144,15 @@ export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.
 export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
   const confidence = Number(analysis?.confidence);
   const rr = Number(analysis?.rr);
-  return analysis?.signal !== 'none' &&
+  const pairEligible = analysis?.pair
+    ? isIctExecutionEligibleInstrument(analysis.pair)
+    : analysis?.executionEligible !== false;
+  return pairEligible &&
+    analysis?.executionEligible !== false &&
+    analysis?.signal !== 'none' &&
+    analysis?.freshImpulse === true &&
+    analysis?.h1Transition?.ready === true &&
+    Boolean(analysis?.h1Transition?.transitionId) &&
     Number.isFinite(confidence) && confidence >= cfg.minConfidence &&
     Number.isFinite(rr) && rr >= cfg.minRR;
 }
@@ -152,8 +170,23 @@ export async function runAutoAiForUser({
   const tag = `[AUTO_AI][ICT][runId=${runId ?? '-'}]`;
   const account = maskAccount(client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} independentFromV3=true ${m}`);
-  const scanPairs = Array.isArray(pairs) && pairs.length ? pairs : null;
-  log(`scan started scanMode=${scanMode} pairs=${scanPairs?.length ? scanPairs.join(',') : 'ALL'}`);
+  const hardWatchlist = configuredIctWatchlist();
+  const allowedPairs = new Set(hardWatchlist);
+  const requestedPairs = Array.isArray(pairs) && pairs.length
+    ? [...new Set(pairs.map((pair) => String(pair || '').trim().toUpperCase()).filter(Boolean))]
+    : hardWatchlist;
+  const scanPairs = requestedPairs.filter((pair) => allowedPairs.has(pair));
+  const blockedPairs = requestedPairs.filter((pair) => !allowedPairs.has(pair));
+  if (blockedPairs.length) log(`hard-watchlist blocked pairs=${blockedPairs.join(',')}`);
+  log(`scan started scanMode=${scanMode} pairs=${scanPairs.join(',')} hardWatchlist=${hardWatchlist.join(',')}`);
+  if (!scanPairs.length) {
+    return {
+      scanned: 0, qualified: 0, executed: [],
+      skipped: [{ reason: 'ICT hard watchlist rejected every requested pair', pairs: blockedPairs }],
+      nearQualifiedPairs: [], hotPairs: [], lateEntryPairs: [],
+      hardWatchlist, blockedPairs, executionAllowed: false,
+    };
+  }
 
   if (scanMode === 'daily_study') {
     return runDailyMarketStudy({ client, engine: 'ict', pairs: scanPairs, now });
@@ -357,7 +390,7 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 93 && rr >= 1.5) {
+  if (confidence >= 80 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
   }
 

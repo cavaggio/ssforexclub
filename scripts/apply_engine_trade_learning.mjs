@@ -69,7 +69,10 @@ function patchIct(source) {
 function patchIctExecution(source) {
   let out = replaceCalibrationImport(source, 'ICT execution');
   out = out.replaceAll('applyStoredStudyCalibration(', 'applyCombinedLearningCalibration(');
-  if (!out.includes("applyCombinedLearningCalibration(await analyze(pair), { client, engine: 'ict' })")) {
+  if (
+    !out.includes("applyCombinedLearningCalibration(await analyze(pair), { client, engine: 'ict' })") &&
+    !out.includes("applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })")
+  ) {
     throw new Error('[ENGINE_LEARNING_PATCH] ICT authoritative execution calibration missing');
   }
   return out;

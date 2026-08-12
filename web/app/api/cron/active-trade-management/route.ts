@@ -3,7 +3,11 @@ import { getServerSupabase } from '@/lib/db';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
 import { listTradeLogsForUser, logTradeEvent } from '@/lib/tradeLogs';
-import { evaluateActiveExit, closeUnitsForDecision } from '@/lib/activeExitPolicy.js';
+import {
+  ACTIVE_EXIT_POLICY,
+  evaluateActiveExit,
+  closeUnitsForDecision,
+} from '@/lib/activeExitPolicy.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,6 +15,12 @@ export const runtime = 'nodejs';
 const mask = (id: string) => id && id.length > 6 ? `${id.slice(0, 4)}…${id.slice(-2)}` : '***';
 
 type AutoAiEngine = 'ict' | 'v3' | 'ppr';
+type ManagementAction =
+  | 'HOLD_TO_TP'
+  | 'MOVE_STOP_TO_BREAKEVEN'
+  | 'PARTIAL_CLOSE'
+  | 'ARM_RUNNER'
+  | 'TRAIL_PROFIT';
 type ExitState = {
   partial_count?: number | null;
   cumulative_partial_percent?: number | null;
@@ -18,13 +28,17 @@ type ExitState = {
   peak_profit_pips?: number | null;
   last_action?: string | null;
   last_action_at?: string | null;
+  last_decision?: Record<string, any> | null;
 };
 type ManagementDecision = {
-  action: 'HOLD_TO_TP' | 'PARTIAL_CLOSE' | 'FULL_CLOSE';
+  action: ManagementAction;
   closePercent: number;
   reason: string;
   confidence: number;
   policy: string;
+  stopLoss?: number | null;
+  cancelTakeProfit?: boolean;
+  automaticFullCloseAllowed?: boolean;
   metrics?: Record<string, any>;
   evidence?: string[];
 };
@@ -64,62 +78,6 @@ function nyContext(now = new Date()) {
     isWeekend: weekday === 'Sat' || weekday === 'Sun',
     managementStarted: minutes >= 2 * 60 + 15,
     beforeManagementEnd: minutes < 17 * 60 + 30,
-    afterVolatilityCutoff: minutes >= 17 * 60,
-  };
-}
-
-function v3ExitDecision(plan: Record<string, any>, afterVolatilityCutoff: boolean): ManagementDecision {
-  const reversalRisk = String(
-    plan.reversalRisk ?? plan.detail?.invalidation?.reversalRisk ??
-    plan.detail?.trendWeakening?.severity ?? plan.trendWeakeningSeverity ?? '',
-  ).toLowerCase();
-  const momentum = String(plan.momentumStatus ?? '').toLowerCase();
-  const action = String(plan.recommendedAction ?? '').toUpperCase();
-  const lifecycleAction = String(plan.lifecycleRecommendation?.action ?? '').toLowerCase();
-  const profitR = finiteNumber(plan.profitRMultiple) ?? 0;
-
-  if (lifecycleAction === 'partial_close' && profitR > 0) {
-    const requested = finiteNumber(
-      plan.partialExitPercent ?? plan.partialClose?.recommendedPartialClosePercent,
-    ) ?? 25;
-    return {
-      action: 'PARTIAL_CLOSE',
-      closePercent: Math.max(25, Math.min(50, Math.round(requested))),
-      reason: plan.lifecycleRecommendation?.reason || 'V3 lifecycle recommends protecting a profitable position with a partial exit.',
-      confidence: finiteNumber(plan.lifecycleRecommendation?.confidence) ?? 75,
-      policy: 'v3_existing_active_management',
-    };
-  }
-
-  const mediumOrHigherReversal = reversalRisk === 'medium' || reversalRisk === 'high' ||
-    momentum.includes('reversal') || momentum.includes('reversed');
-  const immediateExit = plan.invalidationDetected === true ||
-    action === 'EXIT_INVALIDATED' || action === 'EXIT_REVIEW' ||
-    lifecycleAction.includes('exit') || lifecycleAction.includes('close') ||
-    mediumOrHigherReversal;
-  const slowedByFive = afterVolatilityCutoff && (
-    plan.volatilityCollapsed === true || momentum.includes('decay') ||
-    momentum.includes('slowing') || plan.trendWeakeningDetected === true
-  );
-
-  if (immediateExit || slowedByFive) {
-    return {
-      action: 'FULL_CLOSE',
-      closePercent: 100,
-      reason: immediateExit
-        ? 'V3 invalidation or medium/high reversal risk requires an active exit.'
-        : 'Late-session volatility or momentum deterioration requires an active exit.',
-      confidence: immediateExit ? 84 : 72,
-      policy: 'v3_existing_active_management',
-    };
-  }
-
-  return {
-    action: 'HOLD_TO_TP',
-    closePercent: 0,
-    reason: 'V3 thesis remains active; hold the original take profit.',
-    confidence: 70,
-    policy: 'v3_existing_active_management',
   };
 }
 
@@ -134,7 +92,7 @@ function eventStrategy(row: Record<string, unknown>): string {
   const item = raw.item && typeof raw.item === 'object' ? raw.item : {};
   const signal = item.signal && typeof item.signal === 'object' ? item.signal : {};
   return String(
-    raw.engine ?? raw.strategy ?? item.engine ?? item.strategy ?? signal.engine ?? signal.strategy ?? '',
+    row.engine ?? row.strategy ?? raw.engine ?? raw.strategy ?? item.engine ?? item.strategy ?? signal.engine ?? signal.strategy ?? '',
   ).toLowerCase();
 }
 
@@ -145,7 +103,7 @@ function eventTradeId(row: Record<string, unknown>): string {
   const request = raw.request && typeof raw.request === 'object' ? raw.request : {};
   const result = raw.result && typeof raw.result === 'object' ? raw.result : {};
   return String(
-    row.trade_id ?? raw.tradeId ?? raw.trade_id ?? item.tradeId ?? item.trade_id ??
+    row.broker_trade_id ?? row.trade_id ?? raw.tradeId ?? raw.trade_id ?? item.tradeId ?? item.trade_id ??
     executed.tradeId ?? request.tradeId ?? result.tradeId ?? '',
   );
 }
@@ -184,7 +142,7 @@ async function loadExitStates(
   if (!tradeIds.length) return new Map();
   const { data, error } = await supabase
     .from('trade_exit_management_state')
-    .select('trade_id, partial_count, cumulative_partial_percent, peak_profit_r, peak_profit_pips, last_action, last_action_at')
+    .select('trade_id, partial_count, cumulative_partial_percent, peak_profit_r, peak_profit_pips, last_action, last_action_at, last_decision')
     .eq('user_id', userId)
     .eq('broker_account_id', accountId)
     .in('trade_id', tradeIds);
@@ -232,6 +190,24 @@ function recentAction(state: ExitState): boolean {
   return Number.isFinite(at) && Date.now() - at < ACTION_COOLDOWN_MS;
 }
 
+function runnerArmed(state: ExitState): boolean {
+  const action = String(state.last_action || '').toUpperCase();
+  return action === 'PARTIAL_RUNNER_ARMED' || action === 'RUNNER_ARMED' || action === 'TRAIL_PROFIT';
+}
+
+function stopAtBreakeven(plan: Record<string, any>, state: ExitState): boolean {
+  const action = String(state.last_action || '').toUpperCase();
+  if (
+    action === 'BREAKEVEN_SET' || action === 'PARTIAL_RUNNER_ARMED' ||
+    action === 'RUNNER_ARMED' || action === 'TRAIL_PROFIT'
+  ) return true;
+
+  const entry = finiteNumber(plan.entryPrice);
+  const stop = finiteNumber(plan.currentStopLoss);
+  if (entry == null || stop == null) return false;
+  return plan.direction === 'short' ? stop <= entry : stop >= entry;
+}
+
 function logEnvironment(value: unknown): 'practice' | 'live' | 'paper' {
   if (value === 'live') return 'live';
   if (value === 'paper') return 'paper';
@@ -257,15 +233,15 @@ export async function POST(req: Request) {
 
   if (error) {
     if (isMissingAutoCloseSchema(error)) {
-      return NextResponse.json({ ok: true, skipped: 'active_exit_intelligence_migration_required', ny });
+      return NextResponse.json({ ok: true, skipped: 'profit_protection_migration_required', ny });
     }
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 
   const results: Record<string, unknown>[] = [];
   let reviewed = 0;
-  let closed = 0;
   let partials = 0;
+  let protectionUpdates = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const userId = row.user_id;
@@ -303,7 +279,7 @@ export async function POST(req: Request) {
         stateByTrade = await loadExitStates(supabase, userId, credentials.accountId, tradeIds);
       } catch (stateError) {
         if (isMissingAutoCloseSchema(stateError as { code?: string; message?: string })) {
-          results.push({ user: mask(userId), skipped: 'active_exit_state_migration_required' });
+          results.push({ user: mask(userId), skipped: 'profit_protection_state_migration_required' });
           continue;
         }
         throw stateError;
@@ -318,18 +294,18 @@ export async function POST(req: Request) {
         if (!tradeId) continue;
         const tradeEngine = tradeStrategies.get(tradeId) ?? selectedEngine;
         if (tradeEngine === 'ppr') {
-          evaluations.push({ tradeId, instrument: plan.instrument, engine: tradeEngine, skipped: 'ppr_sl_tp_only' });
+          evaluations.push({ tradeId, instrument: plan.instrument, engine: tradeEngine, skipped: 'ppr_automated_management_disabled_manual_only' });
           continue;
         }
 
         const previousState = stateByTrade.get(tradeId) ?? {};
-        const decision = (tradeEngine === 'ict'
-          ? evaluateActiveExit(plan, {
-              priorPartialCount: previousState.partial_count ?? 0,
-              peakProfitR: previousState.peak_profit_r ?? null,
-              peakProfitPips: previousState.peak_profit_pips ?? null,
-            })
-          : v3ExitDecision(plan, ny.afterVolatilityCutoff)) as ManagementDecision;
+        const decision = evaluateActiveExit(plan, {
+          priorPartialCount: previousState.partial_count ?? 0,
+          peakProfitR: previousState.peak_profit_r ?? null,
+          peakProfitPips: previousState.peak_profit_pips ?? null,
+          runnerArmed: runnerArmed(previousState),
+          breakEvenSet: stopAtBreakeven(plan, previousState),
+        }) as ManagementDecision;
 
         evaluations.push({
           tradeId,
@@ -353,13 +329,7 @@ export async function POST(req: Request) {
         }
 
         if (recentAction(previousState)) {
-          evaluations.push({ tradeId, skipped: 'exit_action_cooldown', lastAction: previousState.last_action });
-          continue;
-        }
-
-        const units = closeUnitsForDecision(plan.units, decision);
-        if (units == null) {
-          evaluations.push({ tradeId, skipped: 'partial_units_unavailable', currentUnits: plan.units ?? null });
+          evaluations.push({ tradeId, skipped: 'protection_action_cooldown', lastAction: previousState.last_action });
           continue;
         }
 
@@ -372,50 +342,138 @@ export async function POST(req: Request) {
           actionAt,
         });
 
-        const closeResult = await callInternalEndpoint('/api/internal/oanda/close', {
+        if (decision.action === 'PARTIAL_CLOSE') {
+          const units = closeUnitsForDecision(plan.units, decision);
+          if (units == null) {
+            await saveExitState({
+              supabase, userId, accountId: credentials.accountId, tradeId,
+              instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+              state: previousState, decision,
+              action: 'FAILED_PARTIAL_UNITS', actionAt,
+            });
+            evaluations.push({ tradeId, skipped: 'partial_units_unavailable', currentUnits: plan.units ?? null });
+            continue;
+          }
+
+          const partialResult = await callInternalEndpoint('/api/internal/oanda/close', {
+            ...credentialBody,
+            tradeId,
+            instrument: plan.instrument,
+            units,
+            reason: `${decision.policy}:${decision.reason}`,
+          });
+          const nextState: ExitState = { ...previousState };
+          let protectionResult: Awaited<ReturnType<typeof callInternalEndpoint>> | null = null;
+          let finalAction = 'FAILED_PARTIAL_CLOSE';
+
+          if (partialResult.ok) {
+            nextState.partial_count = Number(previousState.partial_count || 0) + 1;
+            nextState.cumulative_partial_percent = Math.min(
+              100,
+              Number(previousState.cumulative_partial_percent || 0) + decision.closePercent,
+            );
+            partials += 1;
+            protectionResult = await callInternalEndpoint('/api/internal/oanda/protection', {
+              ...credentialBody,
+              tradeId,
+              instrument: plan.instrument,
+              stopLoss: decision.stopLoss,
+              cancelTakeProfit: true,
+              action: 'PARTIAL_RUNNER_ARMED',
+            });
+            finalAction = protectionResult.ok ? 'PARTIAL_RUNNER_ARMED' : 'PARTIAL_PROTECTION_FAILED';
+            if (protectionResult.ok) protectionUpdates += 1;
+          }
+
+          await saveExitState({
+            supabase, userId, accountId: credentials.accountId, tradeId,
+            instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+            state: nextState, decision,
+            action: finalAction, actionAt,
+          });
+
+          if (partialResult.ok) {
+            await logTradeEvent({
+              userId,
+              broker: 'oanda',
+              brokerAccountId: credentials.accountId,
+              environment: logEnvironment(resolved.activeEnvironment),
+              eventType: 'partial_closed',
+              instrument: String(plan.instrument ?? ''),
+              tradeId,
+              side: plan.direction === 'short' ? 'short' : 'long',
+              units: finiteNumber(plan.units),
+              unitsClosed: finiteNumber(units),
+              unrealizedPL: finiteNumber(plan.currentPnL),
+              sl: finiteNumber(decision.stopLoss),
+              recommendation: decision.action,
+              confidence: decision.confidence,
+              reason: decision.reason,
+              rawPayload: {
+                policy: decision.policy,
+                decision,
+                partialResult: partialResult.data,
+                protectionResult: protectionResult?.ok ? protectionResult.data : protectionResult?.error,
+              },
+            });
+          }
+
+          userResults.push({
+            tradeId,
+            instrument: plan.instrument,
+            engine: tradeEngine,
+            action: decision.action,
+            closePercent: decision.closePercent,
+            units,
+            policy: decision.policy,
+            reason: decision.reason,
+            partialOk: partialResult.ok,
+            protectionOk: protectionResult?.ok ?? false,
+            result: partialResult.ok ? partialResult.data : partialResult.error,
+            protectionResult: protectionResult?.ok ? protectionResult.data : protectionResult?.error,
+          });
+          continue;
+        }
+
+        const protectionResult = await callInternalEndpoint('/api/internal/oanda/protection', {
           ...credentialBody,
           tradeId,
           instrument: plan.instrument,
-          units,
-          reason: `${decision.policy}:${decision.reason}`,
+          stopLoss: decision.stopLoss,
+          cancelTakeProfit: decision.cancelTakeProfit === true,
+          action: decision.action,
         });
-
-        const nextState: ExitState = { ...previousState };
-        if (closeResult.ok && decision.action === 'PARTIAL_CLOSE') {
-          nextState.partial_count = Number(previousState.partial_count || 0) + 1;
-          nextState.cumulative_partial_percent = Math.min(
-            100,
-            Number(previousState.cumulative_partial_percent || 0) + decision.closePercent,
-          );
-          partials += 1;
-        }
-        if (closeResult.ok && decision.action === 'FULL_CLOSE') closed += 1;
-
+        const successAction = decision.action === 'MOVE_STOP_TO_BREAKEVEN'
+          ? 'BREAKEVEN_SET'
+          : decision.action === 'ARM_RUNNER'
+            ? 'RUNNER_ARMED'
+            : 'TRAIL_PROFIT';
         await saveExitState({
           supabase, userId, accountId: credentials.accountId, tradeId,
           instrument: String(plan.instrument ?? ''), engine: tradeEngine,
-          state: nextState, decision,
-          action: closeResult.ok ? decision.action : `FAILED_${decision.action}`,
+          state: previousState, decision,
+          action: protectionResult.ok ? successAction : `FAILED_${decision.action}`,
           actionAt,
         });
 
-        if (closeResult.ok) {
+        if (protectionResult.ok) {
+          protectionUpdates += 1;
           await logTradeEvent({
             userId,
             broker: 'oanda',
             brokerAccountId: credentials.accountId,
             environment: logEnvironment(resolved.activeEnvironment),
-            eventType: decision.action === 'PARTIAL_CLOSE' ? 'partial_closed' : 'closed',
+            eventType: decision.action === 'ARM_RUNNER' ? 'reassessed' : 'sl_updated',
             instrument: String(plan.instrument ?? ''),
             tradeId,
             side: plan.direction === 'short' ? 'short' : 'long',
             units: finiteNumber(plan.units),
-            unitsClosed: units === 'ALL' ? finiteNumber(plan.units) : finiteNumber(units),
             unrealizedPL: finiteNumber(plan.currentPnL),
+            sl: finiteNumber(decision.stopLoss),
             recommendation: decision.action,
             confidence: decision.confidence,
             reason: decision.reason,
-            rawPayload: { policy: decision.policy, decision, closeResult: closeResult.data },
+            rawPayload: { policy: decision.policy, decision, protectionResult: protectionResult.data },
           });
         }
 
@@ -424,12 +482,10 @@ export async function POST(req: Request) {
           instrument: plan.instrument,
           engine: tradeEngine,
           action: decision.action,
-          closePercent: decision.closePercent,
-          units,
           policy: decision.policy,
           reason: decision.reason,
-          ok: closeResult.ok,
-          result: closeResult.ok ? closeResult.data : closeResult.error,
+          ok: protectionResult.ok,
+          result: protectionResult.ok ? protectionResult.data : protectionResult.error,
         });
       }
 
@@ -450,10 +506,11 @@ export async function POST(req: Request) {
     ny,
     users: results.length,
     reviewed,
-    closed,
     partials,
-    autoCloseToggle: 'user_trading_settings.auto_close_enabled',
-    ictClosePolicy: 'active_exit_intelligence_v1',
+    protectionUpdates,
+    automaticFullCloseDisabled: true,
+    managementToggle: 'user_trading_settings.auto_close_enabled',
+    profitProtectionPolicy: ACTIVE_EXIT_POLICY,
     results,
   });
 }

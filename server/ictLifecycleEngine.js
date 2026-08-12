@@ -11,9 +11,10 @@
  *
  * Cadence rule: while elapsed < holdMinutes → always HOLD. Once past hold,
  * a recommendation is "due" every REASSESS_INTERVAL_MIN (30) minutes. The
- * action is ICT-first: opposing CHoCH/MSS → CLOSE; target progress → partial /
- * breakeven; stalling well past hold → tighten. This module only RECOMMENDS;
- * applying actions is gated elsewhere (ICT_AUTO_MANAGE, default off).
+ * action is ICT-first and protection-only: opposing CHoCH/MSS can justify a
+ * breakeven move once the trade has progressed, target progress can justify a
+ * partial, and time alone can never liquidate a position. The protective SL
+ * remains the sole loss authority.
  */
 
 import { detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
@@ -84,25 +85,36 @@ export function reassessIctTrade({
   const reasons = [];
   let action = 'HOLD';
 
-  // 1. Opposing structure shift against the position → close.
+  const targetSpan = Number.isFinite(target1) && Number.isFinite(entryPrice)
+    ? Math.abs(target1 - entryPrice)
+    : 0;
+  const favorableProgress = Number.isFinite(entryPrice) && Number.isFinite(currentPrice)
+    ? (direction === 'long' ? currentPrice - entryPrice : entryPrice - currentPrice)
+    : 0;
+  const targetFraction = targetSpan > 0 ? favorableProgress / targetSpan : 0;
+
+  // 1. Opposing structure is evidence, never an automatic liquidation order.
   const priorTrend = direction === 'long' ? 'bullish' : 'bearish';
   const choch = Array.isArray(candles) && candles.length >= 25 ? detectChangeOfCharacter({ candles, priorTrend, pair }) : null;
   const mss = Array.isArray(candles) && candles.length >= 25 ? detectMSS({ candles, pair }) : null;
-  if (choch && opposes(direction, choch.direction)) { action = 'CLOSE'; reasons.push(`Opposing CHoCH (${choch.direction}) against ${direction} — close.`); }
-  else if (mss?.confirmed && opposes(direction, mss.direction)) { action = 'CLOSE'; reasons.push(`Opposing MSS (${mss.direction}) against ${direction} — close.`); }
-
-  // 2. Target progress → protect (only if not already closing).
-  if (action === 'HOLD' && Number.isFinite(target1) && Number.isFinite(entryPrice) && Number.isFinite(currentPrice)) {
-    const span = Math.abs(target1 - entryPrice);
-    const progressed = direction === 'long' ? currentPrice - entryPrice : entryPrice - currentPrice;
-    const frac = span > 0 ? progressed / span : 0;
-    if (frac >= 0.75) { action = 'PARTIAL_CLOSE'; reasons.push(`~${Math.round(frac * 100)}% to target — take partial / protect.`); }
-    else if (frac >= 0.4) { action = 'MOVE_BREAKEVEN'; reasons.push(`~${Math.round(frac * 100)}% to target — move stop to breakeven.`); }
+  if (choch && opposes(direction, choch.direction)) {
+    action = targetFraction >= 0.4 ? 'MOVE_BREAKEVEN' : 'HOLD';
+    reasons.push(`Opposing CHoCH (${choch.direction}) recorded; ${action === 'MOVE_BREAKEVEN' ? 'protect at breakeven' : 'do not guess an early exit — keep the original SL'}.`);
+  } else if (mss?.confirmed && opposes(direction, mss.direction)) {
+    action = targetFraction >= 0.4 ? 'MOVE_BREAKEVEN' : 'HOLD';
+    reasons.push(`Opposing MSS (${mss.direction}) recorded; ${action === 'MOVE_BREAKEVEN' ? 'protect at breakeven' : 'do not guess an early exit — keep the original SL'}.`);
   }
 
-  // 3. Stalling well past hold with little progress → tighten.
+  // 2. Target progress → protect. The execution policy separately confirms
+  // momentum before it permits the single partial.
+  if (action === 'HOLD' && Number.isFinite(target1) && Number.isFinite(entryPrice) && Number.isFinite(currentPrice)) {
+    if (targetFraction >= 0.75) { action = 'PARTIAL_CLOSE'; reasons.push(`~${Math.round(targetFraction * 100)}% to target — partial protection is eligible if momentum remains favorable.`); }
+    else if (targetFraction >= 0.4) { action = 'MOVE_BREAKEVEN'; reasons.push(`~${Math.round(targetFraction * 100)}% to target — move stop to breakeven.`); }
+  }
+
+  // 3. Time/stalling is not a liquidation or stop-tightening trigger.
   if (action === 'HOLD' && minutesElapsed > hold * 1.5) {
-    action = 'TIGHTEN_STOP'; reasons.push('Well past projected hold with no resolution — tighten stop.');
+    reasons.push('Well past projected hold with no profit milestone; time alone does not override the original protective SL.');
   }
 
   if (reasons.length === 0) reasons.push('No ICT exit signal — hold.');

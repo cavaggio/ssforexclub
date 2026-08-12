@@ -1,70 +1,54 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const routePath = resolve(process.cwd(), 'app/api/cron/active-trade-management/route.ts');
-let source = readFileSync(routePath, 'utf8');
-
-// Active Exit Intelligence replaced the retired 30-minute/near-SL-only gate.
-// Broker mutations remain centralized in this authenticated route and are
-// activated only for users whose independent auto-close preference is enabled.
-if (source.includes("from '@/lib/activeExitPolicy.js'")) {
-  for (const marker of [
-    'evaluateActiveExit',
-    'closeUnitsForDecision',
-    ".eq('auto_close_enabled', true)",
-    'trade_exit_management_state',
-    "decision.action === 'PARTIAL_CLOSE'",
-    "ictClosePolicy: 'active_exit_intelligence_v1'",
-    'outside_management_window_02:15-17:30_ET',
-  ]) {
-    if (!source.includes(marker)) {
-      throw new Error(`Active Exit Intelligence verification failed: missing ${marker}`);
-    }
-  }
-  if (source.includes('ict_30m_high_reversal_near_sl_only')) {
-    throw new Error('Active Exit Intelligence verification failed: retired ICT close policy remains');
-  }
-  console.log('Active Exit Intelligence verified: TP-first, 5m active reviews, partial/full broker exits, per-user toggle.');
-  process.exit(0);
-}
-
-// Backward-compatible validation for older branches that have not adopted the
-// active exit route yet. Next.js route modules accept only supported exports.
-source = source.replace(
-  'export function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {',
-  'function shouldCloseIctTrade(plan: Record<string, any>): CloseDecision {',
-);
-writeFileSync(routePath, source);
+const policyPath = resolve(process.cwd(), 'lib/activeExitPolicy.js');
+const route = readFileSync(routePath, 'utf8');
+const policy = readFileSync(policyPath, 'utf8');
 
 for (const marker of [
-  'ICT_MIN_REASSESSMENT_AGE_MINUTES = 30',
-  'ICT_NEAR_SL_RISK_FRACTION = 0.25',
-  'explicitHighReversal',
-  'explicitCloseRecommendation',
-  'closeToStop',
-  'ict_30m_high_reversal_near_sl_only',
-  "tradeEngine === 'ict'",
+  'evaluateActiveExit',
+  'closeUnitsForDecision',
+  ".eq('auto_close_enabled', true)",
+  'trade_exit_management_state',
+  "decision.action === 'PARTIAL_CLOSE'",
+  "'/api/internal/oanda/protection'",
+  'automaticFullCloseDisabled: true',
+  'outside_management_window_02:15-17:30_ET',
 ]) {
-  if (!source.includes(marker)) {
-    throw new Error(`ICT close-policy verification failed: missing ${marker}`);
+  if (!route.includes(marker)) {
+    throw new Error(`Profit Protection v2 route verification failed: missing ${marker}`);
   }
 }
 
-if (source.includes('export function shouldCloseIctTrade')) {
-  throw new Error('ICT close-policy verification failed: unsupported Next.js helper export remains');
-}
-
-const ictPolicyStart = source.indexOf('function shouldCloseIctTrade');
-const v3PolicyStart = source.indexOf('// Preserve the existing V3 management policy');
-if (ictPolicyStart < 0 || v3PolicyStart <= ictPolicyStart) {
-  throw new Error('ICT close-policy verification failed: policy boundaries missing');
-}
-
-const ictPolicy = source.slice(ictPolicyStart, v3PolicyStart);
-for (const forbidden of ['EXIT_REVIEW', 'confidence_breakdown', 'mediumOrHigherReversal', 'volatilityCollapsed']) {
-  if (ictPolicy.includes(forbidden)) {
-    throw new Error(`ICT close-policy verification failed: forbidden broad trigger ${forbidden}`);
+for (const forbidden of [
+  "units: 'ALL'",
+  "action: 'FULL_CLOSE'",
+  "decision.action === 'FULL_CLOSE'",
+]) {
+  if (route.includes(forbidden)) {
+    throw new Error(`Profit Protection v2 route verification failed: forbidden ${forbidden}`);
   }
 }
 
-console.log('ICT close policy verified: 30m + HIGH reversal + explicit exit + near-SL only');
+for (const marker of [
+  "ACTIVE_EXIT_POLICY = 'profit_protection_v2'",
+  "action: 'MOVE_STOP_TO_BREAKEVEN'",
+  "action: 'PARTIAL_CLOSE'",
+  "action: 'ARM_RUNNER'",
+  "action: 'TRAIL_PROFIT'",
+  'automaticFullCloseAllowed: false',
+  "decision?.action !== 'PARTIAL_CLOSE'",
+]) {
+  if (!policy.includes(marker)) {
+    throw new Error(`Profit Protection v2 policy verification failed: missing ${marker}`);
+  }
+}
+
+for (const forbidden of ["action: 'FULL_CLOSE'", "return 'ALL'"]) {
+  if (policy.includes(forbidden)) {
+    throw new Error(`Profit Protection v2 policy verification failed: forbidden ${forbidden}`);
+  }
+}
+
+console.log('Profit Protection v2 verified: no automatic full close; breakeven, one favorable-momentum partial, and post-TP trailing only.');

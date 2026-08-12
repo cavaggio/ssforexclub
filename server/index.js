@@ -35,6 +35,7 @@ import {
   resetDailyCounters,
   reconcileAllLocks,
 } from './oandaTrade.js';
+import { updateBrokerTradeProtection } from './oandaTradeProtection.js';
 import { getLatestSignals } from './oandaSignalStore.js';
 import { getTradeHistory, getPerformanceStats } from './oandaTradeHistory.js';
 import { startExitManager, getExitManagerStatus } from './oandaExitManager.js';
@@ -2384,6 +2385,56 @@ app.post('/api/internal/oanda/close', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[INTERNAL_CLOSE] error:', err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+// POST /api/internal/oanda/protection
+//   Body: { apiKey, accountId, baseUrl, environment, tradeId, instrument,
+//           stopLoss, cancelTakeProfit }
+//   Protection-only mutation: it can improve a stop to/through breakeven and
+//   remove a fixed TP for a runner, but it cannot close a trade or widen risk.
+app.post('/api/internal/oanda/protection', async (req, res) => {
+  if (!requireInternalAuth(req, res)) return;
+  const client = buildClientFromBody(req.body, res);
+  if (!client) return;
+  assertClientMatchesRequest(client, req.body);
+  const { tradeId, instrument, stopLoss, cancelTakeProfit } = req.body || {};
+  if (!tradeId || typeof tradeId !== 'string') {
+    res.status(400).json({ ok: false, error: 'Missing tradeId in body' });
+    return;
+  }
+  if (stopLoss != null && !Number.isFinite(Number(stopLoss))) {
+    res.status(400).json({ ok: false, error: 'Invalid stopLoss (must be a finite number)' });
+    return;
+  }
+  if (stopLoss == null && cancelTakeProfit !== true) {
+    res.status(400).json({ ok: false, error: 'No protection update requested' });
+    return;
+  }
+  logInternalCall('PROTECTION', req.body);
+  console.log(
+    `[INTERNAL PROTECTION] tradeId=${tradeId} instrument=${instrument ?? '?'} ` +
+      `stopLoss=${stopLoss ?? 'unchanged'} cancelTakeProfit=${cancelTakeProfit === true}`,
+  );
+  try {
+    const result = await runUserScoped(
+      { accountId: client.accountId, environment: client.environment },
+      () => updateBrokerTradeProtection({
+        tradeId,
+        instrument,
+        stopLoss,
+        cancelTakeProfit: cancelTakeProfit === true,
+        client,
+      }),
+    );
+    if (!result.ok) {
+      res.status(502).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[INTERNAL_PROTECTION] error:', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });

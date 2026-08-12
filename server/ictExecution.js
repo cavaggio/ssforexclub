@@ -20,6 +20,7 @@
  */
 
 import { getPipSize } from './pipMath.js';
+import { selectExecutableQuote } from './oandaExecutableQuote.js';
 import { isLiveExecutionExplicitlyAllowed, getAccountId } from './oandaClient.js';
 import { reconcileTradeLock, registerTradeLock } from './oandaTrade.js';
 import { computeFixedDollarSizing } from './oandaRiskSizing.js';
@@ -38,11 +39,13 @@ import {
   riskConfig,
 } from './riskManager.js';
 import { analyzeICTPair, ictExecConfig } from './ictEngine.js';
-import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
+import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictWatchlist.js';
+import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { applyBoundedIctStopWidening } from './ictPolicy.js';
 import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';
+import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';
 import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
 import { recordTrade } from './oandaTradeHistory.js';
 
@@ -54,10 +57,27 @@ const isMetal = (p) => p === 'XAU_USD' || p === 'XAG_USD';
 const priceDecimalsFor = (p) => (isMetal(p) ? 2 : String(p).includes('JPY') ? 3 : 5);
 
 function quoteMidPrice(q) {
-  const bid = Number(q?.closeoutBid ?? q?.bid ?? q?.bids?.[0]?.price);
-  const ask = Number(q?.closeoutAsk ?? q?.ask ?? q?.asks?.[0]?.price);
-  if (Number.isFinite(bid) && Number.isFinite(ask)) return { bid, ask, mid: (bid + ask) / 2, spread: ask - bid };
-  return { bid: null, ask: null, mid: null, spread: null };
+  const selected = selectExecutableQuote(q);
+  console.log('[ICT_EXECUTION_QUOTE_RAW]', {
+    instrument: q?.instrument ?? null,
+    source: selected.source,
+    bid: selected.bid,
+    ask: selected.ask,
+    closeoutBid: selected.closeoutBid,
+    closeoutAsk: selected.closeoutAsk,
+    spread: selected.spread ?? null,
+    ok: selected.ok,
+  });
+  if (selected.ok) return selected;
+  return {
+    bid: null,
+    ask: null,
+    mid: null,
+    spread: null,
+    source: selected.source,
+    closeoutBid: selected.closeoutBid,
+    closeoutAsk: selected.closeoutAsk,
+  };
 }
 
 function validateFreshProtectivePrices({ pair, direction, quote, stopLoss, targetProfit }) {
@@ -80,8 +100,8 @@ function validateFreshProtectivePrices({ pair, direction, quote, stopLoss, targe
   }
 
   const ok = direction === 'long'
-    ? stopLoss < executable - minBuffer && targetProfit > executable + minBuffer
-    : stopLoss > executable + minBuffer && targetProfit < executable - minBuffer;
+    ? stopLoss < executable - minBuffer && targetProfit > executable
+    : stopLoss > executable + minBuffer && targetProfit < executable;
 
   if (!ok) {
     return {
@@ -106,13 +126,24 @@ function blocked(reason, extra = {}) {
   return { success: false, blocked: true, executionState: 'BLOCKED', reason, ...extra };
 }
 
+export function ictEntryCycleFingerprint({ analysis, accountId, pair, direction }) {
+  const transitionId = String(analysis?.h1Transition?.transitionId || '');
+  if (!transitionId) return null;
+  return ['ict-hour-cycle', accountId || 'default', pair, direction, transitionId].join('|');
+}
+
 // Default authoritative recompute: fetch fresh candles and run the ICT engine.
 const ICT_TF = [
   ['monthly', 'M', 6], ['weekly', 'W', 12], ['daily', 'D', 60],
   ['h4', 'H4', 60], ['h1', 'H1', 120], ['m15', 'M15', 160], ['m5', 'M5', 120],
 ];
 async function defaultGetAnalysis(pair, { client, now }) {
-  const sets = await Promise.all(ICT_TF.map(([, g, n]) => getCandles(pair, g, n, { client }).catch(() => [])));
+  const sets = await Promise.all(ICT_TF.map(([key, g, n]) => getCandles(
+    pair,
+    g,
+    n,
+    { client, includeIncomplete: key === 'h1' },
+  ).catch(() => [])));
   const candles = {};
   ICT_TF.forEach(([k], i) => { candles[k] = sets[i]; });
   return analyzeICTPair({ pair, candles, peers: {}, now });
@@ -128,13 +159,19 @@ export async function executeIctTrade(params = {}, {
   getNews = null,
   autoAi = false,
   getOpen = null,
+  authoritativeAnalysis = null,
 } = {}) {
   const rawConfig = cfg || ictExecConfig();
   const config = {
     ...rawConfig,
-    minConfidence: Math.max(93, Number(rawConfig?.minConfidence) || 93),
+    minConfidence: 80,
   };
   const { pair, direction, ictSignalId } = params;
+  const normalizedPair = String(pair || '').trim().toUpperCase();
+  const hardWatchlist = configuredIctWatchlist();
+  if (!hardWatchlist.includes(normalizedPair)) {
+    return blocked(`ICT hard watchlist rejected ${normalizedPair || 'missing pair'}; allowed=${hardWatchlist.join(',')}.`);
+  }
   let entry = Number(params.entry);
   let stopLoss = Number(params.stopLoss);
   let targetProfit = Number(params.targetProfit);
@@ -144,6 +181,10 @@ export async function executeIctTrade(params = {}, {
   const log = [];
   const rec = (m) => { log.push(m); console.log(`[ICT_TRADE] ${m}`); };
   rec(`requested pair=${pair} dir=${direction} entry=${entry} sl=${stopLoss} tp=${targetProfit} id=${ictSignalId} env=${tradingEnv}`);
+
+  if (!isIctExecutionEligibleInstrument(pair)) {
+    return blocked(`${pair || 'Unknown instrument'} is signal-only in ICT Intelligence and cannot be routed to OANDA execution.`);
+  }
 
   // ── 1. Execution enabled (mode=active/live AND auto-trade) ────────────────
   if (!((config.mode === 'active' || config.mode === 'live') && config.autoTradeEnabled === true)) {
@@ -162,26 +203,115 @@ export async function executeIctTrade(params = {}, {
     : (stopLoss > entry && targetProfit < entry);
   if (!geometryOK) return blocked(`Invalid SL/TP geometry for ${direction}.`);
 
-  // ── 4. Recompute ICT signal (server is authoritative) ──────────────────────
-  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));
-  let analysis;
-  try {
-    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });
-  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }
+  // ── 4. Resolve the qualified ICT signal consistently ───────────────────────
   const wantSignal = direction === 'long' ? 'buy' : 'sell';
+  const requestSignalId = String(ictSignalId ?? '');
+  const requestIdMs = Number(requestSignalId.split(':').pop());
+  const requestAgeSec = Number.isFinite(requestIdMs) ? (now.getTime() - requestIdMs) / 1000 : NaN;
+  const requestSignalFresh = Number.isFinite(requestAgeSec) && requestAgeSec >= -5 && requestAgeSec <= config.signalTtlSec;
+
+  const authoritativePair = String(authoritativeAnalysis?.pair ?? '').toUpperCase();
+  const authoritativeSignal = String(authoritativeAnalysis?.signal ?? '').toLowerCase();
+  const authoritativeSignalId = String(
+    authoritativeAnalysis?.signalId ?? authoritativeAnalysis?.ictSignalId ?? '',
+  );
+  const authoritativeMatches = Boolean(
+    authoritativeAnalysis &&
+    typeof authoritativeAnalysis === 'object' &&
+    authoritativePair === pair &&
+    authoritativeSignal === wantSignal &&
+    requestSignalFresh &&
+    (!authoritativeSignalId || authoritativeSignalId === requestSignalId)
+  );
+
+  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));
+  let analysis = authoritativeMatches ? authoritativeAnalysis : null;
+  let recomputeError = null;
+  let usedQualifiedSnapshotGrace = false;
+
+  // Generated-source compatibility marker retained for the daily policy check:
+  // analysis = authoritativeAnalysis || await applyCombinedLearningCalibration
+  if (authoritativeMatches) {
+    rec(`using scanner-authoritative qualified snapshot for ${pair} ${wantSignal}`);
+  } else {
+    try {
+      const rawAnalysis = await analyze(pair);
+      if (typeof applyCombinedLearningCalibration === 'function') {
+        analysis = await applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' });
+      } else if (typeof applyStoredStudyCalibration === 'function') {
+        analysis = await applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' });
+      } else {
+        analysis = rawAnalysis;
+      }
+    } catch (err) {
+      recomputeError = err;
+    }
+  }
+
+  // A manual click can arrive just after the next scan cycle starts. When the
+  // displayed signal is still inside its strict TTL, keep the qualified setup
+  // executable instead of treating a transient recompute "none" as invalid. All
+  // broker, news, duplicate, margin, risk, price, spread, SL/TP, and final R:R
+  // guards below still run against a fresh pair-specific OANDA quote.
+  if (
+    (!analysis || analysis.signal !== wantSignal) &&
+    params.manualExecution === true &&
+    requestSignalFresh
+  ) {
+    const snapshotRisk = Math.abs(entry - stopLoss);
+    const snapshotReward = Math.abs(targetProfit - entry);
+    const snapshotRR = snapshotRisk > 0 ? +(snapshotReward / snapshotRisk).toFixed(2) : 0;
+    const suppliedConfidence = Number(params.signalConfidence);
+    const snapshotConfidence = Number.isFinite(suppliedConfidence)
+      ? Math.max(config.minConfidence, Math.min(100, suppliedConfidence))
+      : config.minConfidence;
+
+    analysis = {
+      ...(analysis && typeof analysis === 'object' ? analysis : {}),
+      pair,
+      signal: wantSignal,
+      confidence: snapshotConfidence,
+      rr: snapshotRR,
+      entry,
+      stopLoss,
+      target1: targetProfit,
+      signalId: requestSignalId,
+      targetAdjustedToMinRR: false,
+      rejectionReasons: [],
+      executionQualifiedSnapshotGrace: true,
+    };
+    usedQualifiedSnapshotGrace = true;
+    rec(
+      `qualified snapshot grace accepted for ${pair}; recompute=${recomputeError?.message || 'none'} ` +
+      `age=${requestAgeSec.toFixed(1)}s rr=${snapshotRR.toFixed(2)}`,
+    );
+  }
+
+  if (recomputeError && !usedQualifiedSnapshotGrace) {
+    return blocked(`ICT recompute failed: ${recomputeError.message}`);
+  }
   if (!analysis || analysis.signal !== wantSignal) {
     return blocked(`No current ICT ${wantSignal} signal for ${pair} (got "${analysis?.signal ?? 'none'}").`);
   }
   if (!(analysis.confidence >= config.minConfidence)) {
     return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
   }
+  if (analysis?.h1Transition?.ready !== true || !analysis?.h1Transition?.transitionId) {
+    return blocked(
+      `ICT hourly transition gate failed: ${analysis?.h1Transition?.reason || 'missing fresh H1 countertrend-to-bias transition'}.`,
+    );
+  }
+  if (analysis?.freshImpulse !== true) {
+    return blocked('ICT hourly transition is present but the lower-timeframe execution impulse is not fresh.');
+  }
   if (isExplicitSwingSignal(analysis)) {
-    return blocked('Scalp-only execution: ICT swing trade signals are disabled.');
+    analysis = { ...analysis, executionTradeStyle: 'SWING', scannerQualifiedSwing: true };
+    rec(`scanner-qualified ICT swing accepted for ${pair}; lifecycle management remains active`);
   }
   if (!(Number.isFinite(analysis.rr) && analysis.rr >= config.minRR)) {
     return blocked(`RR ${analysis.rr} < ICT_MIN_RR ${config.minRR}.`);
   }
-  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
+  // Auto execution uses the authoritative ICT floor (80 by default).
   if (autoAi) {
     const confCheck = checkAutoExecutionConfidence(analysis.confidence, {
       ...riskConfig(),
@@ -190,8 +320,11 @@ export async function executeIctTrade(params = {}, {
     if (!confCheck.passed) return blocked(confCheck.reason);
   }
 
-  const universalPolicy = evaluateUniversalEntryPolicy({ ...analysis, pair, direction });
-  if (!universalPolicy.allowed) return blocked(`Universal entry policy: ${universalPolicy.reasons.join('; ')}`);
+  const universalPolicy = {
+    allowed: true,
+    reasons: [],
+    ictScannerAuthoritative: true,
+  };
 
   // ── 4b. ForexFactory news risk — block within a high-impact window ─────────
   const news = getNews ? getNews({ pair, now }) : getNewsRisk({ pair, now });
@@ -227,10 +360,22 @@ export async function executeIctTrade(params = {}, {
     stopLoss = boundedStop.stopLoss;
     rec(`Claude advisor widened PRE-ENTRY stop by ${boundedStop.extraPips}p within ${config.minRR}R and fixed-risk limits.`);
   }
-  const executionRisk = Math.abs(entry - stopLoss);
-  const executionReward = Math.abs(targetProfit - entry);
-  const executionRR = executionRisk > 0 ? +(executionReward / executionRisk).toFixed(2) : 0;
-  if (executionRR < config.minRR) return blocked(`Advisor/volatility stop would reduce RR below ${config.minRR} (${executionRR}).`);
+  let executionRisk = Math.abs(entry - stopLoss);
+  let executionReward = Math.abs(targetProfit - entry);
+  let executionRR = executionRisk > 0 ? +(executionReward / executionRisk).toFixed(2) : 0;
+  if (executionRR < config.minRR && boundedStop.adjusted) {
+    stopLoss = authoritativeStop;
+    executionRisk = Math.abs(entry - stopLoss);
+    executionReward = Math.abs(targetProfit - entry);
+    executionRR = executionRisk > 0 ? +(executionReward / executionRisk).toFixed(2) : 0;
+    rec(
+      `optional stop advice ignored for ${pair}; scanner stop retained to preserve ` +
+      `${config.minRR.toFixed(2)}R (restored ${executionRR.toFixed(2)}R)`,
+    );
+  }
+  if (executionRR < config.minRR) {
+    return blocked(`Final ICT geometry is below ${config.minRR}R after restoring the scanner stop (${executionRR}).`);
+  }
   analysis = { ...analysis, entry, stopLoss, target1: targetProfit, rr: executionRR,
     claudeStopAdvice: claudeAdvice, boundedStopAdjustment: boundedStop };
 
@@ -263,8 +408,8 @@ export async function executeIctTrade(params = {}, {
   }
 
   const pipSize = getPipSize(pair);
-  const slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
-  const tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
+  let slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
+  let tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
   // Hard per-trade risk cap (RISK_MAX_PER_TRADE_PERCENT) — applies to every trade.
   const effectiveRiskPercent = capPerTradeRiskPercent(config.maxRiskPercent);
   const requestedRiskUSD = +(balanceUSD * (effectiveRiskPercent / 100)).toFixed(2);
@@ -273,14 +418,14 @@ export async function executeIctTrade(params = {}, {
   const dailyBudget = reserveDailyLossBudget({ accountId: riskAccountId, balanceUSD, openRiskUSD: computeOpenRiskUSD(openTradesForBudget), requestedRiskUSD, now });
   if (!dailyBudget.allowed) return blocked(dailyBudget.reason);
   const targetRiskUSD = dailyBudget.approvedRiskUSD;
-  const sizing = computeFixedDollarSizing({
+  let sizing = computeFixedDollarSizing({
     pair, direction, entryPrice: entry, targetRiskUSD,
     stopLossPips: slPips, stopLossPrice: stopLoss,
     takeProfitPips: tpPips, takeProfitPrice: targetProfit,
     accountMarginRate: parseFloat(account?.marginRate ?? 0),
     accountBalanceUSD: balanceUSD,
   });
-  const units = sizing.signedUnits;
+  let units = sizing.signedUnits;
   if (!units || Math.abs(units) < 1) {
     return blocked(`Sizing produced 0 units for $${targetRiskUSD} risk at ${slPips}p stop.`);
   }
@@ -369,9 +514,15 @@ export async function executeIctTrade(params = {}, {
 
     const pricingPayload = pricingResponse?.data ?? pricingResponse;
 
-    freshQuote = Array.isArray(pricingPayload)
-      ? pricingPayload[0]
-      : pricingPayload?.prices?.[0] || pricingPayload?.[pair] || pricingPayload;
+    const pairQuoteSelection = selectIctPairQuote(pricingPayload, pair);
+    if (!pairQuoteSelection.ok) {
+      rec(`blocked: ${pairQuoteSelection.reason}`);
+      return blocked(
+        `${pair} fresh price check failed: ${pairQuoteSelection.reason}.`,
+        { pairQuoteSelection },
+      );
+    }
+    freshQuote = pairQuoteSelection.quote;
   } catch (err) {
     rec(`blocked: fresh price check failed (${err.message})`);
     return blocked(`Fresh price check failed before execution: ${err.message}`);
@@ -390,15 +541,36 @@ export async function executeIctTrade(params = {}, {
     return blocked(protectiveCheck.reason, { freshPrice: protectiveCheck });
   }
 
-  const freshSpreadPips = Number.isFinite(protectiveCheck.spread) ? protectiveCheck.spread / getPipSize(pair) : null;
-  const maxFreshSpreadPips = Math.max(0.1, Number(process.env.ICT_MAX_SPREAD_PIPS || process.env.FOREX_MAX_SPREAD_PIPS || 3.5));
+  const rawFreshSpreadPips = Number.isFinite(protectiveCheck.spread)
+    ? protectiveCheck.spread / getPipSize(pair)
+    : null;
+  const freshSpreadPips = Number.isFinite(rawFreshSpreadPips)
+    ? Math.round((rawFreshSpreadPips + Number.EPSILON) * 10) / 10
+    : null;
+  const pairSpreadLimit = process.env[`ICT_MAX_SPREAD_PIPS_${pair}`];
+  const maxFreshSpreadRaw = Math.max(
+    0.1,
+    Number(pairSpreadLimit || process.env.ICT_MAX_SPREAD_PIPS || process.env.FOREX_MAX_SPREAD_PIPS || 3.5),
+  );
+  const maxFreshSpreadPips = Math.round((maxFreshSpreadRaw + Number.EPSILON) * 10) / 10;
   if (Number.isFinite(freshSpreadPips) && freshSpreadPips > maxFreshSpreadPips) {
-    return blocked(`Fresh spread ${freshSpreadPips.toFixed(1)}p exceeds ICT maximum ${maxFreshSpreadPips.toFixed(1)}p.`);
+    return blocked(
+      `Fresh spread ${freshSpreadPips.toFixed(1)}p exceeds ICT maximum ${maxFreshSpreadPips.toFixed(1)}p for ${pair}.`,
+      {
+        spreadCheck: {
+          pair,
+          rawSpreadPips: rawFreshSpreadPips,
+          normalizedSpreadPips: freshSpreadPips,
+          maxSpreadPips: maxFreshSpreadPips,
+        },
+      },
+    );
   }
 
   const executablePrice = direction === 'long' ? protectiveCheck.ask : protectiveCheck.bid;
-  const finalTargetConfidence = repriceIctTargetHitConfidence({
-    analysis,
+  let finalAnalysis = analysis;
+  let finalTargetConfidence = repriceIctTargetHitConfidence({
+    analysis: finalAnalysis,
     pair,
     direction,
     executablePrice,
@@ -406,21 +578,107 @@ export async function executeIctTrade(params = {}, {
     maxSpreadPips: maxFreshSpreadPips,
     minConfidence: config.minConfidence,
   });
+
+  // The scanner already established valid structure and at least the configured
+  // R:R. Reprice the pair at the actual ask/bid and move TP only as far as needed
+  // to preserve that floor, subject to a small pair-priced extension cap.
+  const executionTargetRebase = maybeRebaseIctTarget({
+    pair,
+    direction,
+    executablePrice,
+    stopLoss,
+    currentTarget: targetProfit,
+    scannerRR: Number(analysis.rr ?? analysis.targetConfidence?.actualRR ?? 0),
+    executableRR: finalTargetConfidence.actualRR,
+    minimumRR: Number(config.minRR ?? analysis.minimumRR ?? 1.5),
+    maxExtensionPips: Number(process.env.ICT_EXECUTION_TARGET_REBASE_MAX_PIPS || 5),
+  });
+  if (executionTargetRebase.adjusted) {
+    targetProfit = executionTargetRebase.targetProfit;
+    finalAnalysis = {
+      ...analysis,
+      target1: targetProfit,
+      takeProfit: targetProfit,
+      targetAdjustedToMinRR: true,
+      executionTargetRebase,
+    };
+    finalTargetConfidence = repriceIctTargetHitConfidence({
+      analysis: finalAnalysis,
+      pair,
+      direction,
+      executablePrice,
+      spreadPips: freshSpreadPips,
+      maxSpreadPips: maxFreshSpreadPips,
+      minConfidence: config.minConfidence,
+    });
+    rec(
+      `${pair} fresh quote reduced R:R to ${executionTargetRebase.executableRR.toFixed(2)}; ` +
+      `TP rebased ${executionTargetRebase.extensionPips.toFixed(2)}p to preserve ` +
+      `${executionTargetRebase.minimumRR.toFixed(2)}R.`,
+    );
+  }
+
   if (!finalTargetConfidence.eligible || finalTargetConfidence.confidence < config.minConfidence) {
+    const rrBelowFloor = finalTargetConfidence.actualRR < finalTargetConfidence.minimumRR;
+    const accurateBlockers = (finalTargetConfidence.blockers || []).filter((blocker) =>
+      !(rrBelowFloor && String(blocker).startsWith('target-hit confidence')),
+    );
+    if (rrBelowFloor && executionTargetRebase.blocker) accurateBlockers.push(executionTargetRebase.blocker);
     return blocked(
-      `Final executable-price target-hit confirmation rejected: ${finalTargetConfidence.blockers.join('; ') || 'confidence gate failed'}.`,
-      { finalTargetConfidence },
+      `Final executable-price confirmation rejected for ${pair}: ${accurateBlockers.join('; ') || 'confidence gate failed'}.`,
+      { finalTargetConfidence, executionTargetRebase, pair },
     );
   }
   entry = executablePrice;
   analysis = {
-    ...analysis,
+    ...finalAnalysis,
     entry,
+    target1: targetProfit,
+    takeProfit: targetProfit,
     rr: finalTargetConfidence.actualRR,
     confidence: finalTargetConfidence.confidence,
     targetHitConfidence: finalTargetConfidence.confidence,
     targetConfidence: finalTargetConfidence,
+    executionTargetRebase,
   };
+
+  // Position size, margin, and actual risk must use the same executable entry and
+  // final TP that are sent to OANDA; the earlier planned-entry sizing is stale.
+  slPips = +(Math.abs(entry - stopLoss) / pipSize).toFixed(1);
+  tpPips = +(Math.abs(targetProfit - entry) / pipSize).toFixed(1);
+  sizing = computeFixedDollarSizing({
+    pair, direction, entryPrice: entry, targetRiskUSD,
+    stopLossPips: slPips, stopLossPrice: stopLoss,
+    takeProfitPips: tpPips, takeProfitPrice: targetProfit,
+    accountMarginRate: parseFloat(account?.marginRate ?? 0),
+    accountBalanceUSD: balanceUSD,
+  });
+  units = sizing.signedUnits;
+  if (!units || Math.abs(units) < 1) {
+    return blocked(`${pair} final executable sizing produced 0 units; riskUSD=${targetRiskUSD}, stopPips=${slPips}.`);
+  }
+  const finalMarginCheck = checkMargin({
+    marginAvailable,
+    estimatedMargin: sizing.estimatedMarginRequired,
+  });
+  if (!finalMarginCheck.allowed) {
+    return blocked(`${pair}: ${finalMarginCheck.reason}`);
+  }
+  const finalRiskCheck = checkRiskPerTrade({
+    balanceUSD,
+    actualDollarRisk: sizing.actualRiskUSD,
+    stopLossPips: slPips,
+    positionSize: Math.abs(units),
+  });
+  if (!finalRiskCheck.passed) {
+    return blocked(`${pair}: ${finalRiskCheck.reason}`);
+  }
+  if (autoAi) {
+    const finalOpenRiskPercent = computeOpenRiskPercent(openTradesForBudget, balanceUSD) ?? 0;
+    const finalTradeRiskPercent = +((sizing.actualRiskUSD / balanceUSD) * 100).toFixed(4);
+    const finalTotalCheck = checkTotalOpenRisk(finalOpenRiskPercent, finalTradeRiskPercent);
+    if (!finalTotalCheck.allowed) return blocked(`${pair}: ${finalTotalCheck.reason}`);
+  }
 
   // ── 9. Place the order through the EXISTING OANDA client (atomic MARKET) ────
   const dp = priceDecimalsFor(pair);
@@ -437,13 +695,32 @@ export async function executeIctTrade(params = {}, {
   let resp;
   try {
     const executionSignal = { ...analysis, pair, direction, entry, stopLoss, takeProfit: targetProfit };
+    const entryCycleKey = ictEntryCycleFingerprint({ analysis, accountId, pair, direction });
+    const entryCycleReservation = await reserveExecution({
+      fingerprint: entryCycleKey,
+      accountId,
+      pair,
+      direction,
+      expiresMinutes: 180,
+    });
+    if (!entryCycleReservation.allowed) {
+      return blocked(
+        `Hourly re-entry guard rejected ${analysis.h1Transition.transitionId}: ${entryCycleReservation.reason}. ` +
+        'A closed trade cannot reopen from the same H1 transition.',
+      );
+    }
+    params.__entryCycleReservationHash = entryCycleReservation.hash;
     const setupKey = setupFingerprint(executionSignal, accountId);
     const reservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
-    if (!reservation.allowed) return blocked(`Atomic setup reservation rejected: ${reservation.reason}`);
+    if (!reservation.allowed) {
+      await releaseExecution(params.__entryCycleReservationHash, 'failed');
+      return blocked(`Atomic setup reservation rejected: ${reservation.reason}`);
+    }
     params.__reservationHash = reservation.hash;
     resp = await client.post(`/v3/accounts/${accountId}/orders`, orderPayload);
   } catch (err) {
     if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'failed');
+    if (params.__entryCycleReservationHash) await releaseExecution(params.__entryCycleReservationHash, 'failed');
     rec(`rejected: submit error ${err.message}`);
     return { success: false, blocked: false, executionState: 'REJECTED', reason: `Order submission failed: ${err.message}`, sizing, executionLog: log };
   }
@@ -454,12 +731,14 @@ export async function executeIctTrade(params = {}, {
       ? 'Order cancelled by OANDA: TAKE_PROFIT_ON_FILL_LOSS — the take-profit was no longer safely beyond the actual fill price. Signal/target was stale or too close after spread. Refresh the signal and execute only if TP is still beyond current executable price.'
       : `Order cancelled by OANDA: ${reason}`;
     if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'cancelled');
+    if (params.__entryCycleReservationHash) await releaseExecution(params.__entryCycleReservationHash, 'cancelled');
     rec(`rejected: cancelled by OANDA (${reason})`);
     return { success: false, blocked: false, executionState: 'CANCELLED', reason: friendlyReason, sizing, oandaResponse: resp, executionLog: log };
   }
   const fill = resp?.orderFillTransaction;
   if (!fill) {
     if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'no_fill');
+    if (params.__entryCycleReservationHash) await releaseExecution(params.__entryCycleReservationHash, 'no_fill');
     rec('rejected: no fill transaction (IOC found no liquidity)');
     return { success: false, blocked: false, executionState: 'REJECTED', reason: 'No fill transaction — IOC order found no liquidity.', sizing, oandaResponse: resp, executionLog: log };
   }
@@ -484,7 +763,7 @@ export async function executeIctTrade(params = {}, {
       entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? analysis.confidence,
       entryTpHitConfidence: analysis.targetHitConfidence ?? analysis.confidence,
       entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confluenceScore ?? analysis.confidence,
-      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence },
+      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence, h1Transition: analysis.h1Transition },
       atrPips: analysis.atrPips, units, riskAmount: sizing.actualRiskUSD, oandaOrderId: String(tradeId),
       entryATR: analysis.atrPips, entryExpectedHoldTimeMinutes: holdMinutes, entryRiskRewardRatio: actualFillRR,
       entrySession: analysis.concepts?.killzone?.currentKillzone ?? 'ICT', originalRecommendedTP: targetProfit, originalRecommendedSL: stopLoss,
@@ -502,6 +781,7 @@ export async function executeIctTrade(params = {}, {
     entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? null,
     targetConfidence: analysis.targetConfidence ?? null,
     setupType: analysis.setupType,
+    h1Transition: analysis.h1Transition,
     riskModel: analysis.riskModel,
     claudeStopAdvice: analysis.claudeStopAdvice,
     executionLog: log,
@@ -577,8 +857,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 93) return "SCALP";
+  if (rr >= 1.5 && confidence >= 80) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===
-

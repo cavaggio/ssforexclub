@@ -11,7 +11,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // v3IctComparison.js, which is deliberately NOT in this list.)
 const ICT_FILES = [
   'ictEngine.js', 'ictExecution.js', 'ictConcepts.js', 'ictSMT.js', 'ictTime.js',
-  'ictLifecycleEngine.js', 'ictAutoTrade.js', 'ictAutoScheduler.js',
+  'ictHourlyEntry.js', 'ictLifecycleEngine.js', 'ictAutoTrade.js', 'ictAutoScheduler.js',
 ];
 
 for (const f of ICT_FILES) {

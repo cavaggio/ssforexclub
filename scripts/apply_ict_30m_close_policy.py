@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Enforce Active Exit Intelligence v1.
+"""Enforce Profit Protection v2.
 
 The filename is retained for compatibility with the existing generated-source
-pipeline. The policy now reviews open trades every five minutes from 02:15 to
-17:30 ET. Broker actions remain centralized in the authenticated Next.js route;
-the generic Railway reassessor is still recommendation-only.
+pipeline. The policy reviews open trades every five minutes from 02:15 to
+17:30 ET, cannot liquidate a full trade, and limits broker mutations to a
+numeric partial or tighter protection.
 """
 
 from pathlib import Path
@@ -55,16 +55,15 @@ for marker in [
 SCHEDULER.write_text(scheduler, encoding="utf-8")
 
 
-# Keep the broad reassessor recommendation-only. The authenticated cron route is
-# the only path allowed to send full or partial close requests.
+# Keep the broad reassessor analysis-only. It must not contain a direct broker
+# liquidation path.
 reassessor = REASSESSOR.read_text(encoding="utf-8")
-if "const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false;" not in reassessor:
-    raise RuntimeError("Active Exit Intelligence requires direct reassessor closes to remain disabled")
-if "DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED && AUTO_CLOSE_ENABLED" not in reassessor:
-    raise RuntimeError("Active Exit Intelligence reassessor gate is missing")
-for marker in ["initialRiskPips: originalSlPips", "currentStopLoss:"]:
+for forbidden in ["closeBrokerTrade", "units: 'ALL'", "DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED"]:
+    if forbidden in reassessor:
+        raise RuntimeError(f"Profit Protection v2 reassessor contains forbidden liquidation marker: {forbidden}")
+for marker in ["initialRiskPips: originalSlPips", "currentStopLoss:", "automaticFullCloseEnabled: false"]:
     if marker not in reassessor:
-        raise RuntimeError(f"Active Exit Intelligence reassessor incomplete: missing {marker}")
+        raise RuntimeError(f"Profit Protection v2 reassessor incomplete: missing {marker}")
 REASSESSOR.write_text(reassessor, encoding="utf-8")
 
 
@@ -74,14 +73,17 @@ for marker in [
     "closeUnitsForDecision",
     ".eq('auto_close_enabled', true)",
     "decision.action === 'PARTIAL_CLOSE'",
-    "active_exit_intelligence_v1",
+    "'/api/internal/oanda/protection'",
+    "profitProtectionPolicy: ACTIVE_EXIT_POLICY",
+    "automaticFullCloseDisabled: true",
     "trade_exit_management_state",
     "outside_management_window_02:15-17:30_ET",
 ]:
     if marker not in route:
-        raise RuntimeError(f"Active Exit Intelligence route incomplete: missing {marker}")
-if "ict_30m_high_reversal_near_sl_only" in route:
-    raise RuntimeError("Retired ICT near-SL-only policy remains in the active-management route")
+        raise RuntimeError(f"Profit Protection v2 route incomplete: missing {marker}")
+for forbidden in ["units: 'ALL'", "action: 'FULL_CLOSE'", "decision.action === 'FULL_CLOSE'"]:
+    if forbidden in route:
+        raise RuntimeError(f"Profit Protection v2 route contains forbidden liquidation marker: {forbidden}")
 ACTIVE_MANAGEMENT_ROUTE.write_text(route, encoding="utf-8")
 
-print("Active Exit Intelligence enforced: 5m reviews, user toggle, one partial, full invalidation exits")
+print("Profit Protection v2 enforced: 5m reviews, no automatic full close, breakeven/partial/post-TP trail only")

@@ -59,7 +59,11 @@ function rejectionReasonsOf(item) {
 function isWaitableTriggerReason(reason) {
   const text = String(reason || '').toLowerCase();
   return text.includes('no 5m entry-timing trigger') ||
-    text.includes('no fresh 5m impulse/structure trigger');
+    text.includes('no fresh 5m impulse/structure trigger') ||
+    text.includes('await for it to turn') ||
+    text.includes('wait for it to turn') ||
+    text.includes('last completed h1 candle') ||
+    text.includes('current live h1 candle is unavailable');
 }
 
 function hasBlockingHardReject(item) {
@@ -72,6 +76,8 @@ function hasLateOrInvalidTiming(item) {
   return rejectionReasonsOf(item).some((reason) => {
     const text = reason.toLowerCase();
     return text.includes('late market entry') ||
+      text.includes('transition window has ended') ||
+      text.includes('do not chase the end of momentum') ||
       text.includes('outside the valid ict entry zone') ||
       text.includes('nearest natural liquidity target does not provide') ||
       text.includes('executable r:r') ||
@@ -123,7 +129,10 @@ export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.
   for (const item of analyses) {
     const pair = item?.pair;
     if (!pair) continue;
-    if (isIctAutoQualified(item, cfg)) {
+    const displayQualified = item?.signal !== 'none' &&
+      Number.isFinite(Number(item?.confidence)) && Number(item.confidence) >= cfg.minConfidence &&
+      Number.isFinite(Number(item?.rr)) && Number(item.rr) >= cfg.minRR;
+    if (displayQualified) {
       hotPairs.add(pair);
       continue;
     }
@@ -166,7 +175,7 @@ export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.
 patchFile('server/ictAutoTrade.js', (source) => {
   let out = replaceSection(
     source,
-    'function maskAccount(id) {',
+    'function finiteNumber(value) {',
     'export function isIctAutoQualified',
     watchStateSource,
     'ICT watch-state section',

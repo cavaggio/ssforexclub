@@ -80,6 +80,7 @@ confidence_marker_present = (
     "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))" in engine
     or "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))" in engine
     or "Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93'))" in engine
+    or "minConfidence: 80," in engine
 )
 
 for marker in [

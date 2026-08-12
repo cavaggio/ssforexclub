@@ -154,18 +154,21 @@ TRADE.write_text(trade, encoding="utf-8")
 
 
 ict = ICT.read_text(encoding="utf-8")
-ict = replace_once(
-    ict,
-    "  if (!fill) {\n"
-    "    rec('rejected: no fill transaction (IOC found no liquidity)');",
-    "  if (!fill) {\n"
-    "    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'no_fill');\n"
-    "    rec('rejected: no fill transaction (IOC found no liquidity)');",
-    "ICT no-fill reservation cleanup",
-)
+if "await releaseExecution(params.__reservationHash, 'no_fill')" not in ict:
+    ict = replace_once(
+        ict,
+        "  if (!fill) {\n"
+        "    rec('rejected: no fill transaction (IOC found no liquidity)');",
+        "  if (!fill) {\n"
+        "    if (params.__reservationHash) await releaseExecution(params.__reservationHash, 'no_fill');\n"
+        "    rec('rejected: no fill transaction (IOC found no liquidity)');",
+        "ICT no-fill reservation cleanup",
+    )
 
 if "await releaseExecution(params.__reservationHash, 'no_fill')" not in ict:
     raise RuntimeError("stale reservation ICT patch incomplete")
+if "params.__entryCycleReservationHash" in ict and "await releaseExecution(params.__entryCycleReservationHash, 'no_fill')" not in ict:
+    raise RuntimeError("stale reservation ICT H1-cycle cleanup incomplete")
 
 ICT.write_text(ict, encoding="utf-8")
 print("Stale open execution reservations release without clearing in-flight reserved orders")

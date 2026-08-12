@@ -44,7 +44,6 @@ import {
   findTradeByBrokerOrderId, updateMaxFavorableExcursion,
 } from './oandaTradeHistory.js';
 import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
-import { closeBrokerTrade } from './oandaTrade.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 import { reassessV3OpenTrade } from './v3ActiveTradeMonitor.js';
@@ -54,11 +53,9 @@ import { computeIctLifecycleConfidence, ictEntryConfidence, ictHoldMinutes, isIc
 const AUTO_CLOSE_ENABLED =
   String(process.env.ENABLE_ACTIVE_TRADE_AUTO_CLOSE || 'false').toLowerCase() === 'true';
 
-// The generic reassessor is recommendation-only. Actual authenticated broker
-// closes are centralized in /api/cron/active-trade-management, which enforces
-// the ICT 30m + HIGH reversal + near-SL policy. This prevents a second, broad
-// auto-close path from acting on scan rejection or confidence deterioration.
-const DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED = false;
+// The reassessor is analysis-only. Broker mutation is centralized in the
+// authenticated management route, whose policy can tighten stops or take a
+// bounded partial but cannot automatically liquidate a full trade.
 
 const REASSESSMENT_INTERVAL_MS = Math.max(30 * 60 * 1000, Number(process.env.ACTIVE_TRADE_REASSESS_INTERVAL_MS || 30 * 60 * 1000)); // 30 min — hard minimum cadence
 let _scheduler = null;
@@ -79,37 +76,6 @@ function nyMinutesSinceMidnight(now = new Date()) {
 function isPostEntryManagementWindow(now = new Date()) {
   return nyMinutesSinceMidnight(now) >= 14 * 60;
 }
-
-function shouldAutoCloseTrade(plan = {}) {
-  const action = String(plan.recommendedAction || '').toUpperCase();
-  const lifecycleAction = String(plan.lifecycleRecommendation?.action || '').toUpperCase();
-  const momentumStatus = String(plan.momentumStatus || '').toLowerCase();
-
-  if (plan.invalidationDetected === true) return true;
-
-  if (
-    plan.trendWeakeningDetected === true &&
-    String(plan.trendWeakeningSeverity || '').toLowerCase() === 'high'
-  ) {
-    return true;
-  }
-
-  if (action === 'EXIT_INVALIDATED' || action === 'EXIT_REVIEW') return true;
-  if (lifecycleAction.includes('EXIT') || lifecycleAction.includes('CLOSE')) return true;
-
-  if (
-    momentumStatus.includes('reversal') ||
-    momentumStatus.includes('reversed') ||
-    momentumStatus.includes('decay') ||
-    momentumStatus.includes('slowing')
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-
 
 export function buildMarketAlignedRecommendation({
   baseRecommendation = null,
@@ -367,7 +333,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     ? Math.abs(originalTP - entryPrice) / pipSize
     : null;
   const tpProgress = (tpRangePips && profitPipsNow > 0)
-    ? Math.max(0, Math.min(1, profitPipsNow / tpRangePips))
+    ? Math.max(0, profitPipsNow / tpRangePips)
     : 0;
 
   // Update MFE in history
@@ -562,8 +528,8 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
         `${expectedHoldTimeMinutes} minutes; scanner requalification and legacy confidence are ignored.`
       );
     } else if (ictLifecycle.reassessDue) {
-      const actionMap = { CLOSE: 'EXIT_INVALIDATED', PARTIAL_CLOSE: 'PARTIAL_EXIT',
-        MOVE_BREAKEVEN: 'MOVE_SL_TO_BREAKEVEN', TIGHTEN_STOP: 'TRAIL_SL', HOLD: 'HOLD' };
+      const actionMap = { PARTIAL_CLOSE: 'PARTIAL_EXIT',
+        MOVE_BREAKEVEN: 'MOVE_SL_TO_BREAKEVEN', HOLD: 'HOLD' };
       recommendedAction = actionMap[ictLifecycle.action] || 'HOLD';
       managementReasons.unshift(...ictLifecycle.reasons);
     } else {
@@ -655,24 +621,21 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
   });
   if (pureIctTrade && ictLifecycle) {
     const actionMap = {
-      CLOSE: 'close', PARTIAL_CLOSE: 'partial_close', MOVE_BREAKEVEN: 'tighten_sl',
-      TIGHTEN_STOP: 'tighten_sl', HOLD: 'hold',
+      PARTIAL_CLOSE: 'partial_close', MOVE_BREAKEVEN: 'tighten_sl', HOLD: 'hold',
     };
     const ictAction = actionMap[ictLifecycle.action] || 'hold';
     lifecycleRecommendation.action = ictAction;
-    lifecycleRecommendation.urgency = ictLifecycle.action === 'CLOSE'
-      ? 'high'
-      : ictLifecycle.action === 'HOLD' ? 'low' : 'medium';
+    lifecycleRecommendation.urgency = ictLifecycle.action === 'HOLD' ? 'low' : 'medium';
     lifecycleRecommendation.confidence = currentConfidence;
     lifecycleRecommendation.reason = (ictLifecycle.reasons || ['ICT entry thesis remains active.']).join(' ');
     lifecycleRecommendation.unifiedSummary = lifecycleRecommendation.reason;
     lifecycleRecommendation.source = 'ict_target_hit_lifecycle';
     lifecycleRecommendation.shouldAutoClose = false;
-    lifecycleRecommendation.autoCloseCandidate = ictLifecycle.action === 'CLOSE';
-    lifecycleRecommendation.autoCloseReviewTriggered = ictLifecycle.action === 'CLOSE';
+    lifecycleRecommendation.autoCloseCandidate = false;
+    lifecycleRecommendation.autoCloseReviewTriggered = false;
     lifecycleRecommendation.confidenceBelowThreshold = currentConfidence < confidenceReviewThreshold;
-    lifecycleRecommendation.signalMisaligned = ictLifecycle.action === 'CLOSE';
-    lifecycleRecommendation.signalMisalignmentReasons = ictLifecycle.action === 'CLOSE' ? ictLifecycle.reasons : [];
+    lifecycleRecommendation.signalMisaligned = false;
+    lifecycleRecommendation.signalMisalignmentReasons = [];
   }
   const autoCloseAnalysis = {
     evaluated: lifecycleRecommendation.autoCloseReviewTriggered,
@@ -769,6 +732,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     entryIctConfidence: lockedIctEntryConfidence,
     ictLifecycle,
     tpProgress: +tpProgress.toFixed(2),
+    originalTargetReached: tpProgress >= 1,
     lastReassessedAt: reassessedAt,
     nextReassessmentDueAt: new Date(Date.now() + REASSESSMENT_INTERVAL_MS).toISOString(),
     // Dynamic lifecycle engine output — UI renders these on the reassess card.
@@ -859,42 +823,6 @@ export async function reassessActiveTrades(options = {}) {
 
   const autoCloseResults = [];
 
-  if (DIRECT_REASSESSOR_BROKER_CLOSE_ENABLED && AUTO_CLOSE_ENABLED && isPostEntryManagementWindow(new Date())) {
-    if (!client) {
-      console.warn('[REASSESSOR_AUTO_CLOSE] skipped — missing per-request client');
-    } else {
-      for (const plan of trades) {
-        if (!plan || plan.error) continue;
-        if (!shouldAutoCloseTrade(plan)) continue;
-
-        console.warn(
-          `[REASSESSOR_AUTO_CLOSE] closing tradeId=${plan.tradeId} instrument=${plan.instrument} ` +
-          `action=${plan.recommendedAction} momentum=${plan.momentumStatus} ` +
-          `trendWeakening=${plan.trendWeakeningDetected}/${plan.trendWeakeningSeverity} ` +
-          `invalidation=${plan.invalidationDetected}/${plan.invalidationSeverity}`
-        );
-
-        const closeResult = await closeBrokerTrade({
-          tradeId: plan.tradeId,
-          instrument: plan.instrument,
-          units: 'ALL',
-          client,
-        });
-
-        plan.autoCloseAttempted = true;
-        plan.autoCloseResult = closeResult;
-
-        autoCloseResults.push({
-          tradeId: plan.tradeId,
-          instrument: plan.instrument,
-          ok: closeResult.ok,
-          message: closeResult.message,
-          error: closeResult.error ?? null,
-        });
-      }
-    }
-  }
-
   const recCounts = trades.reduce((acc, t) => {
     if (t.recommendedAction) acc[t.recommendedAction] = (acc[t.recommendedAction] || 0) + 1;
     return acc;
@@ -907,6 +835,7 @@ export async function reassessActiveTrades(options = {}) {
       session,
       environment,
       autoCloseEnabled: AUTO_CLOSE_ENABLED,
+      automaticFullCloseEnabled: false,
       autoCloseWindowActive: isPostEntryManagementWindow(new Date()),
       autoCloseResults,
       totalActive: trades.length,

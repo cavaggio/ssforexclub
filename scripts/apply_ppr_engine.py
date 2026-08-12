@@ -84,7 +84,8 @@ app.post('/api/internal/oanda/ppr-scan', async (req, res) => {
 
 for marker in [
     "['ict', 'v3', 'ppr'].includes(requestedEngine)",
-    'runAutoForUser({ client, engine, runId:',
+    'runAutoForUser({',
+    'engine,',
     ppr_import,
     ppr_route_marker,
     'scanPprMarket({',

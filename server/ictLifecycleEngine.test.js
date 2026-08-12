@@ -40,7 +40,8 @@ test('lifecycle: past hold but inside 30-min cadence → HOLD', () => {
   assert.equal(r.action, 'HOLD');
 });
 
-test('lifecycle: well past hold with no progress → TIGHTEN_STOP', () => {
+test('lifecycle: well past hold with no progress still defers to the original SL', () => {
   const r = reassessIctTrade({ ...base, openedAtMs: nowMs - 200 * 60000, currentPrice: 1.1001, target1: null });
-  assert.equal(r.action, 'TIGHTEN_STOP');
+  assert.equal(r.action, 'HOLD');
+  assert.match(r.reasons.join(' '), /time alone does not override the original protective SL/i);
 });

@@ -201,8 +201,9 @@ export async function getCandles(instrument, granularity = 'M5', count = 100, op
   );
   const candles = data.candles || [];
 
+  const includeIncomplete = options.includeIncomplete === true;
   return candles
-    .filter((c) => c.complete)
+    .filter((c) => includeIncomplete || c.complete)
     .map((c) => ({
       time: c.time,
       open: parseFloat(c.mid.o),
@@ -210,6 +211,7 @@ export async function getCandles(instrument, granularity = 'M5', count = 100, op
       low: parseFloat(c.mid.l),
       close: parseFloat(c.mid.c),
       volume: c.volume,
+      complete: c.complete !== false,
     }));
 }
 

@@ -8,8 +8,15 @@ function patchFile(relativePath, transform, markers = []) {
   const path = resolve(ROOT, relativePath);
   const before = readFileSync(path, 'utf8');
   const after = transform(before);
-  const missing = markers.filter((marker) => !after.includes(marker));
-  if (missing.length) throw new Error(`${relativePath} missing execution-first markers: ${missing.join(', ')}`);
+  const missing = markers.filter((marker) => (
+    Array.isArray(marker)
+      ? !marker.some((alternative) => after.includes(alternative))
+      : !after.includes(marker)
+  ));
+  if (missing.length) {
+    const labels = missing.map((marker) => Array.isArray(marker) ? marker.join(' OR ') : marker);
+    throw new Error(`${relativePath} missing execution-first markers: ${labels.join(', ')}`);
+  }
   if (after !== before) writeFileSync(path, after, 'utf8');
   console.log(`[EXECUTION_FIRST] verified ${relativePath}${after !== before ? ' (patched)' : ''}`);
 }
@@ -60,15 +67,23 @@ patchFile(
       '  getOpen = null,\n  authoritativeAnalysis = null,\n} = {}) {',
       'ICT execution authoritative analysis option',
     );
-    out = replaceOnce(
-      out,
-      "  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));\n  let analysis;\n  try {\n    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
-      "  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));\n  let analysis;\n  try {\n    analysis = authoritativeAnalysis || await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
-      'ICT execution snapshot use',
-    );
+    if (!out.includes('const authoritativeMatches = Boolean(')) {
+      out = replaceOnce(
+        out,
+        "  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));\n  let analysis;\n  try {\n    analysis = await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
+        "  const analyze = getAnalysis || ((p) => defaultGetAnalysis(p, { client, now }));\n  let analysis;\n  try {\n    analysis = authoritativeAnalysis || await applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' });\n  } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
+        'ICT execution snapshot use',
+      );
+    }
     return out;
   },
-  ['authoritativeAnalysis = null', 'analysis = authoritativeAnalysis || await applyStoredStudyCalibration'],
+  [
+    'authoritativeAnalysis = null',
+    [
+      'analysis = authoritativeAnalysis || await applyStoredStudyCalibration',
+      'const authoritativeMatches = Boolean(',
+    ],
+  ],
 );
 
 patchFile(
@@ -113,18 +128,35 @@ patchFile(
   ['Timing diagnostics remain visible but do not veto a valid current-price scalp.'],
 );
 
-const ROUTE_MARKERS = [
+const ALL_ENGINE_ROUTE_MARKERS = [
   'const selectedEngines: AutoAiEngine[]',
   'for (const selectedEngine of selectedEngines)',
   'allEnginesActive=true',
   "executionMode: 'all_enabled_engines'",
   "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
 ];
+const ACCOUNT_SCOPED_ROUTE_MARKERS = [
+  'const selectedEngines: AutoAiEngine[]',
+  'for (const selectedEngine of selectedEngines)',
+  'accountEngineIsolation=true',
+  "executionMode: 'selected_engine_only'",
+  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+];
+const ROUTE_MARKERS = [
+  'const selectedEngines: AutoAiEngine[]',
+  'for (const selectedEngine of selectedEngines)',
+  ['allEnginesActive=true', 'accountEngineIsolation=true'],
+  ["executionMode: 'all_enabled_engines'", "executionMode: 'selected_engine_only'"],
+  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+];
 
 patchFile(
   'web/app/api/cron/auto-ai-trading-extended/route.ts',
   (source) => {
-    if (ROUTE_MARKERS.every((marker) => source.includes(marker))) return source;
+    if (
+      ALL_ENGINE_ROUTE_MARKERS.every((marker) => source.includes(marker)) ||
+      ACCOUNT_SCOPED_ROUTE_MARKERS.every((marker) => source.includes(marker))
+    ) return source;
     let out = source;
     out = replaceOnce(
       out,
