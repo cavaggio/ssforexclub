@@ -150,6 +150,8 @@ export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
   return pairEligible &&
     analysis?.executionEligible !== false &&
     analysis?.signal !== 'none' &&
+    analysis?.entryTimeframe === '5M' &&
+    analysis?.entryCandle?.triggerReady === true &&
     analysis?.freshImpulse === true &&
     analysis?.h1Transition?.ready === true &&
     Boolean(analysis?.h1Transition?.transitionId) &&

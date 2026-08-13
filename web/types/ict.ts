@@ -6,6 +6,17 @@
  */
 
 export type IctDir = 'bullish' | 'bearish' | null;
+export type IctStructureBias = 'bullish' | 'bearish' | 'neutral';
+
+export interface IctTimeframeBias {
+  d1: IctStructureBias;
+  h4: IctStructureBias;
+  /** Informational market-structure context. It does not set trade direction. */
+  h1: IctStructureBias;
+  h1AnalysisOnly: true;
+  d1H4Aligned: boolean;
+  direction: 'buy' | 'sell' | 'none';
+}
 
 export interface IctLiquidityLevel {
   label: string;
@@ -89,6 +100,7 @@ export interface IctAnalysis {
   signalId: string;
   generatedAtMs: number;
   ictBias: 'bullish' | 'bearish' | 'neutral';
+  timeframeBias: IctTimeframeBias;
   ictNarrative: string;
   setupType: string | null;
   signal: 'buy' | 'sell' | 'none';
@@ -97,6 +109,14 @@ export interface IctAnalysis {
   target1: number | null;
   target2: number | null;
   rr: number | null;
+  entryTimeframe: '5M';
+  entryCandle: {
+    time: string | null;
+    complete: boolean;
+    priceSource: 'latest_5m_close';
+    triggerReady: boolean;
+    triggerAgeBars: number | null;
+  };
   confidence: number;
   conceptsDetected: string[];
   rejectionReasons: string[];

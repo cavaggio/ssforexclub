@@ -36,6 +36,8 @@ function fakeAnalysis() {
     entrySource: 'FVG',
     stopLoss: 184.864,
     target1: 185.000,
+    entryTimeframe: '5M',
+    entryCandle: { triggerReady: true },
     atrPips: 10,
     freshImpulse: true,
     triggerAgeBars: 0,

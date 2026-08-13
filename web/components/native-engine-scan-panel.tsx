@@ -31,6 +31,16 @@ function text(value: unknown, fallback = '—'): string {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
 
+function structureBias(value: unknown): 'bullish' | 'bearish' | 'neutral' {
+  const normalized = String(value || '').toLowerCase();
+  return normalized === 'bullish' || normalized === 'bearish' ? normalized : 'neutral';
+}
+
+function biasLabel(value: unknown): string {
+  const bias = structureBias(value);
+  return `${bias === 'bullish' ? '▲' : bias === 'bearish' ? '▼' : '◆'} ${bias.toUpperCase()}`;
+}
+
 function toneForStatus(status: string): { fg: string; bg: string; border: string } {
   if (status === 'qualified') return { fg: '#2dff7a', bg: '#0d3320', border: '#1a5c38' };
   if (status === 'hot') return { fg: '#ffcc00', bg: '#2d2200', border: '#5c4600' };
@@ -56,6 +66,29 @@ function Badge({ children, status = 'near' }: { children: ReactNode; status?: st
       }}
     >
       {children}
+    </span>
+  );
+}
+
+function DirectionBadge({ direction }: { direction: 'buy' | 'sell' | 'none' }) {
+  const tone = toneForStatus(direction === 'buy' ? 'qualified' : direction === 'sell' ? 'rejected' : 'near');
+  return (
+    <span
+      aria-label={`Trade direction: ${direction === 'none' ? 'no trade' : direction}`}
+      style={{
+        display: 'inline-flex',
+        padding: '6px 12px',
+        borderRadius: 7,
+        border: `2px solid ${tone.border}`,
+        background: tone.bg,
+        color: tone.fg,
+        fontSize: 13,
+        fontWeight: 900,
+        letterSpacing: '0.7px',
+        textTransform: 'uppercase',
+      }}
+    >
+      Direction · {direction === 'none' ? 'No trade' : direction}
     </span>
   );
 }
@@ -148,17 +181,40 @@ function PprCard({ item }: { item: any }) {
 function IctCard({ item }: { item: any }) {
   const status = text(item?.status, 'rejected').toLowerCase();
   const rr = num(item?.rr);
+  const legacyHtf = item?.concepts?.htf || {};
+  const timeframeBias = item?.timeframeBias || {};
+  const d1Bias = structureBias(timeframeBias?.d1 ?? legacyHtf?.dailyBias ?? item?.ictBias);
+  const h4Bias = structureBias(timeframeBias?.h4 ?? legacyHtf?.h4Bias);
+  const h1Bias = structureBias(timeframeBias?.h1 ?? legacyHtf?.h1Bias);
+  const d1H4Aligned = timeframeBias?.d1H4Aligned === true || legacyHtf?.aligned === true;
+  const displayedDirection = timeframeBias?.direction === 'buy' || timeframeBias?.direction === 'sell'
+    ? timeframeBias.direction
+    : item?.signal === 'buy' || item?.signal === 'sell'
+      ? item.signal
+      : d1H4Aligned && d1Bias === 'bullish'
+        ? 'buy'
+        : d1H4Aligned && d1Bias === 'bearish'
+          ? 'sell'
+          : 'none';
   return (
     <article style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16, background: 'var(--panel)' }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 18, fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{pairLabel(item?.pair)}</strong>
+        <DirectionBadge direction={displayedDirection} />
         <Badge status={status}>{status}</Badge>
-        {item?.signal && item.signal !== 'none' && <Badge status="qualified">{item.signal}</Badge>}
       </div>
       <p style={{ margin: '10px 0 0', color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>{text(item?.ictNarrative || item?.reason)}</p>
+      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 8 }}>
+        <Metric label="D1 structure bias" value={biasLabel(d1Bias)} />
+        <Metric label="H4 structure bias" value={biasLabel(h4Bias)} />
+        <Metric label="H1 structure bias · analysis only" value={biasLabel(h1Bias)} />
+      </div>
+      <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 11, lineHeight: 1.45 }}>
+        D1/H4 set direction. The H1 transition opens the scalp-entry window; the actual entry requires a fresh 5M trigger and uses the current 5M setup.
+      </div>
       <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
         <Metric label="Confidence" value={num(item?.confidence) === null ? '—' : `${num(item?.confidence)}%`} />
-        <Metric label="Entry" value={price(item?.entry, item?.pair)} />
+        <Metric label="Entry · 5M" value={price(item?.entry, item?.pair)} />
         <Metric label="Stop loss" value={price(item?.stopLoss, item?.pair)} />
         <Metric label="Target" value={price(item?.target1, item?.pair)} />
         <Metric label="Risk / reward" value={rr === null ? '—' : `1 : ${rr.toFixed(2)}`} />

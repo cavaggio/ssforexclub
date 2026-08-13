@@ -52,6 +52,83 @@ test('engine: returns the exact response object shape', () => {
   }
   assert.ok(Array.isArray(r.conceptsDetected));
   assert.ok(Array.isArray(r.rejectionReasons));
+  assert.deepEqual(Object.keys(r.timeframeBias).sort(), [
+    'd1', 'd1H4Aligned', 'direction', 'h1', 'h1AnalysisOnly', 'h4',
+  ]);
+  assert.equal(r.timeframeBias.h1AnalysisOnly, true);
+  assert.equal(r.concepts.htf.h1Bias, r.timeframeBias.h1);
+});
+
+test('timeframe display: D1/H4 own direction and H1 bias stays analysis-only', () => {
+  const c = buildCandles();
+  const start = Date.UTC(2026, 5, 1, 0, 0, 0);
+  c.h1 = gen(120, 1.13, -0.0002, 0.0004, start); // bearish H1 against bullish D1/H4
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+
+  assert.equal(r.timeframeBias.d1, 'bullish');
+  assert.equal(r.timeframeBias.h4, 'bullish');
+  assert.equal(r.timeframeBias.h1, 'bearish');
+  assert.equal(r.timeframeBias.direction, 'buy');
+  assert.equal(r.timeframeBias.h1AnalysisOnly, true);
+  assert.ok(!r.rejectionReasons.some((reason) => /H1 (structure )?bias/i.test(reason)));
+});
+
+test('scalp entry: H1 opens the window but the setup price comes from M5', () => {
+  const c = buildCandles();
+  const h1Price = 1.2500;
+  const m5Price = 1.13579;
+  c.h1[c.h1.length - 1] = {
+    ...c.h1[c.h1.length - 1],
+    close: h1Price,
+    high: h1Price + 0.0004,
+    complete: false,
+  };
+  c.m5[c.m5.length - 1] = {
+    ...c.m5[c.m5.length - 1],
+    close: m5Price,
+    high: m5Price + 0.0002,
+    low: m5Price - 0.0002,
+  };
+
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+
+  assert.equal(r.entryTimeframe, '5M');
+  assert.equal(r.entryCandle.priceSource, 'latest_5m_close');
+  assert.equal(r.entry, m5Price);
+  assert.notEqual(r.entry, h1Price);
+});
+
+test('scalp entry: M15 cannot substitute for missing M5 candles', () => {
+  const c = buildCandles();
+  c.m5 = c.m5.slice(-10);
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+
+  assert.equal(r.signal, 'none');
+  assert.match(r.rejectionReasons[0], /Insufficient 5M candle data/i);
+});
+
+test('scalp entry: a ready H1 transition cannot qualify without a fresh M5 trigger', () => {
+  const c = buildCandles();
+  c.h1[c.h1.length - 2] = {
+    time: '2026-06-04T14:00:00Z', open: 1.1020, high: 1.1022,
+    low: 1.0998, close: 1.1000, volume: 100, complete: true,
+  };
+  c.h1[c.h1.length - 1] = {
+    time: '2026-06-04T15:00:00Z', open: 1.1000, high: 1.1004,
+    low: 1.0999, close: 1.1002, volume: 100, complete: false,
+  };
+  c.m5 = Array.from({ length: 120 }, (_, index) => ({
+    time: new Date(Date.UTC(2026, 5, 4, 5, index * 5, 0)).toISOString(),
+    open: 1.1000, high: 1.1001, low: 1.0999, close: 1.1000, volume: 100,
+  }));
+
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T15:08:00Z') });
+
+  assert.equal(r.h1Transition.ready, true);
+  assert.equal(r.entryTimeframe, '5M');
+  assert.equal(r.entryCandle.triggerReady, false);
+  assert.equal(r.signal, 'none');
+  assert.ok(r.rejectionReasons.some((reason) => /no fresh 5M execution trigger/i.test(reason)));
 });
 
 test('refactor: only hard gates reject — soft concepts never appear as hard rejections', () => {

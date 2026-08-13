@@ -9,6 +9,8 @@ const qualified = (over = {}) => ({
   signal: 'buy',
   confidence: 93,
   rr: 1.5,
+  entryTimeframe: '5M',
+  entryCandle: { triggerReady: true },
   freshImpulse: true,
   h1Transition: { ready: true, transitionId: 'bullish:2026-06-04T15:00:00Z' },
   ...over,
@@ -28,6 +30,8 @@ test('confidence cannot qualify a late/missing H1 transition or stale lower-time
     h1Transition: { ready: false, transitionId: null },
   }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, freshImpulse: false }), cfg), false);
+  assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryTimeframe: '15M' }), cfg), false);
+  assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryCandle: { triggerReady: false } }), cfg), false);
 });
 
 test('XAU/USD, US30 and US500 remain signal-only even with qualified ICT setups', () => {

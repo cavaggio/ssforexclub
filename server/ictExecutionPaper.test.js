@@ -27,6 +27,7 @@ const goodAnalysis = (over = {}) => async () => ({
   rr: 2.5, signalId: freshId(),
   entry: 1.1000, idealEntry: 1.1000, entryZoneLow: 1.0998, entryZoneHigh: 1.1002,
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
+  entryTimeframe: '5M', entryCandle: { triggerReady: true },
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
   h1Transition: {
     ready: true,
