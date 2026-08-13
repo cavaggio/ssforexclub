@@ -52,6 +52,25 @@ test('engine: returns the exact response object shape', () => {
   }
   assert.ok(Array.isArray(r.conceptsDetected));
   assert.ok(Array.isArray(r.rejectionReasons));
+  assert.deepEqual(Object.keys(r.timeframeBias).sort(), [
+    'd1', 'd1H4Aligned', 'direction', 'h1', 'h1AnalysisOnly', 'h4',
+  ]);
+  assert.equal(r.timeframeBias.h1AnalysisOnly, true);
+  assert.equal(r.concepts.htf.h1Bias, r.timeframeBias.h1);
+});
+
+test('timeframe display: D1/H4 own direction and H1 bias stays analysis-only', () => {
+  const c = buildCandles();
+  const start = Date.UTC(2026, 5, 1, 0, 0, 0);
+  c.h1 = gen(120, 1.13, -0.0002, 0.0004, start); // bearish H1 against bullish D1/H4
+  const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+
+  assert.equal(r.timeframeBias.d1, 'bullish');
+  assert.equal(r.timeframeBias.h4, 'bullish');
+  assert.equal(r.timeframeBias.h1, 'bearish');
+  assert.equal(r.timeframeBias.direction, 'buy');
+  assert.equal(r.timeframeBias.h1AnalysisOnly, true);
+  assert.ok(!r.rejectionReasons.some((reason) => /H1 (structure )?bias/i.test(reason)));
 });
 
 test('refactor: only hard gates reject — soft concepts never appear as hard rejections', () => {

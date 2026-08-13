@@ -290,8 +290,13 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   // 1. HTF directional bias — Daily and 4H must AGREE (this sets direction).
   const dailyTfBias = htfBias(daily);
   const h4TfBias = htfBias(h4);
+  // H1 structure is exposed for dashboard context only. It never sets or
+  // overrides direction; only the Daily/4H agreement owns the trade bias.
+  const completedH1 = h1.filter((candle) => candle?.complete !== false);
+  const h1TfBias = htfBias(completedH1.length ? completedH1 : h1);
   const htfAligned = dailyTfBias !== 'neutral' && dailyTfBias === h4TfBias;
   const dir = htfAligned ? toLS(dailyTfBias) : null;
+  const analysisDirection = dir === 'long' ? 'buy' : dir === 'short' ? 'sell' : 'none';
   const h1Transition = classifyIctHourlyEntryTransition({
     h1Candles: h1,
     bias: htfAligned ? dailyTfBias : null,
@@ -567,6 +572,14 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     timeframeEstimate: 'Scalp',
     scalpOnly: true,
     ictBias,
+    timeframeBias: {
+      d1: dailyTfBias,
+      h4: h4TfBias,
+      h1: h1TfBias,
+      h1AnalysisOnly: true,
+      d1H4Aligned: htfAligned,
+      direction: analysisDirection,
+    },
     ictNarrative,
     setupType,
     signal,
@@ -595,7 +608,14 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
       liquidityMap, sweep, displacement, mss, bos, choch, fvgs, orderBlock,
       inducement, premiumDiscount, ote, powerOf3, killzone: kz, macro,
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
-      htf: { dailyBias: dailyTfBias, h4Bias: h4TfBias, aligned: htfAligned, h1Transition },
+      htf: {
+        dailyBias: dailyTfBias,
+        h4Bias: h4TfBias,
+        h1Bias: h1TfBias,
+        h1AnalysisOnly: true,
+        aligned: htfAligned,
+        h1Transition,
+      },
       news, candle,
       confluence, missingConfluence,
     },
@@ -646,7 +666,12 @@ function blankAnalysis(pair, timestamp, reason) {
     executionEligible: instrumentMeta.executionEligible,
     pricePrecision: instrumentMeta.pricePrecision,
     timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,
-    ictBias: 'neutral', ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,
+    ictBias: 'neutral',
+    timeframeBias: {
+      d1: 'neutral', h4: 'neutral', h1: 'neutral', h1AnalysisOnly: true,
+      d1H4Aligned: false, direction: 'none',
+    },
+    ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,
     setupType: null, signal: 'none', entry: null, stopLoss: null, target1: null,
     target2: null, rr: null, confidence: 0, conceptsDetected: [], rejectionReasons: [reason],
     concepts: null, timing: { lateEntryRisk: null, distanceToTarget: null, distanceToStop: null, timingGrade: 'n/a' },

@@ -11,6 +11,14 @@ test('ICT dashboard contract keeps one visible normalized row per scanned pair',
   const analyses = PAIRS.map((pair, index) => ({
     pair,
     signal: index === 0 ? 'buy' : index === 1 ? 'sell' : 'none',
+    timeframeBias: {
+      d1: index === 1 ? 'bearish' : 'bullish',
+      h4: index === 1 ? 'bearish' : 'bullish',
+      h1: 'neutral',
+      h1AnalysisOnly: true,
+      d1H4Aligned: index < 2,
+      direction: index === 0 ? 'buy' : index === 1 ? 'sell' : 'none',
+    },
     confidence: index < 2 ? 90 : 40,
     rr: index < 2 ? 1.5 : 0.8,
     rejectionReasons: index < 2 ? [] : ['below current setup threshold'],
@@ -29,4 +37,6 @@ test('ICT dashboard contract keeps one visible normalized row per scanned pair',
   assert.equal(visible.length, 12);
   assert.deepEqual(visible.map((item) => item.pair).sort(), [...PAIRS].sort());
   assert.deepEqual(scan.qualified.map((item) => item.direction), ['long', 'short']);
+  assert.deepEqual(scan.qualified.map((item) => item.timeframeBias.direction), ['buy', 'sell']);
+  assert.ok(scan.analyses.every((item) => item.timeframeBias.h1AnalysisOnly === true));
 });
