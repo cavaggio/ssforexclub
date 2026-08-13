@@ -301,8 +301,11 @@ export async function executeIctTrade(params = {}, {
       `ICT hourly transition gate failed: ${analysis?.h1Transition?.reason || 'missing fresh H1 countertrend-to-bias transition'}.`,
     );
   }
+  if (analysis?.entryTimeframe !== '5M' || analysis?.entryCandle?.triggerReady !== true) {
+    return blocked('ICT H1 transition is ready, but execution is not authorized by a fresh 5M entry setup.');
+  }
   if (analysis?.freshImpulse !== true) {
-    return blocked('ICT hourly transition is present but the lower-timeframe execution impulse is not fresh.');
+    return blocked('ICT H1 transition is ready, but the 5M execution impulse is not fresh.');
   }
   if (isExplicitSwingSignal(analysis)) {
     analysis = { ...analysis, executionTradeStyle: 'SWING', scannerQualifiedSwing: true };

@@ -22,6 +22,7 @@ const goodAnalysis = (over = {}) => async () => ({
   rr: 2.5, signalId: freshId(),
   entry: 1.1000, idealEntry: 1.1000, entryZoneLow: 1.0998, entryZoneHigh: 1.1002,
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
+  entryTimeframe: '5M', entryCandle: { triggerReady: true },
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
   h1Transition: {
     ready: true,
@@ -120,6 +121,14 @@ test('a qualified score cannot bypass the H1 countertrend-to-bias transition gat
   }));
   assert.equal(r.blocked, true);
   assert.match(r.reason, /hourly transition gate failed/i);
+});
+
+test('an H1 transition cannot execute without a fresh M5 setup', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({
+    getAnalysis: goodAnalysis({ entryCandle: { triggerReady: false } }),
+  }));
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /fresh 5M entry setup/i);
 });
 
 test('valid trade submits through the existing OANDA client', async () => {

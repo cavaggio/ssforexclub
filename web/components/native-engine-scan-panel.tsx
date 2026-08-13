@@ -210,11 +210,11 @@ function IctCard({ item }: { item: any }) {
         <Metric label="H1 structure bias · analysis only" value={biasLabel(h1Bias)} />
       </div>
       <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 11, lineHeight: 1.45 }}>
-        Trade direction is set only by aligned D1/H4 structure. H1 structure is analysis-only; the live H1 transition is used for entry timing.
+        D1/H4 set direction. The H1 transition opens the scalp-entry window; the actual entry requires a fresh 5M trigger and uses the current 5M setup.
       </div>
       <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
         <Metric label="Confidence" value={num(item?.confidence) === null ? '—' : `${num(item?.confidence)}%`} />
-        <Metric label="Entry" value={price(item?.entry, item?.pair)} />
+        <Metric label="Entry · 5M" value={price(item?.entry, item?.pair)} />
         <Metric label="Stop loss" value={price(item?.stopLoss, item?.pair)} />
         <Metric label="Target" value={price(item?.target1, item?.pair)} />
         <Metric label="Risk / reward" value={rr === null ? '—' : `1 : ${rr.toFixed(2)}`} />

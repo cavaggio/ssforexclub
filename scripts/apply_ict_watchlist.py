@@ -104,7 +104,17 @@ def patch_engine() -> None:
 
     blank_anchor = "function blankAnalysis(pair, timestamp, reason) {\n  const generatedAtMs = Date.parse(timestamp) || 0;\n  return {\n    pair, timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,\n    ictBias: 'neutral', ictNarrative: `${pair}: ${reason}`,"
     blank_replacement = "function blankAnalysis(pair, timestamp, reason) {\n  const generatedAtMs = Date.parse(timestamp) || 0;\n  const instrumentMeta = getIctInstrumentMeta(pair);\n  return {\n    pair,\n    displaySymbol: instrumentMeta.displaySymbol,\n    assetClass: instrumentMeta.assetClass,\n    marketDataSource: instrumentMeta.sourceLabel,\n    marketDataProxySymbol: instrumentMeta.sourceSymbol,\n    executionEligible: instrumentMeta.executionEligible,\n    pricePrecision: instrumentMeta.pricePrecision,\n    timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,\n    ictBias: 'neutral', ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,"
-    text = replace_once(text, blank_anchor, blank_replacement, "blank ICT metadata anchor not found")
+    blank_start = text.find("function blankAnalysis(pair, timestamp, reason) {")
+    blank_end = text.find("// ─── Batch", blank_start)
+    blank_block = text[blank_start:blank_end] if blank_start >= 0 and blank_end > blank_start else ""
+    if blank_anchor in text:
+        text = text.replace(blank_anchor, blank_replacement, 1)
+    elif not (
+        "const instrumentMeta = getIctInstrumentMeta(pair);" in blank_block
+        and "displaySymbol: instrumentMeta.displaySymbol" in blank_block
+        and "ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`" in blank_block
+    ):
+        raise SystemExit("ICT analysis instrument patch failed: blank ICT metadata anchor not found")
 
     if "DEFAULT_ICT_PAIRS" in text:
         raise SystemExit("ICT watchlist patch failed: retired default constant remains")

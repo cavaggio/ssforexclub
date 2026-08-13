@@ -109,6 +109,14 @@ export interface IctAnalysis {
   target1: number | null;
   target2: number | null;
   rr: number | null;
+  entryTimeframe: '5M';
+  entryCandle: {
+    time: string | null;
+    complete: boolean;
+    priceSource: 'latest_5m_close';
+    triggerReady: boolean;
+    triggerAgeBars: number | null;
+  };
   confidence: number;
   conceptsDetected: string[];
   rejectionReasons: string[];

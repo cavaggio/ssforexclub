@@ -85,6 +85,12 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
+  // H1 transition is permission to look for a scalp; a current M5 impulse is
+  // the actual entry authority. Static FVG/OB/OTE context cannot emit a trade.
+  if (htfAligned && h1Transition.ready && !freshImpulse) {
+    hardFails.push('Hard gate: H1 transition is ready, but no fresh 5M execution trigger is present.');
+  }
+
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
   const idealEntry = Number(setup?.idealEntry ?? setup?.entry);
   const entryDriftAtr = atrPrice && Number.isFinite(idealEntry)
@@ -179,6 +185,14 @@ engine = replaceRequired(
     confluenceScore,
     targetConfidence,
     h1Transition,
+    entryTimeframe: '5M',
+    entryCandle: {
+      time: entryCandle?.time ?? null,
+      complete: entryCandle?.complete !== false,
+      priceSource: 'latest_5m_close',
+      triggerReady: freshImpulse,
+      triggerAgeBars,
+    },
     freshImpulse,
     triggerAgeBars,
     idealEntry: setup?.ok ? setup.idealEntry ?? null : null,

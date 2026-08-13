@@ -268,22 +268,25 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const m15 = candles.m15 || [];
   const m5 = candles.m5 || [];
 
-  const liveH1 = h1.at(-1)?.complete === false ? h1.at(-1) : null;
-  const currentPrice = Number.isFinite(Number(liveH1?.close)) ? Number(liveH1.close)
-    : m5.length ? m5[m5.length - 1].close
-      : m15.length ? m15[m15.length - 1].close : null;
+  // The H1 candle authorizes the scalp-entry window, but it never supplies the
+  // executable setup price. Every ICT scalp is generated from the latest M5
+  // candle and later repriced against the broker quote immediately before fill.
+  const entryCandle = m5.at(-1) || null;
+  const currentPrice = Number.isFinite(Number(entryCandle?.close))
+    ? Number(entryCandle.close)
+    : null;
   const generatedAtMs = (now instanceof Date ? now : new Date(now)).getTime();
   const timestamp = new Date(generatedAtMs).toISOString();
   const signalId = `${pair}:${generatedAtMs}`;
   const instrumentMeta = getIctInstrumentMeta(pair);
 
-  if (!Number.isFinite(currentPrice) || m15.length < 25) {
-    return blankAnalysis(pair, timestamp, 'Insufficient candle data for ICT analysis.');
+  if (!Number.isFinite(currentPrice) || m15.length < 25 || m5.length < 30) {
+    return blankAnalysis(pair, timestamp, 'Insufficient 5M candle data for ICT scalp entry analysis.');
   }
 
-  // Entry timing runs on 5M only (fall back to M15 if 5M is thin). 5M never
-  // sets or overrides direction — that comes from the Daily+4H agreement below.
-  const entryTf = m5.length >= 30 ? m5 : m15;
+  // Entry timing and setup geometry run on 5M only. M5 never sets or overrides
+  // direction — that comes from the Daily+H4 agreement below.
+  const entryTf = m5;
   const atrPrice = atr(entryTf, 14) || null;
   const atrPips = atrPrice ? toPips(atrPrice, pair) : null;
 
@@ -447,6 +450,12 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
+  // H1 transition is permission to look for a scalp; a current M5 impulse is
+  // the actual entry authority. Static FVG/OB/OTE context cannot emit a trade.
+  if (htfAligned && h1Transition.ready && !freshImpulse) {
+    hardFails.push('Hard gate: H1 transition is ready, but no fresh 5M execution trigger is present.');
+  }
+
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
   const idealEntry = Number(setup?.idealEntry ?? setup?.entry);
   const entryDriftAtr = atrPrice && Number.isFinite(idealEntry)
@@ -595,6 +604,14 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     confluenceScore,
     targetConfidence,
     h1Transition,
+    entryTimeframe: '5M',
+    entryCandle: {
+      time: entryCandle?.time ?? null,
+      complete: entryCandle?.complete !== false,
+      priceSource: 'latest_5m_close',
+      triggerReady: freshImpulse,
+      triggerAgeBars,
+    },
     freshImpulse,
     triggerAgeBars,
     idealEntry: setup?.ok ? setup.idealEntry ?? null : null,
@@ -667,6 +684,11 @@ function blankAnalysis(pair, timestamp, reason) {
     pricePrecision: instrumentMeta.pricePrecision,
     timestamp, signalId: `${pair}:${generatedAtMs}`, generatedAtMs,
     ictBias: 'neutral',
+    entryTimeframe: '5M',
+    entryCandle: {
+      time: null, complete: true, priceSource: 'latest_5m_close',
+      triggerReady: false, triggerAgeBars: null,
+    },
     timeframeBias: {
       d1: 'neutral', h4: 'neutral', h1: 'neutral', h1AnalysisOnly: true,
       d1H4Aligned: false, direction: 'none',
