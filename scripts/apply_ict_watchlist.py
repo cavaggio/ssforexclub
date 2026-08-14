@@ -168,7 +168,12 @@ def patch_auto_trade() -> None:
     old = "  const rr = Number(analysis?.rr);\n  return analysis?.signal !== 'none' &&\n    Number.isFinite(confidence) && confidence >= cfg.minConfidence &&"
     enhanced_old = "  const rr = Number(analysis?.rr);\n  return analysis?.executionEligible !== false &&"
     new = "  const rr = Number(analysis?.rr);\n  const pairEligible = analysis?.pair\n    ? isIctExecutionEligibleInstrument(analysis.pair)\n    : analysis?.executionEligible !== false;\n  return pairEligible &&\n    analysis?.executionEligible !== false &&"
-    if new not in text:
+    current_qualification = (
+        "const pairEligible = analysis?.pair" in text
+        and "isIctExecutionEligibleInstrument(analysis.pair)" in text
+        and "return pairEligible &&" in text
+    )
+    if new not in text and not current_qualification:
         if enhanced_old in text:
             text = text.replace(enhanced_old, new, 1)
         elif old in text:

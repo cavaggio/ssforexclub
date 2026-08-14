@@ -34,6 +34,17 @@ test('confidence cannot qualify a late/missing H1 transition or stale lower-time
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryCandle: { triggerReady: false } }), cfg), false);
 });
 
+test('a fresh M5 continuation breakout can authorize execution without a new H1 transition', () => {
+  assert.equal(isIctAutoQualified(qualified({
+    h1Transition: { ready: false, transitionId: null, reason: 'Original H1 transition expired.' },
+    continuationBreakout: {
+      ready: true,
+      mode: 'm5_continuation_breakout',
+      cycleId: 'bullish:m5_continuation_breakout:1.1:2026-06-04T15:00:00Z',
+    },
+  }), cfg), true);
+});
+
 test('XAU/USD, US30 and US500 remain signal-only even with qualified ICT setups', () => {
   for (const pair of ['XAU_USD', 'US30_USD', 'SPX500_USD']) {
     assert.equal(isIctAutoQualified(qualified({ pair, executionEligible: false, confidence: 99, rr: 3 }), cfg), false);

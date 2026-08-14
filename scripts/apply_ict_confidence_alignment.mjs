@@ -64,15 +64,15 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
     htfAligned,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
     sweepAligned, drawPresent, entryTrigger, hourlyTransition: h1Transition.ready,
+    continuationBreakout: continuationBreakout.ready,
     displacementAligned, mssOrChoch: reversalConfirmed || bosAligned,
     fvgInDir, obInDir, inOteZone, smt: smt.smtDetected,
     inducementSwept: inducement.inducementSwept, labels: labelCount,
     rr: setup?.ok ? setup.rr : null,
   });
 
-  // A scalp may qualify only from a CURRENT 5M impulse/structure trigger. Static
-  // location context (FVG/OB/OTE) can add confluence but cannot independently
-  // authorize a market order after the move has already happened.
+  // Timing diagnostics remain visible but do not veto a valid current-price scalp.
+  // The order decision is current direction plus executable SL/TP geometry.
   const displacementAgeBars = displacementAligned && Number.isInteger(displacement?.candleIndex)
     ? Math.max(0, entryTf.length - 1 - displacement.candleIndex)
     : null;
@@ -80,15 +80,17 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
     sweepAligned ? 0 : null,
     reversalConfirmed ? 0 : null,
     bosAligned ? 0 : null,
+    rangeBreakoutAligned ? 0 : null,
+    retestAligned ? 0 : null,
     displacementAgeBars,
   ].filter(Number.isFinite);
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
-  // H1 transition is permission to look for a scalp; a current M5 impulse is
-  // the actual entry authority. Static FVG/OB/OTE context cannot emit a trade.
-  if (htfAligned && h1Transition.ready && !freshImpulse) {
-    hardFails.push('Hard gate: H1 transition is ready, but no fresh 5M execution trigger is present.');
+  // A fresh H1 turn OR an aligned M5 continuation cycle can open the scalp
+  // window. In both cases, the actual order still requires a current M5 impulse.
+  if (htfAligned && entryAuthorization.ready && !freshImpulse) {
+    hardFails.push('Hard gate: ICT entry cycle is authorized, but no fresh 5M execution trigger is present.');
   }
 
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
@@ -107,14 +109,17 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
   const zoneLowNow = Number(setup?.entryZoneLow);
   const zoneHighNow = Number(setup?.entryZoneHigh);
   const zoneTolerance = atrPrice ? atrPrice * 0.10 : 0;
-  const priceInsideEntryZone = setup?.entrySource === 'MARKET' || (
+  const priceInsideEntryZone = continuationBreakout.ready || setup?.entrySource === 'MARKET' || (
     Number.isFinite(zoneLowNow) && Number.isFinite(zoneHighNow) &&
     currentPrice >= Math.min(zoneLowNow, zoneHighNow) - zoneTolerance &&
     currentPrice <= Math.max(zoneLowNow, zoneHighNow) + zoneTolerance
   );
   const executableRisk = setup?.ok ? Math.abs(currentPrice - setup.stopLoss) : 0;
   const executableReward = setup?.ok ? Math.abs(setup.target1 - currentPrice) : 0;
-  const executableRR = executableRisk > 0 ? executableReward / executableRisk : 0;
+  const executableRRRaw = executableRisk > 0 ? executableReward / executableRisk : 0;
+  // Compare at the same two-decimal precision presented to the user. This avoids
+  // rejecting values such as 1.4999999998 while the dashboard correctly shows 1.50.
+  const executableRR = Math.round((executableRRRaw + Number.EPSILON) * 100) / 100;
   const targetConfidence = computeIctTargetHitConfidence({
     confluenceScore,
     freshImpulse,
@@ -131,12 +136,8 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
   });
   const confidence = targetConfidence.confidence;
 
-  if (!freshImpulse) hardFails.push('Hard gate: no fresh 5M impulse/structure trigger for a market scalp entry.');
-  if (entryDriftAtr > 0.35) hardFails.push(\`Hard gate: late market entry — price drifted \${entryDriftAtr.toFixed(2)} ATR from the ideal ICT entry.\`);
-  if (rewardConsumedFraction > 0.20) hardFails.push(\`Hard gate: late market entry — \${Math.round(rewardConsumedFraction * 100)}% of the target move was already consumed.\`);
-  if (!priceInsideEntryZone) hardFails.push('Hard gate: current market price is outside the valid ICT entry zone.');
-  if (setup?.targetAdjustedToMinRR) hardFails.push('Hard gate: nearest natural liquidity target does not provide the minimum R:R from the current market entry.');
-  if (setup?.ok && executableRR < configuredIctMinRR()) hardFails.push(\`Hard gate: executable R:R \${executableRR.toFixed(2)} is below \${configuredIctMinRR().toFixed(2)}.\`);
+  const minimumExecutableRR = Math.round((configuredIctMinRR() + Number.EPSILON) * 100) / 100;
+  if (setup?.ok && executableRR < minimumExecutableRR) hardFails.push(\`Hard gate: executable R:R \${executableRR.toFixed(2)} is below \${minimumExecutableRR.toFixed(2)}.\`);
 
   // ── DECISION — target-hit confidence, not raw confluence, is authoritative ──
   const DISPLAY_MIN = ictExecConfig().minConfidence;
@@ -185,6 +186,8 @@ engine = replaceRequired(
     confluenceScore,
     targetConfidence,
     h1Transition,
+    continuationBreakout,
+    entryAuthorization,
     entryTimeframe: '5M',
     entryCandle: {
       time: entryCandle?.time ?? null,

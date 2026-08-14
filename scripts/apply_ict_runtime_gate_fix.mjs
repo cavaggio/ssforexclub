@@ -66,17 +66,23 @@ function patchAutoTrade(source) {
 
 function patchExecution(source) {
   let out = source;
-  out = replaceRequired(
-    out,
-    "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n",
-    "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n" +
-      "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';\n",
-    'ICT executable-target import',
-  );
+  const executionTargetImport = "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';";
+  if (!out.includes(executionTargetImport)) {
+    out = replaceRequired(
+      out,
+      "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n",
+      "import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';\n" +
+        `${executionTargetImport}\n`,
+      'ICT executable-target import',
+    );
+  }
   out = out.replace(
     "import { maybeRebaseIctTarget } from './ictExecutionTarget.js';",
-    "import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';",
+    executionTargetImport,
   );
+  while (out.split(executionTargetImport).length - 1 > 1) {
+    out = out.replace(`\n${executionTargetImport}`, '');
+  }
   if (!out.includes('    minConfidence: 80,')) {
     out = replaceRequired(
       out,

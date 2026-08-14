@@ -45,6 +45,7 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { applyBoundedIctStopWidening } from './ictPolicy.js';
 import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';
+import { resolveIctEntryAuthorization } from './ictContinuationEntry.js';
 import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';
 import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
 import { recordTrade } from './oandaTradeHistory.js';
@@ -127,9 +128,15 @@ function blocked(reason, extra = {}) {
 }
 
 export function ictEntryCycleFingerprint({ analysis, accountId, pair, direction }) {
-  const transitionId = String(analysis?.h1Transition?.transitionId || '');
-  if (!transitionId) return null;
-  return ['ict-hour-cycle', accountId || 'default', pair, direction, transitionId].join('|');
+  const authorization = analysis?.entryAuthorization?.ready === true && analysis?.entryAuthorization?.cycleId
+    ? analysis.entryAuthorization
+    : resolveIctEntryAuthorization({
+      h1Transition: analysis?.h1Transition,
+      continuationBreakout: analysis?.continuationBreakout,
+    });
+  const cycleId = String(authorization?.cycleId || '');
+  if (!cycleId) return null;
+  return ['ict-entry-cycle', accountId || 'default', pair, direction, cycleId].join('|');
 }
 
 // Default authoritative recompute: fetch fresh candles and run the ICT engine.
@@ -296,16 +303,20 @@ export async function executeIctTrade(params = {}, {
   if (!(analysis.confidence >= config.minConfidence)) {
     return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
   }
-  if (analysis?.h1Transition?.ready !== true || !analysis?.h1Transition?.transitionId) {
-    return blocked(
-      `ICT hourly transition gate failed: ${analysis?.h1Transition?.reason || 'missing fresh H1 countertrend-to-bias transition'}.`,
-    );
+  const entryAuthorization = analysis?.entryAuthorization?.ready === true && analysis?.entryAuthorization?.cycleId
+    ? analysis.entryAuthorization
+    : resolveIctEntryAuthorization({
+      h1Transition: analysis?.h1Transition,
+      continuationBreakout: analysis?.continuationBreakout,
+    });
+  if (!entryAuthorization.ready || !entryAuthorization.cycleId) {
+    return blocked(`ICT entry-authorization gate failed: ${entryAuthorization.reason || 'no fresh H1 transition or M5 continuation breakout'}.`);
   }
   if (analysis?.entryTimeframe !== '5M' || analysis?.entryCandle?.triggerReady !== true) {
-    return blocked('ICT H1 transition is ready, but execution is not authorized by a fresh 5M entry setup.');
+    return blocked('ICT entry cycle is ready, but execution is not authorized by a fresh 5M entry setup.');
   }
   if (analysis?.freshImpulse !== true) {
-    return blocked('ICT H1 transition is ready, but the 5M execution impulse is not fresh.');
+    return blocked('ICT entry cycle is ready, but the 5M execution impulse is not fresh.');
   }
   if (isExplicitSwingSignal(analysis)) {
     analysis = { ...analysis, executionTradeStyle: 'SWING', scannerQualifiedSwing: true };
@@ -708,8 +719,8 @@ export async function executeIctTrade(params = {}, {
     });
     if (!entryCycleReservation.allowed) {
       return blocked(
-        `Hourly re-entry guard rejected ${analysis.h1Transition.transitionId}: ${entryCycleReservation.reason}. ` +
-        'A closed trade cannot reopen from the same H1 transition.',
+        `ICT entry-cycle guard rejected ${entryAuthorization.cycleId}: ${entryCycleReservation.reason}. ` +
+        'A closed trade cannot reopen from the same H1 transition or M5 continuation breakout.',
       );
     }
     params.__entryCycleReservationHash = entryCycleReservation.hash;
@@ -766,7 +777,7 @@ export async function executeIctTrade(params = {}, {
       entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? analysis.confidence,
       entryTpHitConfidence: analysis.targetHitConfidence ?? analysis.confidence,
       entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confluenceScore ?? analysis.confidence,
-      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence, h1Transition: analysis.h1Transition },
+      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence, h1Transition: analysis.h1Transition, continuationBreakout: analysis.continuationBreakout, entryAuthorization },
       atrPips: analysis.atrPips, units, riskAmount: sizing.actualRiskUSD, oandaOrderId: String(tradeId),
       entryATR: analysis.atrPips, entryExpectedHoldTimeMinutes: holdMinutes, entryRiskRewardRatio: actualFillRR,
       entrySession: analysis.concepts?.killzone?.currentKillzone ?? 'ICT', originalRecommendedTP: targetProfit, originalRecommendedSL: stopLoss,
@@ -785,6 +796,8 @@ export async function executeIctTrade(params = {}, {
     targetConfidence: analysis.targetConfidence ?? null,
     setupType: analysis.setupType,
     h1Transition: analysis.h1Transition,
+    continuationBreakout: analysis.continuationBreakout,
+    entryAuthorization,
     riskModel: analysis.riskModel,
     claudeStopAdvice: analysis.claudeStopAdvice,
     executionLog: log,
