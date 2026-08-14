@@ -9,6 +9,7 @@ import {
   DAILY_MARKET_STUDY_INTERVAL_MS,
   getAutoAiWatchState,
   inActiveTradeManagementWindow,
+  inAutoAiExecutionWindow,
   inAutoAiWindow,
   inDailyMarketStudyWindow,
   stopAutoAiScheduler,
@@ -40,12 +41,19 @@ test('active exit management runs 02:15–17:30 ET on weekdays', () => {
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-06T16:00:00Z')), false); // Saturday
 });
 
-test('daily market study runs in the 17:00–17:15 ET weekday window', () => {
-  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T20:59:00Z')), false); // 16:59 ET
-  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:00:00Z')), true); // 17:00 ET
-  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:14:00Z')), true); // 17:14 ET
-  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:15:00Z')), false); // 17:15 ET
-  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-06T21:05:00Z')), false); // Saturday
+test('new entries begin at 02:30 ET and end at 10:00 ET', () => {
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T06:29:00Z')), false); // 02:29 ET
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T06:30:00Z')), true); // 02:30 ET
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T14:00:00Z')), false); // 10:00 ET
+});
+
+test('daily market study runs in the 02:00–02:30 ET scan-only window', () => {
+  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T05:59:00Z')), false); // 01:59 ET
+  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T06:00:00Z')), true); // 02:00 ET
+  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T06:29:00Z')), true); // 02:29 ET
+  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T06:30:00Z')), false); // 02:30 ET
+  assert.equal(inDailyMarketStudyWindow(new Date('2026-06-06T06:05:00Z')), false); // Saturday
 });
 
 test('auto-AI scheduler intervals include five-minute active exits and daily study checks', () => {

@@ -29,6 +29,12 @@ const goodAnalysis = (over = {}) => async () => ({
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
   entryTimeframe: '5M', entryCandle: { triggerReady: true },
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
+  entryAuthorization: {
+    ready: true,
+    mode: 'initial_reversal_mss',
+    cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
+  },
+  marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
   h1Transition: {
     ready: true,
     transitionId: 'bullish:2026-06-04T15:00:00.000Z',
@@ -69,7 +75,7 @@ test('ICT active mode executes a practice trade without FOREX_ALLOW_LIVE_EXECUTI
   assert.equal(client.calls.length, 1);
 });
 
-test('closing a trade cannot reopen the same late H1 transition', async () => {
+test('closing a trade cannot reopen the same market-maker entry cycle', async () => {
   __resetExecutionReservationsForTests();
   const client = paperClient();
   client.accountId = 'ACC-PAPER-H1-GUARD';
@@ -79,7 +85,7 @@ test('closing a trade cannot reopen the same late H1 transition', async () => {
   assert.equal(first.success, true, first.reason);
 
   // Broker reconciliation can report no open duplicate after a close, but the
-  // independent H1-cycle reservation must still reject the stale re-entry.
+  // independent market-maker-cycle reservation must still reject the stale re-entry.
   const reopened = await executeIctTrade(validParams(), deps);
   assert.equal(reopened.blocked, true);
   assert.match(reopened.reason, /ICT entry-cycle guard rejected/i);

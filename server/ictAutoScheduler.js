@@ -2,9 +2,9 @@ import { getRetraceWatchPairs } from './retraceWatchMode.js';
 import { etParts } from './ictTime.js';
 
 export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
-export const AUTO_AI_EXECUTION_WINDOW = { startMin: 135, endMin: 600 }; // entries: 02:15–10:00 ET
+export const AUTO_AI_EXECUTION_WINDOW = { startMin: 150, endMin: 600 }; // entries: 02:30–10:00 ET
 export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 135, endMin: 1050 }; // 02:15–17:30 ET
-export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1020, endMin: 1035 }; // 17:00–17:15 ET
+export const DAILY_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, before entries
 
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
 
@@ -136,7 +136,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ` +
+    `[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +
     `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
     `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
     `management=02:15–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,

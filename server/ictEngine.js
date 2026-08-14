@@ -36,6 +36,7 @@ import {
   detectFVGs, detectDisplacement, detectOrderBlock, detectMSS, detectInducement,
   detectTurtleSoup, detectJudasSwing, classifyPowerOf3, computePremiumDiscount,
   computeOTE, buildLiquidityMap, irlErlDraw, computeDailyBias, htfBias, candleContext,
+  detectInverseFVG, detectCISD,
 } from './ictConcepts.js';
 import { detectSMT, correlatedPeers } from './ictSMT.js';
 import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';
@@ -46,8 +47,16 @@ import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';
 import { classifyIctHourlyEntryTransition } from './ictHourlyEntry.js';
 import {
   classifyIctM5ContinuationEntry,
-  resolveIctEntryAuthorization,
 } from './ictContinuationEntry.js';
+import {
+  advanceIctMarketMakerCycle,
+  detectHtfKeyLevelTap,
+  ICT_MARKET_MAKER_STAGES,
+} from './ictMarketMakerModel.js';
+import {
+  loadIctMarketMakerContext,
+  persistIctMarketMakerCycle,
+} from './ictMarketMakerState.js';
 
 // shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
@@ -269,7 +278,7 @@ export function computeIctConfidence(p = {}) {
 }
 
 // ─── One pair ────────────────────────────────────────────────────────────────
-export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) {
+export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), marketMakerContext = null }) {
   const monthly = candles.monthly || [];
   const daily = candles.daily || [];
   const h4 = candles.h4 || [];
@@ -308,6 +317,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const h1TfBias = htfBias(completedH1.length ? completedH1 : h1);
   const htfAligned = dailyTfBias !== 'neutral' && dailyTfBias === h4TfBias;
   const dir = htfAligned ? toLS(dailyTfBias) : null;
+  const want = sign(dir); // null when Daily/H4 not aligned
   const analysisDirection = dir === 'long' ? 'buy' : dir === 'short' ? 'sell' : 'none';
   const h1Transition = classifyIctHourlyEntryTransition({
     h1Candles: h1,
@@ -336,6 +346,16 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const fvgs = detectFVGs({ candles: entryTf, pair, timeframe: '5M' });
   const orderBlock = detectOrderBlock({ candles: entryTf, pair });
   const inducement = detectInducement({ candles: entryTf, pair, currentPrice, liquidityMap });
+  const inverseFvg = detectInverseFVG({ candles: entryTf, pair, direction: want });
+  const cisd = detectCISD({ candles: entryTf, pair, direction: want });
+  const htfKeyLevelTap = detectHtfKeyLevelTap({
+    dailyCandles: daily,
+    h4Candles: h4,
+    m5Candles: entryTf,
+    direction: want,
+    pair,
+    atrPrice,
+  });
 
   // 5. Premium/Discount + OTE (fib swing in the HTF direction).
   const fib = dir ? safeFib({ direction: dir, h1Candles: h1, h4Candles: h4, currentPrice, pair }) : null;
@@ -371,6 +391,9 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (fvgs.length) note(`${fvgs[0].type} FVG`);
   if (orderBlock.type) note(`${orderBlock.type} OB`);
   if (inducement.inducementPresent) note('Inducement');
+  if (htfKeyLevelTap.aligned) note(`${htfKeyLevelTap.timeframe} key-level tap (${htfKeyLevelTap.source})`);
+  if (inverseFvg.confirmed) note(`iFVG ${inverseFvg.direction}`);
+  if (cisd.confirmed) note(`CISD ${cisd.direction}`);
   if (premiumDiscount.currentZone && premiumDiscount.currentZone !== 'unknown') note(`${premiumDiscount.currentZone} zone`);
   if (ote.priceInOTE) note('OTE');
   if (kz.inKillzone) note(`Killzone: ${kz.currentKillzone}`);
@@ -386,7 +409,6 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   let setupType = null;
   let setup = null;
 
-  const want = sign(dir); // null when Daily/4H not aligned
   const reversalConfirmed = !!want && ((mss.confirmed && mss.direction === want) || (choch && choch.direction === want));
   const bosAligned = !!(want && bos && bos.direction === want);
   const rangeBreakoutAligned = !!(want && rangeBreakout && rangeBreakout.direction === want);
@@ -405,6 +427,12 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const inOteZone = want === 'bullish' ? (premiumDiscount.currentZone === 'discount' || ote.priceInOTE)
     : want === 'bearish' ? (premiumDiscount.currentZone === 'premium' || ote.priceInOTE) : false;
   const displacementAligned = !!want && displacement.direction === want;
+  const displacementAgeBars = displacementAligned && Number.isInteger(displacement?.candleIndex)
+    ? Math.max(0, entryTf.length - 1 - displacement.candleIndex)
+    : null;
+  const displacementFresh = displacementAligned && Number.isFinite(displacementAgeBars) && displacementAgeBars <= 1;
+  const mssAligned = Boolean(want && mss.confirmed && mss.direction === want);
+  const h1Aligned = Boolean(want && h1TfBias === want);
 
   const continuationBreakout = classifyIctM5ContinuationEntry({
     candles: entryTf,
@@ -418,17 +446,50 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     orderBlock,
     atrPrice,
   });
-  const entryAuthorization = resolveIctEntryAuthorization({ h1Transition, continuationBreakout });
+  const marketMakerObservation = {
+    pair,
+    direction: want,
+    htfAligned,
+    h1Aligned,
+    keyLevelTap: htfKeyLevelTap,
+    sweep,
+    sweepAligned,
+    displacement: {
+      ...displacement,
+      time: Number.isInteger(displacement?.candleIndex)
+        ? entryTf[displacement.candleIndex]?.time ?? null
+        : null,
+    },
+    displacementFresh,
+    fvgAligned: fvgInDir,
+    mss: {
+      ...mss,
+      time: mssAligned ? entryTf.at(-1)?.time ?? null : null,
+    },
+    mssAligned,
+    inverseFvg,
+    cisd,
+    continuationBreakout,
+    powerOf3,
+  };
+  const marketMakerResolution = advanceIctMarketMakerCycle({
+    context: marketMakerContext,
+    observation: marketMakerObservation,
+    now,
+  });
+  const entryAuthorization = marketMakerResolution.entryAuthorization;
   if (continuationBreakout.ready) note(
     continuationBreakout.mode === 'm5_continuation_retest'
       ? 'M5 continuation retest authorized'
       : 'M5 continuation breakout authorized',
   );
+  if (entryAuthorization.ready) note(`Market-maker entry authorized (${entryAuthorization.mode})`);
 
   // 5M entry-timing confirmation — at least ONE actionable 5M trigger (no single
   // concept is individually required).
   const entryTrigger = sweepAligned || displacementAligned || reversalConfirmed || bosAligned ||
-    rangeBreakoutAligned || retestAligned || fvgInDir || obInDir || inOteZone;
+    rangeBreakoutAligned || retestAligned || fvgInDir || obInDir || inOteZone ||
+    inverseFvg.confirmed || cisd.confirmed;
 
   // Trade levels (market-fallback when no PD array — see computeSetup).
   if (want) setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles: entryTf });
@@ -437,9 +498,11 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const hardFails = [];
   if (!htfAligned) hardFails.push('Hard gate: Daily and 4H directional bias are not aligned.');
   if (htfAligned && !kz.inKillzone) hardFails.push('Hard gate: no active killzone/session.');
-  if (htfAligned && !(sweepAligned || drawPresent)) hardFails.push('Hard gate: no liquidity sweep or clear draw on liquidity in direction.');
+  if (htfAligned && marketMakerContext?.studyReady !== true) {
+    hardFails.push('Hard gate: the required 02:00 ET ICT market study is not complete for the current New York trading day.');
+  }
   if (htfAligned && !entryAuthorization.ready) {
-    hardFails.push(`Hard gate: no fresh ICT entry authorization — ${entryAuthorization.reason}`);
+    hardFails.push(`Hard gate: central market-maker execution is not authorized — ${entryAuthorization.reason}`);
   }
   if (htfAligned && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
   if (news.blocked) hardFails.push(`Hard gate: ${news.blockReason}`);
@@ -449,20 +512,30 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const confluence = [];
   const missingConfluence = [];
   const track = (present, label) => { (present ? confluence : missingConfluence).push(label); };
+  track(htfKeyLevelTap.aligned, 'HTF key-level tap');
   track(sweepAligned, 'liquidity sweep');
   track(displacementAligned, 'displacement');
   track(reversalConfirmed || bosAligned, 'MSS/BOS/CHoCH');
   track(fvgInDir, 'FVG');
+  track(inverseFvg.confirmed, 'inverse FVG');
+  track(cisd.confirmed, 'CISD');
   track(obInDir, 'order block');
   track(inOteZone, 'OTE / discount-premium');
   track(smt.smtDetected, 'SMT divergence');
   track(inducement.inducementSwept, 'inducement swept');
-  track(powerOf3?.phase === 'Distribution', 'Power of 3 (distribution)');
+  track(marketMakerResolution.cycle?.stage === ICT_MARKET_MAKER_STAGES.ACTIVE, 'Power of 3 (persistent distribution)');
   track(silverBulletWindow, 'Silver Bullet window');
   track(turtleSoup.turtleSoupDetected, 'Turtle Soup');
   track(judas.judasSwingDetected, 'Judas Swing');
 
-  const labelCount = [powerOf3?.phase === 'Distribution', silverBulletWindow, turtleSoup.turtleSoupDetected, judas.judasSwingDetected].filter(Boolean).length;
+  const labelCount = [
+    marketMakerResolution.cycle?.stage === ICT_MARKET_MAKER_STAGES.ACTIVE,
+    inverseFvg.confirmed,
+    cisd.confirmed,
+    silverBulletWindow,
+    turtleSoup.turtleSoupDetected,
+    judas.judasSwingDetected,
+  ].filter(Boolean).length;
   const confluenceScore = computeIctConfidence({
     htfAligned,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
@@ -476,22 +549,21 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
 
   // Timing diagnostics remain visible but do not veto a valid current-price scalp.
   // The order decision is current direction plus executable SL/TP geometry.
-  const displacementAgeBars = displacementAligned && Number.isInteger(displacement?.candleIndex)
-    ? Math.max(0, entryTf.length - 1 - displacement.candleIndex)
-    : null;
   const triggerAges = [
     sweepAligned ? 0 : null,
     reversalConfirmed ? 0 : null,
     bosAligned ? 0 : null,
     rangeBreakoutAligned ? 0 : null,
     retestAligned ? 0 : null,
+    inverseFvg.confirmed ? 0 : null,
+    cisd.confirmed ? 0 : null,
     displacementAgeBars,
   ].filter(Number.isFinite);
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
-  // A fresh H1 turn OR an aligned M5 continuation cycle can open the scalp
-  // window. In both cases, the actual order still requires a current M5 impulse.
+  // The persisted market-maker model opens the scalp window, while the order
+  // still requires a current M5 impulse.
   if (htfAligned && entryAuthorization.ready && !freshImpulse) {
     hardFails.push('Hard gate: ICT entry cycle is authorized, but no fresh 5M execution trigger is present.');
   }
@@ -512,7 +584,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const zoneLowNow = Number(setup?.entryZoneLow);
   const zoneHighNow = Number(setup?.entryZoneHigh);
   const zoneTolerance = atrPrice ? atrPrice * 0.10 : 0;
-  const priceInsideEntryZone = continuationBreakout.ready || setup?.entrySource === 'MARKET' || (
+  const priceInsideEntryZone = entryAuthorization.ready || setup?.entrySource === 'MARKET' || (
     Number.isFinite(zoneLowNow) && Number.isFinite(zoneHighNow) &&
     currentPrice >= Math.min(zoneLowNow, zoneHighNow) - zoneTolerance &&
     currentPrice <= Math.max(zoneLowNow, zoneHighNow) + zoneTolerance
@@ -594,7 +666,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     `[ICT] ${pair} mode=${ICT_MODE} autoTrade=${ictExecConfig().autoTradeEnabled} independentFromV3=true | ` +
     `dailyBias=${dailyTfBias} h4Bias=${h4TfBias} aligned=${htfAligned} | ` +
     `5M=${signal !== 'none' ? 'confirmed' : 'none'} signal=${signal} conf=${confidence} rr=${scanRR} ` +
-    `killzone=${kz.inKillzone} liquidity=${sweepAligned || drawPresent} entryTrigger=${entryTrigger} ` +
+    `killzone=${kz.inKillzone} keyTap=${htfKeyLevelTap.aligned} liquidity=${sweepAligned || drawPresent} ` +
+    `po3Stage=${marketMakerResolution.cycle?.stage || 'NO_STUDY'} entryTrigger=${entryTrigger} ` +
     `entryAuth=${entryAuthorization.mode}` +
     `${news.blocked ? ' [NEWS-BLOCK]' : news.caution ? ' [news-caution]' : ''}`,
   );
@@ -647,6 +720,18 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     h1Transition,
     continuationBreakout,
     entryAuthorization,
+    marketMakerModel: {
+      studyReady: marketMakerContext?.studyReady === true,
+      studyDate: marketMakerContext?.studyDate ?? null,
+      stage: marketMakerResolution.cycle?.stage ?? null,
+      cycle: marketMakerResolution.cycle,
+      changed: marketMakerResolution.changed,
+      keyLevelTap: htfKeyLevelTap,
+      inverseFvg,
+      cisd,
+      observation: marketMakerObservation,
+      entryAuthorization,
+    },
     entryTimeframe: '5M',
     entryCandle: {
       time: entryCandle?.time ?? null,
@@ -666,6 +751,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     // additive bundle for the dashboard
     concepts: {
       liquidityMap, sweep, displacement, mss, bos, rangeBreakout, retest, choch, fvgs, orderBlock,
+      htfKeyLevelTap, inverseFvg, cisd, marketMakerCycle: marketMakerResolution.cycle,
       inducement, premiumDiscount, ote, powerOf3, killzone: kz, macro,
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
       htf: {
@@ -677,6 +763,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
         h1Transition,
         continuationBreakout,
         entryAuthorization,
+        marketMakerStage: marketMakerResolution.cycle?.stage ?? null,
       },
       news, candle,
       confluence, missingConfluence,
@@ -741,6 +828,11 @@ function blankAnalysis(pair, timestamp, reason) {
     h1Transition: null,
     continuationBreakout: null,
     entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
+    marketMakerModel: {
+      studyReady: false, studyDate: null, stage: null, cycle: null, changed: false,
+      keyLevelTap: null, inverseFvg: null, cisd: null, observation: null,
+      entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
+    },
     ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,
     setupType: null, signal: 'none', entry: null, stopLoss: null, target1: null,
     target2: null, rr: null, confidence: 0, conceptsDetected: [], rejectionReasons: [reason],
@@ -755,8 +847,32 @@ const TF = [
   ['h4', 'H4', 60], ['h1', 'H1', 120], ['m15', 'M15', 160], ['m5', 'M5', 120],
 ];
 
-export async function analyzeICTPairs(pairs = null, { client, now = new Date() } = {}) {
+export async function analyzeICTPairs(pairs = null, {
+  client,
+  now = new Date(),
+  marketMakerContexts = null,
+  persistMarketMakerState = true,
+} = {}) {
   const list = Array.isArray(pairs) && pairs.length ? pairs : ICT_PAIRS;
+
+  const contexts = marketMakerContexts && typeof marketMakerContexts === 'object'
+    ? { ...marketMakerContexts }
+    : {};
+  await Promise.all(list.map(async (pair) => {
+    if (contexts[pair]) return;
+    try {
+      contexts[pair] = await loadIctMarketMakerContext({ client, pair, now });
+    } catch (error) {
+      contexts[pair] = {
+        studyReady: false,
+        studyDate: null,
+        studiedAt: null,
+        featureSnapshot: {},
+        cycle: null,
+        loadError: error?.message || String(error),
+      };
+    }
+  }));
 
   // Fetch all timeframes for all pairs.
   const candleByPair = {};
@@ -780,7 +896,50 @@ export async function analyzeICTPairs(pairs = null, { client, now = new Date() }
       for (const peer of correlatedPeers(pair)) {
         if (candleByPair[peer]?.m15) peers[peer] = candleByPair[peer].m15;
       }
-      analyses.push(analyzeICTPair({ pair, candles: candleByPair[pair] || {}, peers, now }));
+      let analysis = analyzeICTPair({
+        pair,
+        candles: candleByPair[pair] || {},
+        peers,
+        now,
+        marketMakerContext: contexts[pair],
+      });
+      if (contexts[pair]?.loadError) {
+        const reason = `Hard gate: ICT market-maker state could not be loaded — ${contexts[pair].loadError}`;
+        analysis = {
+          ...analysis,
+          signal: 'none',
+          entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
+          rejectionReasons: [...new Set([...(analysis.rejectionReasons || []), reason])],
+          marketMakerModel: { ...(analysis.marketMakerModel || {}), persistenceError: contexts[pair].loadError },
+        };
+      } else if (
+        persistMarketMakerState &&
+        analysis.marketMakerModel?.changed === true &&
+        analysis.marketMakerModel?.cycle
+      ) {
+        try {
+          const persisted = await persistIctMarketMakerCycle({
+            client,
+            pair,
+            context: contexts[pair],
+            cycle: analysis.marketMakerModel.cycle,
+          });
+          contexts[pair] = persisted;
+          analysis.marketMakerModel.persisted = persisted.persisted;
+          analysis.marketMakerModel.storage = persisted.storage;
+        } catch (error) {
+          const message = error?.message || String(error);
+          const reason = `Hard gate: ICT market-maker state persistence failed — ${message}`;
+          analysis = {
+            ...analysis,
+            signal: 'none',
+            entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
+            rejectionReasons: [...new Set([...(analysis.rejectionReasons || []), reason])],
+            marketMakerModel: { ...(analysis.marketMakerModel || {}), persistenceError: message },
+          };
+        }
+      }
+      analyses.push(analysis);
     } catch (err) {
       analyses.push(blankAnalysis(pair, new Date().toISOString(), `ICT analysis error: ${err.message}`));
     }

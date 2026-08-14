@@ -15,7 +15,6 @@ import { executeIctTrade } from './ictExecution.js';
 import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictWatchlist.js';
 import { runDailyMarketStudy } from './dailyMarketStudy.js';
 import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
-import { resolveIctEntryAuthorization } from './ictContinuationEntry.js';
 
 function finiteNumber(value) {
   const parsed = Number(value);
@@ -145,12 +144,7 @@ export function buildIctWatchState(analyses = [], minConfidence = 80, minRR = 1.
 export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
   const confidence = Number(analysis?.confidence);
   const rr = Number(analysis?.rr);
-  const entryAuthorization = analysis?.entryAuthorization?.ready === true && analysis?.entryAuthorization?.cycleId
-    ? analysis.entryAuthorization
-    : resolveIctEntryAuthorization({
-      h1Transition: analysis?.h1Transition,
-      continuationBreakout: analysis?.continuationBreakout,
-    });
+  const entryAuthorization = analysis?.entryAuthorization || {};
   const pairEligible = analysis?.pair
     ? isIctExecutionEligibleInstrument(analysis.pair)
     : analysis?.executionEligible !== false;
@@ -162,6 +156,8 @@ export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
     analysis?.freshImpulse === true &&
     entryAuthorization.ready === true &&
     Boolean(entryAuthorization.cycleId) &&
+    analysis?.marketMakerModel?.studyReady === true &&
+    analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&
     Number.isFinite(confidence) && confidence >= cfg.minConfidence &&
     Number.isFinite(rr) && rr >= cfg.minRR;
 }

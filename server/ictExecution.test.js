@@ -24,6 +24,12 @@ const goodAnalysis = (over = {}) => async () => ({
   entrySource: 'FVG', stopLoss: 1.0980, target1: 1.1040,
   entryTimeframe: '5M', entryCandle: { triggerReady: true },
   atrPips: 10, freshImpulse: true, triggerAgeBars: 0,
+  entryAuthorization: {
+    ready: true,
+    mode: 'initial_reversal_mss',
+    cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
+  },
+  marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
   h1Transition: {
     ready: true,
     transitionId: 'bullish:2026-06-04T15:00:00.000Z',
@@ -113,17 +119,17 @@ test('direction mismatch with the recomputed signal is rejected', async () => {
   assert.match(r.reason, /no current ICT buy signal/i);
 });
 
-test('a qualified score cannot bypass both ICT entry-authorization paths', async () => {
+test('a qualified score cannot bypass central market-maker authorization', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     getAnalysis: goodAnalysis({
-      h1Transition: { ready: false, transitionId: null, reason: 'Wait for the new bullish H1 candle.' },
+      entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason: 'Waiting for HTF key tap.' },
     }),
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /entry-authorization gate failed/i);
+  assert.match(r.reason, /central market-maker authorization failed/i);
 });
 
-test('an H1 transition cannot execute without a fresh M5 setup', async () => {
+test('an activated market-maker cycle cannot execute without a fresh M5 setup', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     getAnalysis: goodAnalysis({ entryCandle: { triggerReady: false } }),
   }));
@@ -131,7 +137,7 @@ test('an H1 transition cannot execute without a fresh M5 setup', async () => {
   assert.match(r.reason, /fresh 5M entry setup/i);
 });
 
-test('a fresh M5 continuation breakout can execute after the H1 transition window expires', async () => {
+test('a fresh M5 continuation breakout can execute inside an activated parent cycle', async () => {
   const client = mockClient('ACC-CONTINUATION');
   const r = await executeIctTrade(validParams(), baseDeps({
     client,
@@ -142,6 +148,11 @@ test('a fresh M5 continuation breakout can execute after the H1 transition windo
         mode: 'm5_continuation_breakout',
         cycleId: 'bullish:m5_continuation_breakout:1.1:2026-06-04T14:55:00.000Z',
         reason: 'Fresh aligned M5 continuation breakout.',
+      },
+      entryAuthorization: {
+        ready: true,
+        mode: 'm5_continuation_breakout',
+        cycleId: '2026-06-04:EUR_USD:bullish:activated:m5-breakout',
       },
     }),
   }));

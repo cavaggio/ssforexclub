@@ -12,7 +12,12 @@ const qualified = (over = {}) => ({
   entryTimeframe: '5M',
   entryCandle: { triggerReady: true },
   freshImpulse: true,
-  h1Transition: { ready: true, transitionId: 'bullish:2026-06-04T15:00:00Z' },
+  entryAuthorization: {
+    ready: true,
+    mode: 'initial_reversal_mss',
+    cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
+  },
+  marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
   ...over,
 });
 
@@ -24,23 +29,31 @@ test('ICT Auto AI only attempts executable directional signals that satisfy the 
   assert.equal(isIctAutoQualified(qualified({ signal: 'none', confidence: 99, rr: 5.0 }), cfg), false);
 });
 
-test('confidence cannot qualify a late/missing H1 transition or stale lower-timeframe impulse', () => {
+test('confidence cannot bypass the central market-maker authorization or stale lower-timeframe impulse', () => {
   assert.equal(isIctAutoQualified(qualified({
     confidence: 99,
-    h1Transition: { ready: false, transitionId: null },
+    entryAuthorization: { ready: false, cycleId: null },
+  }), cfg), false);
+  assert.equal(isIctAutoQualified(qualified({
+    confidence: 99,
+    marketMakerModel: { studyReady: false, stage: null },
   }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, freshImpulse: false }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryTimeframe: '15M' }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryCandle: { triggerReady: false } }), cfg), false);
 });
 
-test('a fresh M5 continuation breakout can authorize execution without a new H1 transition', () => {
+test('an activated parent cycle can authorize a fresh M5 continuation entry', () => {
   assert.equal(isIctAutoQualified(qualified({
-    h1Transition: { ready: false, transitionId: null, reason: 'Original H1 transition expired.' },
     continuationBreakout: {
       ready: true,
       mode: 'm5_continuation_breakout',
       cycleId: 'bullish:m5_continuation_breakout:1.1:2026-06-04T15:00:00Z',
+    },
+    entryAuthorization: {
+      ready: true,
+      mode: 'm5_continuation_breakout',
+      cycleId: '2026-06-04:EUR_USD:bullish:activated:m5-breakout',
     },
   }), cfg), true);
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Enforce scan-at-02:00 / execute-at-02:15 across every Auto AI engine.
+"""Enforce scan/study-at-02:00 / execute-at-02:30 across every Auto AI engine.
 
-The engine-neutral router passes executionAllowed=false during the 02:00–02:14
+The engine-neutral router passes executionAllowed=false during the 02:00–02:29
 pre-entry scan period. Each native engine must still scan and publish its own
 watch state, but it must not submit an order until the gate opens. The PPR pass
 also preserves server-derived targetRiskUSD/manualExecution arguments used by
@@ -50,7 +50,7 @@ text = replace_once(
     "ICT runner arguments",
 )
 ict_gate = """  if (executionAllowed === false) {
-    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const reason = executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders';
     const skipped = qualified.map((analysis) => ({
       pair: analysis.pair,
       direction: analysis.signal === 'buy' ? 'long' : 'short',
@@ -92,7 +92,7 @@ text = replace_once(
     "V3 runner arguments",
 )
 v3_gate = """  if (executionAllowed === false) {
-    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const reason = executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders';
     const skipped = qualified.map((signal) => ({
       pair: signal.pair,
       direction: signal.direction,
@@ -145,7 +145,7 @@ text = replace_one_of(
     "PPR runner arguments",
 )
 ppr_gate = """  if (executionAllowed === false) {
-    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const reason = executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders';
     const skipped = qualified.map((candidate) => ({
       pair: candidate.pair,
       direction: candidate.direction,
@@ -193,7 +193,7 @@ for relative in ["server/ictAutoTrade.js", "server/v3AutoTrade.js", "server/pprA
     for marker in [
         "executionAllowed = true",
         "executionBlockedReason = null",
-        "scan_only_until_02:15_ET_no_new_orders",
+        "scan_only_until_02:30_ET_no_new_orders",
         "executionAllowed: false",
     ]:
         if marker not in body:
@@ -204,4 +204,4 @@ for marker in ["targetRiskUSD = null", "manualExecution = false", "executePprTra
     if marker not in ppr_body:
         raise RuntimeError(f"PPR manual-risk propagation incomplete: missing {marker}")
 
-print("Selected-engine scan-only gate enforced: scans at 02:00, entries at 02:15; PPR manual target risk preserved")
+print("Selected-engine scan-only gate enforced: study/scans at 02:00, entries at 02:30; PPR manual target risk preserved")

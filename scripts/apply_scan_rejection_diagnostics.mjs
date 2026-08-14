@@ -56,8 +56,10 @@ export function patchIctRejectionDiagnostics(source) {
 
 export function patchSchedulerWindowDiagnostic(source) {
   const stale = '[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ';
-  const accurate = '[AUTO_AI] scans=02:00–10:00_ET entries=V3/PPR/ICT_02:15 weekdays_only ';
+  const accurate = '[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ';
   if (source.includes(accurate)) return source;
+  const oldUnified = '[AUTO_AI] scans=02:00–10:00_ET entries=V3/PPR/ICT_02:15 weekdays_only ';
+  if (source.includes(oldUnified)) return source.replace(oldUnified, accurate);
   return replaceRequired(source, stale, accurate, 'scheduler execution-window diagnostic');
 }
 

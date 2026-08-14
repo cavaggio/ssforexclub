@@ -79,19 +79,29 @@ if (!auto.includes("runDailyMarketStudy({ client, engine: 'ict'")) {
   );
 }
 
-auto = auto.replaceAll(
+for (const legacyReason of [
   "executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders'",
-  "executionBlockedReason || 'ICT scan-only window: new orders are not allowed yet'",
-);
-
-for (const marker of [
-  "from './dailyMarketStudy.js'",
-  "runDailyMarketStudy({ client, engine: 'ict'",
-  "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
-  'executionAllowed = true',
-  'ICT scan-only window',
+  "executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders'",
 ]) {
-  if (!auto.includes(marker)) throw new Error(`ICT daily policy incomplete: missing ${marker}`);
+  auto = auto.replaceAll(
+    legacyReason,
+    "executionBlockedReason || 'ICT scan-only window: new orders are not allowed yet'",
+  );
+}
+
+for (const markers of [
+  ["from './dailyMarketStudy.js'"],
+  ["runDailyMarketStudy({ client, engine: 'ict'"],
+  [
+    "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
+    "applyCombinedLearningCalibration(item, { client, engine: 'ict' })",
+  ],
+  ['executionAllowed = true'],
+  ['ICT scan-only window'],
+]) {
+  if (!markers.some((marker) => auto.includes(marker))) {
+    throw new Error(`ICT daily policy incomplete: missing ${markers.join(' OR ')}`);
+  }
 }
 
 if (auto !== autoBefore) writeFileSync(autoPath, auto, 'utf8');
@@ -101,7 +111,10 @@ const executionPath = resolve(ROOT, 'server/ictExecution.js');
 const executionBefore = readFileSync(executionPath, 'utf8');
 let execution = executionBefore;
 
-if (!execution.includes("from './dailyMarketStudy.js'")) {
+if (
+  !execution.includes("from './dailyMarketStudy.js'") &&
+  !execution.includes("applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })")
+) {
   execution = execution.replace(
     "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';",
     "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';\nimport { applyStoredStudyCalibration } from './dailyMarketStudy.js';",
@@ -124,7 +137,8 @@ if (!execution.includes('hydrateDailyRiskState,')) {
 
 if (
   !execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
-  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })")
+  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })") &&
+  !execution.includes("applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })")
 ) {
   execution = execution.replace(
     "  try { analysis = await analyze(pair); } catch (err) { return blocked(`ICT recompute failed: ${err.message}`); }",
@@ -150,20 +164,26 @@ if (!execution.includes('await persistDailyRiskState({ accountId, balanceUSD, no
   );
 }
 
-for (const marker of [
-  "from './dailyMarketStudy.js'",
-  'markTradeOpened,',
-  'hydrateDailyRiskState,',
-  'persistDailyRiskState,',
-  'await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });',
-  'markTradeOpened({ accountId, balanceUSD, now });',
-  'await persistDailyRiskState({ accountId, balanceUSD, now });',
+for (const markers of [
+  [
+    "from './dailyMarketStudy.js'",
+    "applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })",
+  ],
+  ['markTradeOpened,'],
+  ['hydrateDailyRiskState,'],
+  ['persistDailyRiskState,'],
+  ['await hydrateDailyRiskState({ accountId: riskAccountId, balanceUSD, now });'],
+  ['markTradeOpened({ accountId, balanceUSD, now });'],
+  ['await persistDailyRiskState({ accountId, balanceUSD, now });'],
 ]) {
-  if (!execution.includes(marker)) throw new Error(`ICT execution daily policy incomplete: missing ${marker}`);
+  if (!markers.some((marker) => execution.includes(marker))) {
+    throw new Error(`ICT execution daily policy incomplete: missing ${markers.join(' OR ')}`);
+  }
 }
 if (
   !execution.includes("applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })") &&
-  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })")
+  !execution.includes("applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })") &&
+  !execution.includes("applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })")
 ) {
   throw new Error('ICT execution daily policy incomplete: missing stored-study calibration');
 }

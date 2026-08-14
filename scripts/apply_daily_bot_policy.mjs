@@ -59,7 +59,10 @@ patchFile(
   },
   [
     "runDailyMarketStudy({ client, engine: 'ppr', pairs, now })",
-    "applyStoredStudyCalibration(item, { client, engine: 'ppr' })",
+    [
+      "applyStoredStudyCalibration(item, { client, engine: 'ppr' })",
+      "applyCombinedLearningCalibration(item, { client, engine: 'ppr' })",
+    ],
     'PPR scan-only window',
     'executionAllowed = true',
     'riskPercent: 1',
@@ -70,6 +73,9 @@ patchFile(
   'server/pprExecution.js',
   (source) => {
     let out = source;
+    if (out.includes("applyCombinedLearningCalibration(fresh.signal, { client, engine: 'ppr' })")) {
+      return out.replaceAll('riskPercent: 1.25', 'riskPercent: 1');
+    }
     if (!out.includes("from './dailyMarketStudy.js'")) {
       out = out.replace(
         "import { pprRuntimeConfig } from './pprEnv.js';",
@@ -89,9 +95,15 @@ patchFile(
     return out.replaceAll('riskPercent: 1.25', 'riskPercent: 1');
   },
   [
-    "applyStoredStudyCalibration(fresh.signal, { client, engine: 'ppr' })",
-    'PPR confidence below threshold after daily-study calibration',
-    'signal: studiedSignal',
+    [
+      "applyStoredStudyCalibration(fresh.signal, { client, engine: 'ppr' })",
+      "applyCombinedLearningCalibration(fresh.signal, { client, engine: 'ppr' })",
+    ],
+    [
+      'PPR confidence below threshold after daily-study calibration',
+      'PPR confidence below threshold after combined market/engine calibration',
+    ],
+    ['signal: studiedSignal', 'signal: calibratedSignal'],
     'riskPercent: 1',
   ],
 );
@@ -128,7 +140,10 @@ patchFile(
   },
   [
     "runDailyMarketStudy({ client, engine: 'ict'",
-    "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
+    [
+      "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
+      "applyCombinedLearningCalibration(item, { client, engine: 'ict' })",
+    ],
     'ICT scan-only window',
     'executionAllowed = true',
   ],
@@ -159,7 +174,10 @@ patchFile(
   'server/ictExecution.js',
   (source) => {
     let out = source;
-    if (!out.includes("from './dailyMarketStudy.js'")) {
+    if (
+      !out.includes("from './dailyMarketStudy.js'") &&
+      !out.includes("applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })")
+    ) {
       out = out.replace(
         "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';",
         "import { analyzeICTPair, ictExecConfig } from './ictEngine.js';\nimport { applyStoredStudyCalibration } from './dailyMarketStudy.js';",
@@ -192,6 +210,7 @@ patchFile(
     [
       "applyStoredStudyCalibration(await analyze(pair), { client, engine: 'ict' })",
       "applyStoredStudyCalibration(rawAnalysis, { client, engine: 'ict' })",
+      "applyCombinedLearningCalibration(rawAnalysis, { client, engine: 'ict' })",
     ],
     'markTradeOpened,',
     'markTradeOpened({ accountId, balanceUSD, now });',
@@ -235,7 +254,7 @@ patchFile(
     if (!out.includes('DAILY_MARKET_STUDY_WINDOW')) {
       out = out.replace(
         "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET",
-        "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET\nexport const DAILY_MARKET_STUDY_WINDOW = { startMin: 1020, endMin: 1035 }; // 17:00–17:15 ET",
+        "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET\nexport const DAILY_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, before entries",
       );
     }
     if (!out.includes('DAILY_MARKET_STUDY_INTERVAL_MS')) {
@@ -255,7 +274,15 @@ patchFile(
     }
     out = out.replace(
       '`[AUTO_AI] scans=02:00–10:00_ET entries=02:15–10:00_ET weekdays_only ` +',
+      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
+    );
+    out = out.replace(
       '`[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ` +',
+      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
+    );
+    out = out.replace(
+      '`[AUTO_AI] scans=02:00–10:00_ET entries=V3/PPR/ICT_02:15 weekdays_only ` +',
+      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
     );
     if (!out.includes('DAILY_MARKET_STUDY_INTERVAL_MS));')) {
       out = out.replace(
@@ -295,10 +322,7 @@ patchFile(
     'inDailyMarketStudyWindow',
     'export async function dailyMarketStudyTick',
     "scanMode: 'daily_study'",
-    [
-      'entries=V3_02:15/PPR_03:00/ICT_05:00',
-      'entries=V3/PPR/ICT_02:15',
-    ],
+    'study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET',
   ],
 );
 
