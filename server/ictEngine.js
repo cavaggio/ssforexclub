@@ -21,7 +21,12 @@ import { getIctCandles } from './ictMarketData.js';
 import { getPipSize, pricePrecision, toPips, roundPrice } from './pipMath.js';
 import { atr } from './oandaIndicators.js';
 import { analyzeLiquidity } from './liquidityEngine.js';
-import { detectBreakOfStructure, detectChangeOfCharacter } from './oandaInstitutionalFlow.js';
+import {
+  detectBreakOfStructure,
+  detectChangeOfCharacter,
+  detectRangeBreakout,
+  detectRetest,
+} from './oandaInstitutionalFlow.js';
 import { detectFibSetup } from './oandaFibonacci.js';
 // NOTE: ICT is a fully independent engine. It must NOT import V3 (no evaluateV3,
 // no V3 scoring/confirmation/trend/shadow comparison). Any V3-vs-ICT comparison
@@ -39,6 +44,10 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { configuredIctWatchlist } from './ictWatchlist.js';
 import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';
 import { classifyIctHourlyEntryTransition } from './ictHourlyEntry.js';
+import {
+  classifyIctM5ContinuationEntry,
+  resolveIctEntryAuthorization,
+} from './ictContinuationEntry.js';
 
 // shadow = analysis only (default); live = analysis + (gated) execution.
 export const ICT_MODE = String(process.env.ICT_ENGINE_MODE || 'shadow').toLowerCase();
@@ -246,7 +255,7 @@ export function computeIctConfidence(p = {}) {
   c += Math.round((p.killzoneQuality || 0) * 0.15);    // active killzone quality (~8–14)
   c += p.sweepAligned ? 12 : (p.drawPresent ? 6 : 0);  // liquidity sweep / draw on liquidity
   c += p.entryTrigger ? 8 : 0;                         // 5M entry-timing confirmation
-  c += p.hourlyTransition ? 6 : 0;                     // fresh H1 countertrend → HTF-bias turn
+  c += (p.hourlyTransition || p.continuationBreakout) ? 6 : 0; // fresh H1 turn or M5 continuation cycle
   if (p.displacementAligned) c += 8;
   if (p.mssOrChoch) c += 6;
   if (p.fvgInDir) c += 5;
@@ -321,6 +330,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const mss = detectMSS({ candles: entryTf, pair });
   const bos = detectBreakOfStructure({ candles: entryTf, direction: dir || 'long', pair })
     || detectBreakOfStructure({ candles: entryTf, direction: 'short', pair });
+  const rangeBreakout = detectRangeBreakout({ candles: entryTf, pair });
+  const retest = detectRetest({ candles: entryTf, direction: dir || 'long', pair });
   const choch = detectChangeOfCharacter({ candles: entryTf, priorTrend: dailyTfBias === 'bullish' ? 'bullish' : 'bearish', pair });
   const fvgs = detectFVGs({ candles: entryTf, pair, timeframe: '5M' });
   const orderBlock = detectOrderBlock({ candles: entryTf, pair });
@@ -354,6 +365,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (displacement.direction) note(`Displacement ${displacement.direction}`);
   if (mss.confirmed) note(`MSS ${mss.direction}`);
   if (bos) note(`BOS ${bos.direction}`);
+  if (rangeBreakout) note(`Range breakout ${rangeBreakout.direction}`);
+  if (retest) note(`Retest ${retest.direction}`);
   if (choch) note(`CHoCH ${choch.direction}`);
   if (fvgs.length) note(`${fvgs[0].type} FVG`);
   if (orderBlock.type) note(`${orderBlock.type} OB`);
@@ -376,6 +389,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const want = sign(dir); // null when Daily/4H not aligned
   const reversalConfirmed = !!want && ((mss.confirmed && mss.direction === want) || (choch && choch.direction === want));
   const bosAligned = !!(want && bos && bos.direction === want);
+  const rangeBreakoutAligned = !!(want && rangeBreakout && rangeBreakout.direction === want);
+  const retestAligned = !!(want && retest && retest.direction === want);
   const sweepAligned = !!want && sweepDir === want;
 
   // Draw on liquidity: a target pool sits in the trade direction (price is drawn to it).
@@ -391,9 +406,29 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     : want === 'bearish' ? (premiumDiscount.currentZone === 'premium' || ote.priceInOTE) : false;
   const displacementAligned = !!want && displacement.direction === want;
 
+  const continuationBreakout = classifyIctM5ContinuationEntry({
+    candles: entryTf,
+    bias: want,
+    h1Bias: h1TfBias,
+    bos,
+    rangeBreakout,
+    retest,
+    displacement,
+    fvgs,
+    orderBlock,
+    atrPrice,
+  });
+  const entryAuthorization = resolveIctEntryAuthorization({ h1Transition, continuationBreakout });
+  if (continuationBreakout.ready) note(
+    continuationBreakout.mode === 'm5_continuation_retest'
+      ? 'M5 continuation retest authorized'
+      : 'M5 continuation breakout authorized',
+  );
+
   // 5M entry-timing confirmation — at least ONE actionable 5M trigger (no single
   // concept is individually required).
-  const entryTrigger = sweepAligned || displacementAligned || reversalConfirmed || bosAligned || fvgInDir || obInDir || inOteZone;
+  const entryTrigger = sweepAligned || displacementAligned || reversalConfirmed || bosAligned ||
+    rangeBreakoutAligned || retestAligned || fvgInDir || obInDir || inOteZone;
 
   // Trade levels (market-fallback when no PD array — see computeSetup).
   if (want) setup = computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote, liquidityMap, sweep, candles: entryTf });
@@ -403,7 +438,9 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   if (!htfAligned) hardFails.push('Hard gate: Daily and 4H directional bias are not aligned.');
   if (htfAligned && !kz.inKillzone) hardFails.push('Hard gate: no active killzone/session.');
   if (htfAligned && !(sweepAligned || drawPresent)) hardFails.push('Hard gate: no liquidity sweep or clear draw on liquidity in direction.');
-  if (htfAligned && !h1Transition.ready) hardFails.push(`Hard gate: hourly entry transition not ready — ${h1Transition.reason}`);
+  if (htfAligned && !entryAuthorization.ready) {
+    hardFails.push(`Hard gate: no fresh ICT entry authorization — ${entryAuthorization.reason}`);
+  }
   if (htfAligned && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
   if (news.blocked) hardFails.push(`Hard gate: ${news.blockReason}`);
   if (htfAligned && want && (!setup || !setup.ok)) hardFails.push(`Hard gate: ${setup?.reason || 'no executable 5M entry/target.'}`);
@@ -430,6 +467,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     htfAligned,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
     sweepAligned, drawPresent, entryTrigger, hourlyTransition: h1Transition.ready,
+    continuationBreakout: continuationBreakout.ready,
     displacementAligned, mssOrChoch: reversalConfirmed || bosAligned,
     fvgInDir, obInDir, inOteZone, smt: smt.smtDetected,
     inducementSwept: inducement.inducementSwept, labels: labelCount,
@@ -445,15 +483,17 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     sweepAligned ? 0 : null,
     reversalConfirmed ? 0 : null,
     bosAligned ? 0 : null,
+    rangeBreakoutAligned ? 0 : null,
+    retestAligned ? 0 : null,
     displacementAgeBars,
   ].filter(Number.isFinite);
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
-  // H1 transition is permission to look for a scalp; a current M5 impulse is
-  // the actual entry authority. Static FVG/OB/OTE context cannot emit a trade.
-  if (htfAligned && h1Transition.ready && !freshImpulse) {
-    hardFails.push('Hard gate: H1 transition is ready, but no fresh 5M execution trigger is present.');
+  // A fresh H1 turn OR an aligned M5 continuation cycle can open the scalp
+  // window. In both cases, the actual order still requires a current M5 impulse.
+  if (htfAligned && entryAuthorization.ready && !freshImpulse) {
+    hardFails.push('Hard gate: ICT entry cycle is authorized, but no fresh 5M execution trigger is present.');
   }
 
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
@@ -472,7 +512,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
   const zoneLowNow = Number(setup?.entryZoneLow);
   const zoneHighNow = Number(setup?.entryZoneHigh);
   const zoneTolerance = atrPrice ? atrPrice * 0.10 : 0;
-  const priceInsideEntryZone = setup?.entrySource === 'MARKET' || (
+  const priceInsideEntryZone = continuationBreakout.ready || setup?.entrySource === 'MARKET' || (
     Number.isFinite(zoneLowNow) && Number.isFinite(zoneHighNow) &&
     currentPrice >= Math.min(zoneLowNow, zoneHighNow) - zoneTolerance &&
     currentPrice <= Math.max(zoneLowNow, zoneHighNow) + zoneTolerance
@@ -554,7 +594,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     `[ICT] ${pair} mode=${ICT_MODE} autoTrade=${ictExecConfig().autoTradeEnabled} independentFromV3=true | ` +
     `dailyBias=${dailyTfBias} h4Bias=${h4TfBias} aligned=${htfAligned} | ` +
     `5M=${signal !== 'none' ? 'confirmed' : 'none'} signal=${signal} conf=${confidence} rr=${scanRR} ` +
-    `killzone=${kz.inKillzone} liquidity=${sweepAligned || drawPresent} entryTrigger=${entryTrigger}` +
+    `killzone=${kz.inKillzone} liquidity=${sweepAligned || drawPresent} entryTrigger=${entryTrigger} ` +
+    `entryAuth=${entryAuthorization.mode}` +
     `${news.blocked ? ' [NEWS-BLOCK]' : news.caution ? ' [news-caution]' : ''}`,
   );
   if (signal === 'none') {
@@ -604,6 +645,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     confluenceScore,
     targetConfidence,
     h1Transition,
+    continuationBreakout,
+    entryAuthorization,
     entryTimeframe: '5M',
     entryCandle: {
       time: entryCandle?.time ?? null,
@@ -622,7 +665,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
     rejectionReasons,
     // additive bundle for the dashboard
     concepts: {
-      liquidityMap, sweep, displacement, mss, bos, choch, fvgs, orderBlock,
+      liquidityMap, sweep, displacement, mss, bos, rangeBreakout, retest, choch, fvgs, orderBlock,
       inducement, premiumDiscount, ote, powerOf3, killzone: kz, macro,
       silverBullet, smt, turtleSoup, judas, irlErl, dailyBias: bias,
       htf: {
@@ -632,6 +675,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date() }) 
         h1AnalysisOnly: true,
         aligned: htfAligned,
         h1Transition,
+        continuationBreakout,
+        entryAuthorization,
       },
       news, candle,
       confluence, missingConfluence,
@@ -693,6 +738,9 @@ function blankAnalysis(pair, timestamp, reason) {
       d1: 'neutral', h4: 'neutral', h1: 'neutral', h1AnalysisOnly: true,
       d1H4Aligned: false, direction: 'none',
     },
+    h1Transition: null,
+    continuationBreakout: null,
+    entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
     ictNarrative: `${instrumentMeta.displaySymbol}: ${reason}`,
     setupType: null, signal: 'none', entry: null, stopLoss: null, target1: null,
     target2: null, rr: null, confidence: 0, conceptsDetected: [], rejectionReasons: [reason],
