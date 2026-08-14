@@ -3,6 +3,7 @@ import { getCandles } from './oandaMarketData.js';
 import { analyzeICTPair } from './ictEngine.js';
 import { configuredIctWatchlist } from './ictWatchlist.js';
 import { analyzePprPair, getPprWatchlist } from './pprEngine.js';
+import { initializeIctMarketMakerStudy } from './ictMarketMakerState.js';
 
 const memory = new Map();
 let supabaseClient;
@@ -365,7 +366,10 @@ async function studyPair({ client, engine, pair, now }) {
     },
   };
   const storage = await persistStudy(row);
-  return { ...row, ...storage };
+  const marketMakerStudy = engine === 'ict'
+    ? await initializeIctMarketMakerStudy({ client, pair, study: row, now })
+    : null;
+  return { ...row, ...storage, marketMakerStudy };
 }
 
 export async function runDailyMarketStudy({ client, engine, pairs = null, now = new Date() } = {}) {

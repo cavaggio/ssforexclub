@@ -2,7 +2,8 @@
  * Engine-aware Auto AI scan and execution windows.
  *
  * All engines begin scanning at 02:00 ET so they can build watch state before
- * entries are allowed. V3, PPR, and ICT may all submit new orders from 02:15 ET. The scanner starts at 02:00 ET so every engine can warm its watch state before execution.
+ * entries are allowed. The 02:00–02:29 ET period is study/scan-only; new orders
+ * may be submitted from 02:30 ET through 09:59 ET.
  */
 export const AUTO_AI_SCAN_WINDOW = Object.freeze({
   startMin: 120,
@@ -13,19 +14,19 @@ export const AUTO_AI_SCAN_WINDOW = Object.freeze({
 
 export const AUTO_AI_EXECUTION_WINDOWS = Object.freeze({
   v3: Object.freeze({
-    startMin: 135,
+    startMin: 150,
     endMin: 600,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
   }),
   ppr: Object.freeze({
-    startMin: 135,
+    startMin: 150,
     endMin: 600,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
   }),
   ict: Object.freeze({
-    startMin: 135,
+    startMin: 150,
     endMin: 600,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
@@ -91,6 +92,6 @@ export function autoAiWindowReason() {
 
 export function autoAiExecutionWindowReason(engine = 'v3') {
   const normalized = normalizeEngine(engine);
-  const start = '02:15';
+  const start = '02:30';
   return `${normalized}_scan_only_until_${start}_ET_no_new_orders`;
 }

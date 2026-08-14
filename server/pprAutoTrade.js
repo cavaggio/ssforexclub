@@ -169,7 +169,7 @@ export async function runAutoPprForUser({
   }
 
   if (executionAllowed === false) {
-    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const reason = executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders';
     const skipped = qualified.map((candidate) => ({
       pair: candidate.pair,
       direction: candidate.direction,

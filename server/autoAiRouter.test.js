@@ -67,23 +67,23 @@ test('routing: all engines scan from 02:00 ET without submitting early orders', 
   }
 });
 
-test('V3, PPR, and ICT all begin execution at 02:15 ET', async () => {
+test('V3, PPR, and ICT all begin execution at 02:30 ET', async () => {
   for (const engine of ENGINES) {
-    const before = await routeAt(engine, new Date('2026-07-13T06:14:00Z'));
-    const open = await routeAt(engine, new Date('2026-07-13T06:15:00Z'));
+    const before = await routeAt(engine, new Date('2026-07-13T06:29:00Z'));
+    const open = await routeAt(engine, new Date('2026-07-13T06:30:00Z'));
     assert.equal(before.result.executionAllowed, false);
-    assert.match(before.calls[0].args.executionBlockedReason, /02:15/);
+    assert.match(before.calls[0].args.executionBlockedReason, /02:30/);
     assert.equal(open.result.executionAllowed, true);
   }
 });
 
-test('daily study can run at 17:00 ET but can never submit an order', async () => {
+test('02:00 ET daily study can never submit an order', async () => {
   for (const engine of ['ict', 'ppr']) {
     const calls = [];
     const result = await runAutoForUser({
       client: { accountId: 'A', environment: 'live' },
       engine,
-      now: new Date('2026-07-13T21:05:00Z'),
+      now: new Date('2026-07-13T06:05:00Z'),
       scanMode: 'daily_study',
       ...runners(calls),
     });

@@ -2594,7 +2594,8 @@ app.listen(PORT, '0.0.0.0', () => {
   startReassessmentScheduler();
   // ICT Phase 2 — autonomous auto-AI scheduler (Railway 5-min loop → Next cron).
   // Default OFF (ICT_AUTO_AI_SCHEDULER_ENABLED). Triggers per-user ICT auto-trading
-  // only on NY weekdays 02:00–11:00 ET; all execution gates still apply downstream.
+  // only on NY weekdays: study/scans begin at 02:00 ET, entries run 02:30–10:00 ET;
+  // all execution gates still apply downstream.
   startAutoAiScheduler();
   console.log(`OANDA env:    ${process.env.OANDA_ENV || 'practice'}`);
   console.log(`Auto-trade:   ${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}`);

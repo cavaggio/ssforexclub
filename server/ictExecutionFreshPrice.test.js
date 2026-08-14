@@ -42,6 +42,16 @@ function fakeAnalysis() {
     freshImpulse: true,
     triggerAgeBars: 0,
     minimumRR: 1.5,
+    entryAuthorization: {
+      ready: true,
+      mode: 'initial_reversal_mss',
+      cycleId: 'GBP_JPY:2026-06-04:bullish:initial',
+      parentCycleId: 'GBP_JPY:2026-06-04:bullish',
+    },
+    marketMakerModel: {
+      studyReady: true,
+      stage: 'DISTRIBUTION_ACTIVE',
+    },
     h1Transition: {
       ready: true,
       transitionId: 'bullish:2026-06-04T15:00:00Z',

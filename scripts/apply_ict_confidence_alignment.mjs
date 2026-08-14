@@ -29,6 +29,8 @@ function insertAfter(text, anchor, addition, label) {
 
 // ── Scanner / signal engine ───────────────────────────────────────────────────
 let engine = fs.readFileSync(ENGINE, 'utf8');
+const centralMarketMakerModel = engine.includes('advanceIctMarketMakerCycle({') &&
+  engine.includes('marketMakerResolution.entryAuthorization');
 engine = insertAfter(
   engine,
   "import { classifyIctStrategy, computeAdaptiveIctStop } from './ictPolicy.js';\n",
@@ -164,22 +166,25 @@ const confidenceBlock = `  const labelCount = [powerOf3?.phase === 'Distribution
   }
   void pendingSweepDir; // Minimum R:R is already constructed into setup.target1.
 `;
-engine = replaceRequired(
-  engine,
-  /  const labelCount = \[powerOf3\?\.phase === 'Distribution',[\s\S]*?  void pendingSweepDir; \/\/ Minimum R:R is already constructed into setup\.target1\.\n/,
-  confidenceBlock,
-  'target-hit decision block',
-);
+if (!centralMarketMakerModel) {
+  engine = replaceRequired(
+    engine,
+    /  const labelCount = \[powerOf3\?\.phase === 'Distribution',[\s\S]*?  void pendingSweepDir; \/\/ Minimum R:R is already constructed into setup\.target1\.\n/,
+    confidenceBlock,
+    'target-hit decision block',
+  );
+}
 engine = engine.replace(
   "  // Timing grade.\n  const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });\n",
   "  // Timing was calculated before qualification so stale/late entries cannot be promoted.\n",
 );
-engine = replaceRequired(
-  engine,
-  `    atrPips,
+if (!centralMarketMakerModel) {
+  engine = replaceRequired(
+    engine,
+    `    atrPips,
     riskModel: setup?.ok ? setup.riskModel ?? null : null,
     confidence,`,
-  `    atrPips,
+    `    atrPips,
     riskModel: setup?.ok ? setup.riskModel ?? null : null,
     confidence,
     targetHitConfidence: confidence,
@@ -202,8 +207,9 @@ engine = replaceRequired(
     entryZoneLow: setup?.ok ? setup.entryZoneLow ?? null : null,
     entryZoneHigh: setup?.ok ? setup.entryZoneHigh ?? null : null,
     targetAdjustedToMinRR: Boolean(setup?.targetAdjustedToMinRR),`,
-  'target confidence response metadata',
-);
+    'target confidence response metadata',
+  );
+}
 fs.writeFileSync(ENGINE, engine);
 
 // ── Final pre-fill execution confirmation ─────────────────────────────────────

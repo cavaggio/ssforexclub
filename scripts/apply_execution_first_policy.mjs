@@ -33,17 +33,17 @@ patchFile(
     let out = source;
     out = out.replace(
       /PPR may submit new orders from 03:00 ET, ICT from\n \* 05:00 ET, and V3 retains its existing 02:15 ET entry start\./,
-      'V3, PPR, and ICT may all submit new orders from 02:15 ET. The scanner starts at 02:00 ET so every engine can warm its watch state before execution.',
+      'V3, PPR, and ICT may all submit new orders from 02:30 ET. The 02:00–02:29 ET period is reserved for market study and watch-state preparation.',
     );
-    out = out.replace(/ppr: Object\.freeze\(\{\n\s*startMin: 180,/, 'ppr: Object.freeze({\n    startMin: 135,');
-    out = out.replace(/ict: Object\.freeze\(\{\n\s*startMin: 300,/, 'ict: Object.freeze({\n    startMin: 135,');
+    out = out.replace(/(v3|ppr|ict): Object\.freeze\(\{\n\s*startMin: (?:135|180|300),/g, '$1: Object.freeze({\n    startMin: 150,');
     out = out.replace(
       "  const start = normalized === 'ict' ? '05:00' : normalized === 'ppr' ? '03:00' : '02:15';",
-      "  const start = '02:15';",
+      "  const start = '02:30';",
     );
+    out = out.replace("  const start = '02:15';", "  const start = '02:30';");
     return out;
   },
-  ["ppr: Object.freeze({\n    startMin: 135,", "ict: Object.freeze({\n    startMin: 135,", "const start = '02:15';"],
+  ["v3: Object.freeze({\n    startMin: 150,", "ppr: Object.freeze({\n    startMin: 150,", "ict: Object.freeze({\n    startMin: 150,", "const start = '02:30';"],
 );
 
 patchFile(
@@ -133,21 +133,21 @@ const ALL_ENGINE_ROUTE_MARKERS = [
   'for (const selectedEngine of selectedEngines)',
   'allEnginesActive=true',
   "executionMode: 'all_enabled_engines'",
-  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+  "executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday'",
 ];
 const ACCOUNT_SCOPED_ROUTE_MARKERS = [
   'const selectedEngines: AutoAiEngine[]',
   'for (const selectedEngine of selectedEngines)',
   'accountEngineIsolation=true',
   "executionMode: 'selected_engine_only'",
-  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+  "executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday'",
 ];
 const ROUTE_MARKERS = [
   'const selectedEngines: AutoAiEngine[]',
   'for (const selectedEngine of selectedEngines)',
   ['allEnginesActive=true', 'accountEngineIsolation=true'],
   ["executionMode: 'all_enabled_engines'", "executionMode: 'selected_engine_only'"],
-  "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday'",
+  "executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday'",
 ];
 
 patchFile(
@@ -181,7 +181,11 @@ patchFile(
     out = out.replaceAll("'selected_engine_only'", "'all_enabled_engines'");
     out = out.replace(
       "executionWindow: 'V3 02:15, PPR 03:00, ICT 05:00 through 10:00 America/New_York, Monday-Friday',",
+      "executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday',",
+    );
+    out = out.replace(
       "executionWindow: 'V3/PPR/ICT 02:15-10:00 America/New_York, Monday-Friday',",
+      "executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday',",
     );
     return out;
   },

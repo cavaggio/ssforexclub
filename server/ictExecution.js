@@ -45,7 +45,7 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { estimateHoldMinutes } from './ictLifecycleEngine.js';
 import { applyBoundedIctStopWidening } from './ictPolicy.js';
 import { repriceIctTargetHitConfidence } from './ictTargetConfidence.js';
-import { resolveIctEntryAuthorization } from './ictContinuationEntry.js';
+import { loadIctMarketMakerContext, persistIctMarketMakerCycle } from './ictMarketMakerState.js';
 import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';
 import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
 import { recordTrade } from './oandaTradeHistory.js';
@@ -128,12 +128,7 @@ function blocked(reason, extra = {}) {
 }
 
 export function ictEntryCycleFingerprint({ analysis, accountId, pair, direction }) {
-  const authorization = analysis?.entryAuthorization?.ready === true && analysis?.entryAuthorization?.cycleId
-    ? analysis.entryAuthorization
-    : resolveIctEntryAuthorization({
-      h1Transition: analysis?.h1Transition,
-      continuationBreakout: analysis?.continuationBreakout,
-    });
+  const authorization = analysis?.entryAuthorization || {};
   const cycleId = String(authorization?.cycleId || '');
   if (!cycleId) return null;
   return ['ict-entry-cycle', accountId || 'default', pair, direction, cycleId].join('|');
@@ -153,7 +148,17 @@ async function defaultGetAnalysis(pair, { client, now }) {
   ).catch(() => [])));
   const candles = {};
   ICT_TF.forEach(([k], i) => { candles[k] = sets[i]; });
-  return analyzeICTPair({ pair, candles, peers: {}, now });
+  const marketMakerContext = await loadIctMarketMakerContext({ client, pair, now });
+  const analysis = analyzeICTPair({ pair, candles, peers: {}, now, marketMakerContext });
+  if (analysis.marketMakerModel?.changed === true && analysis.marketMakerModel?.cycle) {
+    await persistIctMarketMakerCycle({
+      client,
+      pair,
+      context: marketMakerContext,
+      cycle: analysis.marketMakerModel.cycle,
+    });
+  }
+  return analysis;
 }
 
 export async function executeIctTrade(params = {}, {
@@ -303,14 +308,15 @@ export async function executeIctTrade(params = {}, {
   if (!(analysis.confidence >= config.minConfidence)) {
     return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
   }
-  const entryAuthorization = analysis?.entryAuthorization?.ready === true && analysis?.entryAuthorization?.cycleId
-    ? analysis.entryAuthorization
-    : resolveIctEntryAuthorization({
-      h1Transition: analysis?.h1Transition,
-      continuationBreakout: analysis?.continuationBreakout,
-    });
+  const entryAuthorization = analysis?.entryAuthorization || {};
   if (!entryAuthorization.ready || !entryAuthorization.cycleId) {
-    return blocked(`ICT entry-authorization gate failed: ${entryAuthorization.reason || 'no fresh H1 transition or M5 continuation breakout'}.`);
+    return blocked(`ICT central market-maker authorization failed: ${entryAuthorization.reason || 'the persistent reversal/continuation cycle is not ready'}.`);
+  }
+  if (
+    analysis?.marketMakerModel?.studyReady !== true ||
+    analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE'
+  ) {
+    return blocked('ICT execution requires a current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle.');
   }
   if (analysis?.entryTimeframe !== '5M' || analysis?.entryCandle?.triggerReady !== true) {
     return blocked('ICT entry cycle is ready, but execution is not authorized by a fresh 5M entry setup.');

@@ -111,6 +111,124 @@ export function detectFVGs({ candles, pair, timeframe = 'M15', max = 4 }) {
   return out;
 }
 
+// ─── 2b. Inverse Fair Value Gap ─────────────────────────────────────────────
+/**
+ * An iFVG confirms that an opposing imbalance has failed. For a bullish
+ * inversion, a completed candle must close above a previously bearish FVG;
+ * bearish inversion is the mirror image. The crossing close must be one of the
+ * latest two bars so an old inversion cannot authorize a new order.
+ */
+export function detectInverseFVG({ candles, pair, direction, lookback = 24 }) {
+  const blank = {
+    confirmed: false, direction: null, sourceType: null,
+    high: null, low: null, brokenLevel: null, candleIndex: null, time: null,
+  };
+  const list = Array.isArray(candles) ? candles : [];
+  const wanted = String(direction || '').toLowerCase();
+  if (!['bullish', 'bearish'].includes(wanted) || list.length < 6) return blank;
+
+  const start = Math.max(2, list.length - Math.max(6, Number(lookback) || 24));
+  const latestCrossIndex = list.length - 1;
+  for (let gapIndex = latestCrossIndex - 1; gapIndex >= start; gapIndex -= 1) {
+    const first = list[gapIndex - 2];
+    const third = list[gapIndex];
+    if (!first || !third) continue;
+
+    let sourceType = null;
+    let low = null;
+    let high = null;
+    if (first.low > third.high) {
+      sourceType = 'bearish';
+      low = third.high;
+      high = first.low;
+    } else if (first.high < third.low) {
+      sourceType = 'bullish';
+      low = first.high;
+      high = third.low;
+    }
+    if (!sourceType || sourceType === wanted) continue;
+
+    const brokenLevel = wanted === 'bullish' ? high : low;
+    const crossStart = Math.max(gapIndex + 1, list.length - 2);
+    for (let candleIndex = crossStart; candleIndex <= latestCrossIndex; candleIndex += 1) {
+      const candle = list[candleIndex];
+      const prior = list[candleIndex - 1];
+      if (!candle || candle.complete === false || !prior) continue;
+      const crossed = wanted === 'bullish'
+        ? candle.close > brokenLevel && prior.close <= brokenLevel && candle.close > candle.open
+        : candle.close < brokenLevel && prior.close >= brokenLevel && candle.close < candle.open;
+      if (!crossed) continue;
+      return {
+        confirmed: true,
+        direction: wanted,
+        sourceType,
+        high: roundPrice(high, pair),
+        low: roundPrice(low, pair),
+        brokenLevel: roundPrice(brokenLevel, pair),
+        candleIndex,
+        time: candle.time ?? null,
+      };
+    }
+  }
+  return blank;
+}
+
+// ─── 2c. Change in State of Delivery ────────────────────────────────────────
+/**
+ * CISD is deliberately narrower than a generic engulfing candle. The latest
+ * completed candle must close through the body-open boundary of the immediately
+ * preceding run of opposing candles, showing that the prior delivery sequence
+ * no longer controls price.
+ */
+export function detectCISD({ candles, pair, direction, lookback = 8 }) {
+  const blank = {
+    confirmed: false, direction: null, brokenLevel: null,
+    sequenceStartIndex: null, sequenceEndIndex: null, candleIndex: null, time: null,
+  };
+  const list = Array.isArray(candles) ? candles : [];
+  const wanted = String(direction || '').toLowerCase();
+  if (!['bullish', 'bearish'].includes(wanted) || list.length < 4) return blank;
+
+  const candleIndex = list.length - 1;
+  const latest = list[candleIndex];
+  if (!latest || latest.complete === false) return blank;
+  const latestAligned = wanted === 'bullish' ? latest.close > latest.open : latest.close < latest.open;
+  if (!latestAligned) return blank;
+
+  const opposing = (candle) => wanted === 'bullish'
+    ? candle.close < candle.open
+    : candle.close > candle.open;
+  let sequenceEndIndex = candleIndex - 1;
+  while (sequenceEndIndex >= 0 && !opposing(list[sequenceEndIndex])) sequenceEndIndex -= 1;
+  if (sequenceEndIndex < 1 || candleIndex - sequenceEndIndex > 2) return blank;
+
+  let sequenceStartIndex = sequenceEndIndex;
+  const floor = Math.max(0, sequenceEndIndex - Math.max(2, Number(lookback) || 8) + 1);
+  while (sequenceStartIndex - 1 >= floor && opposing(list[sequenceStartIndex - 1])) {
+    sequenceStartIndex -= 1;
+  }
+  const sequence = list.slice(sequenceStartIndex, sequenceEndIndex + 1);
+  if (!sequence.length) return blank;
+  const brokenLevel = wanted === 'bullish'
+    ? Math.max(...sequence.map((candle) => candle.open))
+    : Math.min(...sequence.map((candle) => candle.open));
+  const priorClose = Number(list[candleIndex - 1]?.close);
+  const confirmed = wanted === 'bullish'
+    ? latest.close > brokenLevel && priorClose <= brokenLevel
+    : latest.close < brokenLevel && priorClose >= brokenLevel;
+  if (!confirmed) return blank;
+
+  return {
+    confirmed: true,
+    direction: wanted,
+    brokenLevel: roundPrice(brokenLevel, pair),
+    sequenceStartIndex,
+    sequenceEndIndex,
+    candleIndex,
+    time: latest.time ?? null,
+  };
+}
+
 // ─── 3. Displacement ─────────────────────────────────────────────────────────
 export function detectDisplacement({ candles, pair, lookback = 20 }) {
   const blank = { direction: null, candleIndex: null, displacementScore: 0, createdFVG: false };

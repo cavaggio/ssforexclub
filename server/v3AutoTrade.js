@@ -120,7 +120,7 @@ export async function runAutoV3ForUser({
   }
 
   if (executionAllowed === false) {
-    const reason = executionBlockedReason || 'scan_only_until_02:15_ET_no_new_orders';
+    const reason = executionBlockedReason || 'scan_only_until_02:30_ET_no_new_orders';
     const skipped = qualified.map((signal) => ({
       pair: signal.pair,
       direction: signal.direction,
