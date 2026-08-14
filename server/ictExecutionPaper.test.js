@@ -82,7 +82,7 @@ test('closing a trade cannot reopen the same late H1 transition', async () => {
   // independent H1-cycle reservation must still reject the stale re-entry.
   const reopened = await executeIctTrade(validParams(), deps);
   assert.equal(reopened.blocked, true);
-  assert.match(reopened.reason, /Hourly re-entry guard rejected/i);
+  assert.match(reopened.reason, /ICT entry-cycle guard rejected/i);
   assert.equal(client.calls.length, 1);
 });
 
