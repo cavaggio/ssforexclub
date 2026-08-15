@@ -28,6 +28,7 @@ function text(value, fallback = '') {
 }
 
 function numberOrNull(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -104,6 +105,12 @@ export function normalizePprScan(rawValue) {
   const watchCandidates = normalizePprArray(raw.watchCandidates, 'near');
   const rejected = normalizePprArray(raw.rejected, 'rejected');
   const meta = object(raw.meta);
+  const qualifiedCount = qualified.length;
+  const watchCount = watchCandidates.length;
+  const rejectedCount = rejected.length;
+  const accountedFor = qualifiedCount + watchCount + rejectedCount;
+  const pairsScanned = numberOrNull(meta.pairsScanned) ?? accountedFor;
+  const countInvariantOk = pairsScanned === accountedFor;
 
   return {
     engine: 'ppr',
@@ -121,7 +128,14 @@ export function normalizePprScan(rawValue) {
       ...meta,
       scanner: 'ppr_independent',
       calculationSource: 'independent_ppr_raw_market_data',
-      pairsScanned: numberOrNull(meta.pairsScanned) ?? qualified.length + watchCandidates.length + rejected.length,
+      pairsScanned,
+      qualifiedCount,
+      watchCount,
+      rejectedCount,
+      accountedFor,
+      countInvariantOk,
+      minConfidence: numberOrNull(meta.minConfidence) ?? 75,
+      minRR: numberOrNull(meta.minRR) ?? 1.5,
       managementCutoffEt: text(meta.managementCutoffEt, '10:00'),
       afterCutoff: text(meta.afterCutoff, 'manual_only'),
       legacyScannerUsed: false,
@@ -142,7 +156,7 @@ function normalizeIctItem(value, thresholds) {
       : null;
   const confidence = numberOrNull(item.confidence);
   const rr = numberOrNull(item.rr ?? item.riskReward ?? item.expectedRR);
-  const minConfidence = numberOrNull(thresholds?.minConfidence) ?? 85;
+  const minConfidence = numberOrNull(thresholds?.minConfidence) ?? 75;
   const minRR = numberOrNull(thresholds?.minRR) ?? 1.5;
   const rejectionReasons = Array.isArray(item.rejectionReasons)
     ? item.rejectionReasons.map((reason) => text(reason)).filter(Boolean)
@@ -179,7 +193,7 @@ export function normalizeIctScan(rawValue) {
   const raw = object(rawValue);
   const meta = object(raw.meta);
   const executionThresholds = {
-    minConfidence: numberOrNull(meta.executionMinConfidence ?? meta.minConfidence) ?? 85,
+    minConfidence: numberOrNull(meta.executionMinConfidence ?? meta.minConfidence) ?? 75,
     minRR: numberOrNull(meta.executionMinRR ?? meta.minRR) ?? 1.5,
   };
   const analyses = Array.isArray(raw.analyses)

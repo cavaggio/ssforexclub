@@ -140,7 +140,7 @@ export function ictExecConfig() {
     mode: ICT_MODE,
     autoTradeEnabled: String(process.env.ICT_AUTO_TRADE_ENABLED || 'false').toLowerCase() === 'true',
     // Operational ICT qualification floor. Entry-timing gates remain mandatory.
-    minConfidence: 80,
+    minConfidence: 75,
     minRR: configuredIctMinRR(),
     maxRiskPercent: parseFloat(process.env.ICT_MAX_RISK_PERCENT || '1.4'),
     signalTtlSec: parseFloat(process.env.ICT_SIGNAL_TTL_SEC || '300'),

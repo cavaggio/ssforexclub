@@ -13,12 +13,14 @@ function replaceRequired(source, before, after, label) {
 function patchRuntimeStart(source) {
   const after = source
     .replaceAll('ICT_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
-    .replaceAll('Math.max(93', 'Math.max(80')
-    .replaceAll("'93'", "'80'");
+    .replaceAll('Math.max(93', 'Math.max(75')
+    .replaceAll('Math.max(80', 'Math.max(75')
+    .replaceAll("'93'", "'75'")
+    .replaceAll("'80'", "'75'");
 
   const required = [
-    'process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80,',
-    "Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80'))",
+    'process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(75,',
+    "Math.max(75, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '75'))",
   ];
   const missing = required.filter((marker) => !after.includes(marker));
   if (missing.length) {
@@ -33,15 +35,15 @@ function patchRuntimeStart(source) {
 function patchEngine(source) {
   let out = source;
   out = out.replace(
-    "    // Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80')) is retained as a build-alignment marker.\n",
+    "    // Math.max(75, parseFloat(process.env.ICT_MIN_CONFIDENCE || '75')) is retained as a build-alignment marker.\n",
     "    // Operational ICT qualification floor. Use the new execution-specific variable\n" +
       "    // only when an intentionally stricter floor is required.\n",
   );
-  if (!out.includes('    minConfidence: 80,')) {
+  if (!out.includes('    minConfidence: 75,')) {
     out = replaceRequired(
       out,
       "    minConfidence: Math.max(93, parseFloat(process.env.ICT_MIN_CONFIDENCE || '93')),",
-      "    minConfidence: Math.max(80, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '80')),",
+      "    minConfidence: Math.max(75, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '75')),",
       'ICT scanner confidence floor',
     );
   }
@@ -52,11 +54,12 @@ function patchAutoTrade(source) {
   let out = source;
   out = out.replace(
     /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )93(, minRR = 1\.5\))?/,
-    (_, prefix, minRrSuffix = '') => `${prefix}80${minRrSuffix}`,
+    (_, prefix, minRrSuffix = '') => `${prefix}75${minRrSuffix}`,
   );
-  out = out.replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5');
-  if (!out.includes('minConfidence = 80')) {
-    throw new Error('[ICT_RUNTIME_GATE_FIX] ICT Auto AI watch-state floor was not normalized to 80%');
+  out = out.replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 75 && rr >= 1.5');
+  out = out.replaceAll('confidence >= 80 && rr >= 1.5', 'confidence >= 75 && rr >= 1.5');
+  if (!out.includes('minConfidence = 75')) {
+    throw new Error('[ICT_RUNTIME_GATE_FIX] ICT Auto AI watch-state floor was not normalized to 75%');
   }
   if (!out.includes('confidence >= cfg.minConfidence') || !out.includes('rr >= cfg.minRR')) {
     throw new Error('[ICT_RUNTIME_GATE_FIX] ICT Auto AI qualification is not using the shared execution config');
@@ -83,17 +86,17 @@ function patchExecution(source) {
   while (out.split(executionTargetImport).length - 1 > 1) {
     out = out.replace(`\n${executionTargetImport}`, '');
   }
-  if (!out.includes('    minConfidence: 80,')) {
+  if (!out.includes('    minConfidence: 75,')) {
     out = replaceRequired(
       out,
       "    minConfidence: Math.max(93, Number(rawConfig?.minConfidence) || 93),",
-      "    minConfidence: Math.max(80, Number(rawConfig?.minConfidence) || 80),",
+      "    minConfidence: Math.max(75, Number(rawConfig?.minConfidence) || 75),",
       'ICT executor confidence floor',
     );
   }
   out = out.replace(
     '  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.',
-    '  // Auto execution uses the authoritative ICT floor (80 by default).',
+    '  // Auto execution uses the authoritative ICT floor (75 by default).',
   );
 
   // The final market-side entry is authoritative for risk sizing. These values

@@ -73,6 +73,34 @@ test('negative engine evidence reduces confidence but cannot exceed the cap', ()
   assert.equal(result.appliedAdjustment >= -3, true);
 });
 
+test('uses missed winners, late/poor scans, and applied-adjustment audits as bounded supplemental evidence', () => {
+  const result = computeEngineTradeAdjustment(ictCandidate, matureProfile({
+    pairSummary: { outcomes: 120, expectancy_r: 0 },
+    contextStats: [],
+    confirmationStats: [],
+    executionQuality: {},
+    signalQuality: {
+      outcomes: 140,
+      timing_outcomes: 80,
+      late_or_poor_rate: 50,
+      actionable_nonexecuted_outcomes: 60,
+      actionable_nonexecuted_expectancy_r: 0.38,
+      missed_winner_rate: 64,
+    },
+    adjustmentEffectiveness: {
+      adjusted_outcomes: 45,
+      adjustment_alignment_rate: 38,
+      adjusted_expectancy_r: -0.2,
+    },
+  }));
+
+  assert.equal(result.components.some((item) => item.name === 'market_scan_entry_timing'), true);
+  assert.equal(result.components.some((item) => item.name === 'market_scan_missed_opportunity'), true);
+  assert.equal(result.components.some((item) => item.name === 'applied_adjustment_effectiveness'), true);
+  assert.equal(Math.abs(result.appliedAdjustment) <= 3, true);
+  assert.equal(result.hardGatesPreserved, true);
+});
+
 test('combines market study and engine learning within a five-point total cap', () => {
   const result = applyBoundedConfidence({
     originalConfidence: 97,

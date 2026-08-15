@@ -84,29 +84,29 @@ import {
   );
   out = replaceRequired(
     out,
-    `      component_adjustments: engineResult.components,
-      reasons: engineResult.reasons,
-      hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
-      candidate_snapshot: compactCandidate(candidate),`,
-    `      component_adjustments: [
-        ...(Array.isArray(engineResult.components) ? engineResult.components : []),
-        {
-          name: 'current_entry_execution_quality',
-          qualityDimension: 'execution',
-          adjustment: qualitySeparation?.executionQuality?.currentCandidateAdjustment ?? 0,
-          reasons: qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? [],
-          advisoryOnly: true,
-        },
-      ],
-      reasons: [
-        ...(Array.isArray(engineResult.reasons) ? engineResult.reasons : []),
-        ...(qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? []).map((item) => item.reason),
-      ],
-      hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
-      candidate_snapshot: {
-        ...compactCandidate(candidate),
-        qualitySeparation,
-      },`,
+    `        component_adjustments: engineResult.components,
+        reasons: engineResult.reasons,
+        hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+        candidate_snapshot: compactCandidate(candidate),`,
+    `        component_adjustments: [
+          ...(Array.isArray(engineResult.components) ? engineResult.components : []),
+          {
+            name: 'current_entry_execution_quality',
+            qualityDimension: 'execution',
+            adjustment: qualitySeparation?.executionQuality?.currentCandidateAdjustment ?? 0,
+            reasons: qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? [],
+            advisoryOnly: true,
+          },
+        ],
+        reasons: [
+          ...(Array.isArray(engineResult.reasons) ? engineResult.reasons : []),
+          ...(qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? []).map((item) => item.reason),
+        ],
+        hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+        candidate_snapshot: {
+          ...compactCandidate(candidate),
+          qualitySeparation,
+        },`,
     'separated audit payload',
   );
   out = replaceRequired(

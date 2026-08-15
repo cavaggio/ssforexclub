@@ -160,7 +160,10 @@ export function computeEngineTradeAdjustment(candidate = {}, profile = {}, optio
   const segmentMinimum = Math.max(5, finiteNumber(options.segmentMinimum, 12));
   const confirmationMinimum = Math.max(5, finiteNumber(options.confirmationMinimum, 15));
   const maxAdjustment = clamp(finiteNumber(options.maxAdjustment, 3), 0, 3);
-  const sampleSize = finiteNumber(profile.pairSummary?.outcomes ?? profile.sampleSize, 0);
+  const pairSampleSize = finiteNumber(profile.pairSummary?.outcomes ?? profile.sampleSize, 0);
+  const recentPairSampleSize = finiteNumber(profile.recentPairSummary7d?.outcomes, 0);
+  const accountSampleSize = finiteNumber(profile.accountSummary7d?.outcomes, 0);
+  const sampleSize = Math.max(pairSampleSize, recentPairSampleSize, accountSampleSize);
   const stage = stageFor(sampleSize, { displayMinimum, liveMinimum, fullWeightMinimum });
   const scopeMatches = Boolean(
     context.engine && profileEngine && context.engine === profileEngine &&
@@ -184,6 +187,33 @@ export function computeEngineTradeAdjustment(candidate = {}, profile = {}, optio
   }
 
   const components = [];
+  const accountSummary7d = profile.accountSummary7d || {};
+  const accountSignal = expectancySignal(accountSummary7d.expectancy_r, 0.25, 0.08);
+  if (accountSampleSize >= displayMinimum && accountSignal !== 0) {
+    const weight = evidenceWeight(accountSampleSize, displayMinimum, fullWeightMinimum);
+    components.push(component(
+      'engine_account_accuracy_7d',
+      accountSignal * 0.75 * weight,
+      accountSampleSize,
+      accountSummary7d.expectancy_r,
+      `${profileEngine.toUpperCase()} account-level accuracy over the latest seven trading days is ${accountSignal > 0 ? 'supportive' : 'adverse'}.`,
+      { tradingDays: finiteNumber(accountSummary7d.trading_days, 0), winRate: finiteNumber(accountSummary7d.win_rate, null) },
+    ));
+  }
+
+  const recentPairSummary7d = profile.recentPairSummary7d || {};
+  const recentPairSignal = expectancySignal(recentPairSummary7d.expectancy_r, 0.3, 0.1);
+  if (recentPairSampleSize >= displayMinimum && recentPairSignal !== 0) {
+    const weight = evidenceWeight(recentPairSampleSize, displayMinimum, fullWeightMinimum);
+    components.push(component(
+      'engine_pair_accuracy_7d',
+      recentPairSignal * 0.65 * weight,
+      recentPairSampleSize,
+      recentPairSummary7d.expectancy_r,
+      `${profileEngine.toUpperCase()} ${profilePair} recent seven-trading-day expectancy is ${recentPairSignal > 0 ? 'positive' : 'negative'}.`,
+    ));
+  }
+
   const pairSummary = profile.pairSummary || {};
   const pairSignal = expectancySignal(pairSummary.expectancy_r);
   if (sampleSize >= displayMinimum && pairSignal !== 0) {
@@ -261,6 +291,75 @@ export function computeEngineTradeAdjustment(candidate = {}, profile = {}, optio
     }
   }
 
+  // Broad market scans include qualified, watching, near-qualified, late and
+  // rejected observations. They are supplemental evidence only: actual broker
+  // P&L/R above remains primary and every hard execution gate stays intact.
+  const signalQuality = profile.signalQuality || {};
+  const signalOutcomes = finiteNumber(signalQuality.outcomes, 0);
+  const timingOutcomes = finiteNumber(signalQuality.timing_outcomes, 0);
+  const lateOrPoorRate = finiteNumber(signalQuality.late_or_poor_rate, 0);
+  if (timingOutcomes >= segmentMinimum && lateOrPoorRate >= 35) {
+    components.push(component(
+      'market_scan_entry_timing',
+      -0.5 * evidenceWeight(timingOutcomes, segmentMinimum, 80),
+      timingOutcomes,
+      null,
+      `${profileEngine.toUpperCase()} market scans show excessive late/poor entry timing on this pair.`,
+      { lateOrPoorRate },
+    ));
+  }
+
+  const missedOutcomes = finiteNumber(signalQuality.actionable_nonexecuted_outcomes, 0);
+  const missedExpectancy = finiteNumber(signalQuality.actionable_nonexecuted_expectancy_r, null);
+  const missedWinnerRate = finiteNumber(signalQuality.missed_winner_rate, 0);
+  if (missedOutcomes >= segmentMinimum && missedExpectancy != null) {
+    const missedSignal = expectancySignal(missedExpectancy, 0.3, 0.12);
+    if (missedSignal !== 0) {
+      const weight = evidenceWeight(missedOutcomes, segmentMinimum, 80);
+      const magnitude = missedSignal > 0 ? 0.45 : 0.35;
+      components.push(component(
+        'market_scan_missed_opportunity',
+        missedSignal * magnitude * weight,
+        missedOutcomes,
+        missedExpectancy,
+        missedSignal > 0
+          ? `${profileEngine.toUpperCase()} actionable non-executed scans contain repeat missed winners on this pair.`
+          : `${profileEngine.toUpperCase()} actionable non-executed scans have negative expectancy on this pair.`,
+        { missedWinnerRate, totalSignalOutcomes: signalOutcomes },
+      ));
+    }
+  }
+
+  // Audit effectiveness is deliberately a small trust modifier. It asks whether
+  // previously applied adjustments aligned with exact linked broker outcomes;
+  // it cannot independently qualify a trade or weaken a hard gate.
+  const effectiveness = profile.adjustmentEffectiveness || {};
+  const adjustedOutcomes = finiteNumber(effectiveness.adjusted_outcomes, 0);
+  const alignmentRate = finiteNumber(effectiveness.adjustment_alignment_rate, null);
+  const adjustedExpectancy = finiteNumber(effectiveness.adjusted_expectancy_r, null);
+  if (adjustedOutcomes >= confirmationMinimum && alignmentRate != null) {
+    const weight = evidenceWeight(adjustedOutcomes, confirmationMinimum, 80);
+    if (alignmentRate < 45 || (adjustedExpectancy != null && adjustedExpectancy <= -0.1)) {
+      components.push(component(
+        'applied_adjustment_effectiveness',
+        -0.5 * weight,
+        adjustedOutcomes,
+        adjustedExpectancy,
+        `${profileEngine.toUpperCase()} applied confidence adjustments have not aligned with actual broker outcomes.`,
+        { alignmentRate },
+      ));
+    } else if (alignmentRate >= 60 && adjustedExpectancy != null && adjustedExpectancy >= 0.1) {
+      components.push(component(
+        'applied_adjustment_effectiveness',
+        0.25 * weight,
+        adjustedOutcomes,
+        adjustedExpectancy,
+        `${profileEngine.toUpperCase()} applied confidence adjustments are aligning with actual broker outcomes.`,
+        { alignmentRate },
+      ));
+    }
+  }
+
   const rawAdjustment = roundQuarter(clamp(
     components.reduce((sum, item) => sum + finiteNumber(item.adjustment, 0), 0),
     -maxAdjustment,
@@ -287,6 +386,9 @@ export function computeEngineTradeAdjustment(candidate = {}, profile = {}, optio
     hardGatesPreserved: true,
     profileEngine,
     profilePair,
+    pairSampleSize,
+    recentPairSampleSize,
+    accountSampleSize,
     matchedContext,
   };
 }

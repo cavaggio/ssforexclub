@@ -5,6 +5,10 @@ import {
   applyBoundedConfidence,
   computeEngineTradeAdjustment,
 } from './engineTradeLearningCore.js';
+import {
+  assessCandidateExecutionQuality,
+  separateSignalAndExecutionLearning,
+} from './signalExecutionQuality.js';
 
 const profileCache = new Map();
 let supabaseClient;
@@ -65,7 +69,8 @@ function schemaMissing(error) {
   const message = String(error?.message || error || '');
   const code = String(error?.code || '');
   return ['42P01', '42703', 'PGRST205', 'PGRST204'].includes(code) ||
-    /engine_executed_|engine_learning_adjustment_audit/i.test(message);
+    /engine_executed_|engine_combined_pair_stats|engine_actual_account_accuracy_7d|engine_actual_account_pair_accuracy_7d|engine_learning_adjustment_audit/i.test(message) ||
+    /engine_signal_learning_stats|engine_learning_adjustment_effectiveness_stats/i.test(message);
 }
 
 async function loadRows(view, accountId, engine, pair) {
@@ -82,6 +87,18 @@ async function loadRows(view, accountId, engine, pair) {
   return Array.isArray(data) ? data : [];
 }
 
+async function loadAccountRows(view, accountId, engine) {
+  const supabase = db();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from(view)
+    .select('*')
+    .eq('broker_account_id', accountId)
+    .eq('engine', engine);
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
 export async function loadEngineTradeProfile({ client, engine, pair, force = false } = {}) {
   const normalizedEngine = normalizeEngine(engine);
   const normalizedPair = normalizePair(pair);
@@ -92,20 +109,30 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
   if (!force && cached && Date.now() - cached.loadedAt < cacheTtlMs()) return cached.profile;
 
   try {
-    const [pairRows, contextStats, confirmationStats, qualityRows] = await Promise.all([
-      loadRows('engine_executed_pair_stats', accountId, normalizedEngine, normalizedPair),
+    const [pairRows, recentPairRows, accountRows7d, contextStats, confirmationStats, qualityRows] = await Promise.all([
+      loadRows('engine_combined_pair_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_actual_account_pair_accuracy_7d', accountId, normalizedEngine, normalizedPair),
+      loadAccountRows('engine_actual_account_accuracy_7d', accountId, normalizedEngine),
       loadRows('engine_executed_context_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_executed_confirmation_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_execution_quality_stats', accountId, normalizedEngine, normalizedPair),
+    ]);
+    const [signalQualityRows, adjustmentEffectivenessRows] = await Promise.all([
+      loadRows('engine_signal_learning_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_learning_adjustment_effectiveness_stats', accountId, normalizedEngine, normalizedPair),
     ]);
     const profile = {
       accountId,
       engine: normalizedEngine,
       pair: normalizedPair,
       pairSummary: pairRows[0] || null,
+      recentPairSummary7d: recentPairRows[0] || null,
+      accountSummary7d: accountRows7d[0] || null,
       contextStats,
       confirmationStats,
       executionQuality: qualityRows[0] || null,
+      signalQuality: signalQualityRows[0] || null,
+      adjustmentEffectiveness: adjustmentEffectivenessRows[0] || null,
       loadedAt: new Date().toISOString(),
     };
     profileCache.set(key, { loadedAt: Date.now(), profile });
@@ -114,7 +141,7 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
     if (schemaMissing(error)) {
       if (!warnedMissingSchema) {
         warnedMissingSchema = true;
-        console.warn('[ENGINE_LEARNING] migration 20260730110000_engine_trade_learning.sql is required; market study remains active');
+        console.warn('[ENGINE_LEARNING] migrations 20260730110000, 20260730162000 and 20260815120000 are required; market study remains active');
       }
       return null;
     }
@@ -135,45 +162,67 @@ function compactCandidate(candidate = {}) {
     volatility: candidate.volatilityState || candidate.volatility || null,
     dailyDirection: candidate.dailyDirection || candidate.dailyStudyContext?.dayDirection || null,
     h4Direction: candidate.h4Direction || null,
+    executionQuality: assessCandidateExecutionQuality(candidate),
   };
 }
 
-async function persistAudit({ client, engine, pair, candidate, confidence, engineResult }) {
+async function persistAudit({ client, engine, pair, candidate, confidence, engineResult, qualitySeparation }) {
   const supabase = db();
-  if (!supabase) return;
+  if (!supabase) return null;
   try {
-    const { error } = await supabase.from('engine_learning_adjustment_audit').insert({
-      broker_account_id: accountIdOf(client),
-      environment: String(client?.environment || 'unknown'),
-      engine,
-      pair,
-      direction: String(candidate?.direction || candidate?.side || candidate?.signal || '') || null,
-      mode: engineResult.mode,
-      recommendation_stage: engineResult.stage,
-      sample_size: engineResult.sampleSize,
-      original_confidence: confidence.originalConfidence,
-      market_study_adjustment: confidence.marketStudyAdjustment,
-      engine_trade_adjustment: confidence.engineTradeAdjustment,
-      combined_adjustment: confidence.combinedAdjustment,
-      final_confidence: confidence.finalConfidence,
-      component_adjustments: engineResult.components,
-      reasons: engineResult.reasons,
-      hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
-      candidate_snapshot: compactCandidate(candidate),
-    });
+    const { data, error } = await supabase
+      .from('engine_learning_adjustment_audit')
+      .insert({
+        broker_account_id: accountIdOf(client),
+        environment: String(client?.environment || 'unknown'),
+        engine,
+        pair,
+        direction: String(candidate?.direction || candidate?.side || candidate?.signal || '') || null,
+        mode: engineResult.mode,
+        recommendation_stage: engineResult.stage,
+        sample_size: engineResult.sampleSize,
+        original_confidence: confidence.originalConfidence,
+        market_study_adjustment: confidence.marketStudyAdjustment,
+        engine_trade_adjustment: confidence.engineTradeAdjustment,
+        combined_adjustment: confidence.combinedAdjustment,
+        final_confidence: confidence.finalConfidence,
+        component_adjustments: [
+          ...(Array.isArray(engineResult.components) ? engineResult.components : []),
+          {
+            name: 'current_entry_execution_quality',
+            qualityDimension: 'execution',
+            adjustment: qualitySeparation?.executionQuality?.currentCandidateAdjustment ?? 0,
+            reasons: qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? [],
+            advisoryOnly: true,
+          },
+        ],
+        reasons: [
+          ...(Array.isArray(engineResult.reasons) ? engineResult.reasons : []),
+          ...(qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? []).map((item) => item.reason),
+        ],
+        hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+        candidate_snapshot: {
+          ...compactCandidate(candidate),
+          qualitySeparation,
+        },
+      })
+      .select('id')
+      .maybeSingle();
     if (error && !schemaMissing(error)) throw error;
+    return data?.id ? String(data.id) : null;
   } catch (error) {
     if (!schemaMissing(error)) {
       console.warn(`[ENGINE_LEARNING] audit write failed ${engine}/${pair}: ${error?.message || String(error)}`);
     }
+    return null;
   }
 }
 
 /**
  * Applies the existing Daily/4H market study first, then applies an independent
- * engine-specific adjustment learned only from that engine's completed executed
- * trades. The combined adjustment is capped at +/-5 confidence points and does
- * not bypass or alter any hard execution/risk gate.
+ * engine-specific adjustment learned from actual broker outcomes, broad signal
+ * outcomes, and exact applied-adjustment audits. The combined adjustment is
+ * capped at +/-5 confidence points and does not alter any hard execution gate.
  */
 export async function applyCombinedLearningCalibration(candidate = {}, { client, engine } = {}) {
   const normalizedEngine = normalizeEngine(engine || candidate.engine || candidate.strategy);
@@ -184,19 +233,42 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
   const studiedCandidate = await applyStoredStudyCalibration(candidate, { client, engine: normalizedEngine });
   const marketStudyAdjustment = finiteNumber(studiedCandidate?.dailyStudyContext?.adjustment, 0);
   const profile = await loadEngineTradeProfile({ client, engine: normalizedEngine, pair });
+  const learningOptions = optionsFromEnv();
   const engineResult = computeEngineTradeAdjustment(
     { ...studiedCandidate, engine: normalizedEngine, pair },
     profile || { engine: normalizedEngine, pair, pairSummary: { outcomes: 0 } },
-    optionsFromEnv(),
+    learningOptions,
   );
+  const qualitySeparation = separateSignalAndExecutionLearning({
+    engineResult,
+    candidate: { ...studiedCandidate, engine: normalizedEngine, pair },
+    options: learningOptions,
+  });
   const confidence = applyBoundedConfidence({
     originalConfidence,
     marketStudyAdjustment,
-    engineTradeAdjustment: engineResult.appliedAdjustment,
+    engineTradeAdjustment: qualitySeparation.signalQuality.appliedAdjustment,
     maxCombinedAdjustment: 5,
+  });
+  const executionConfidence = applyBoundedConfidence({
+    originalConfidence: confidence.finalConfidence,
+    marketStudyAdjustment: 0,
+    engineTradeAdjustment: qualitySeparation.executionQuality.appliedAdjustment,
+    maxCombinedAdjustment: 3,
+  });
+
+  const auditId = await persistAudit({
+    client,
+    engine: normalizedEngine,
+    pair,
+    candidate: studiedCandidate,
+    confidence,
+    engineResult,
+    qualitySeparation,
   });
 
   const learningContext = {
+    auditId,
     engine: normalizedEngine,
     pair,
     mode: engineResult.mode,
@@ -205,6 +277,11 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     marketStudyAdjustment: confidence.marketStudyAdjustment,
     engineTradeAdjustment: confidence.engineTradeAdjustment,
     rawEngineTradeAdjustment: engineResult.rawAdjustment,
+    signalQualityAdjustment: qualitySeparation.signalQuality.appliedAdjustment,
+    executionQualityAdjustment: qualitySeparation.executionQuality.appliedAdjustment,
+    signalQualityConfidence: confidence.finalConfidence,
+    executionQualityConfidence: executionConfidence.finalConfidence,
+    qualitySeparation,
     combinedAdjustment: confidence.combinedAdjustment,
     originalConfidence: confidence.originalConfidence,
     finalConfidence: confidence.finalConfidence,
@@ -218,6 +295,10 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     ...studiedCandidate,
     baseConfidence: originalConfidence,
     adjustedConfidence: confidence.finalConfidence,
+    signalQualityConfidence: confidence.finalConfidence,
+    executionQualityConfidence: executionConfidence.finalConfidence,
+    entryQualityAdjustment: qualitySeparation.executionQuality.appliedAdjustment,
+    executionQuality: qualitySeparation.executionQuality.currentCandidate,
     combinedLearningContext: learningContext,
   };
   if (confidence.finalConfidence != null) {
@@ -225,19 +306,9 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     if (finiteNumber(studiedCandidate.tpHitConfidence, null) != null) {
       calibrated.tpHitConfidence = confidence.finalConfidence;
     }
-    if (finiteNumber(studiedCandidate.entryQualityConfidence, null) != null) {
-      calibrated.entryQualityConfidence = confidence.finalConfidence;
-    }
+    calibrated.entryQualityConfidence = executionConfidence.finalConfidence;
   }
 
-  await persistAudit({
-    client,
-    engine: normalizedEngine,
-    pair,
-    candidate: studiedCandidate,
-    confidence,
-    engineResult,
-  });
   return calibrated;
 }
 

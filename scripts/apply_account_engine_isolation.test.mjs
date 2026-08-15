@@ -31,6 +31,13 @@ test('generated runtime routes enforce one configured engine per account', () =>
   assert.doesNotMatch(route, /executionMode: 'all_enabled_engines'/);
 });
 
+test('account-level learning query remains compatible with actual broker accuracy view', () => {
+  const learning = source('server/engineTradeLearning.js');
+  const accountLoader = learning.match(/async function loadAccountRows[\s\S]*?\n}/)?.[0] ?? '';
+  assert.match(accountLoader, /broker_account_id/);
+  assert.doesNotMatch(accountLoader, /horizon_minutes/);
+});
+
 test('ICT scan includes seven approved instruments while execution remains limited to four FX pairs', () => {
   const watchlist = source('server/ictWatchlist.js');
   const auto = source('server/ictAutoTrade.js');

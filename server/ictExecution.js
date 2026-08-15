@@ -176,7 +176,7 @@ export async function executeIctTrade(params = {}, {
   const rawConfig = cfg || ictExecConfig();
   const config = {
     ...rawConfig,
-    minConfidence: 80,
+    minConfidence: 75,
   };
   const { pair, direction, ictSignalId } = params;
   const normalizedPair = String(pair || '').trim().toUpperCase();
@@ -796,6 +796,7 @@ export async function executeIctTrade(params = {}, {
     tradeId, fillPrice, units, pair, direction,
     stopLoss, takeProfit: targetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
+    learningAuditId: analysis.combinedLearningContext?.auditId ?? null,
     holdMinutes,
     entryConfidence: analysis.targetHitConfidence ?? analysis.confidence,
     entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? null,
@@ -879,7 +880,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 80) return "SCALP";
+  if (rr >= 1.5 && confidence >= 75) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

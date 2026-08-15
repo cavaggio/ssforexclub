@@ -181,9 +181,19 @@ export async function POST(req: Request) {
     const selectedEngines: AutoAiEngine[] = scanMode === 'daily_study' && engineFilter
       ? [engineFilter]
       : engineFilter
-        ? [engineFilter]
-        : [...AUTO_AI_ENGINES];
-    const selectedEngine = selectedEngines[0] ?? configuredEngine;
+        ? engineFilter === configuredEngine ? [configuredEngine] : []
+        : [configuredEngine];
+    if (!selectedEngines.length) {
+      results.push({
+        user: row.user_id,
+        configuredEngine,
+        requestedEngine: engineFilter,
+        skipped: 'engine_scope_mismatch',
+        reason: 'Targeted engine request does not match this account configured Auto AI engine.',
+      });
+      continue;
+    }
+    const selectedEngine = selectedEngines[0];
     enabledEngines.add(selectedEngine);
 
     try {
@@ -227,6 +237,12 @@ export async function POST(req: Request) {
         const payload = (result.data ?? {}) as Record<string, any>;
         const accounting = scanAccounting(payload);
         const executedList = Array.isArray(payload.executed) ? payload.executed : [];
+        const skippedList = Array.isArray(payload.skipped) ? payload.skipped : [];
+        const analysesByPair = new Map<string, Record<string, any>>(
+          (Array.isArray(payload.results) ? payload.results : [])
+            .filter((item: any) => typeof item?.pair === 'string')
+            .map((item: any) => [String(item.pair).toUpperCase(), item]),
+        );
         const state = watchStates[selectedEngine];
         const learning = await recordSignalLearningCycle({
           userId: row.user_id,
@@ -257,7 +273,7 @@ export async function POST(req: Request) {
         }
 
         console.log(
-          `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] allEnginesActive=true ` +
+          `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] accountEngineIsolation=true ` +
           `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
           `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
           `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length} ` +
@@ -287,12 +303,12 @@ export async function POST(req: Request) {
             recommendation: typeof item?.expectedRR === 'number'
               ? `RR ${item.expectedRR}`
               : `${selectedEngine.toUpperCase()}_AUTO`,
-            reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during all-engine run ${runId}`,
+            reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during account-scoped engine run ${runId}`,
             rawPayload: {
               runId,
               scanMode,
               engine: selectedEngine,
-              executionMode: 'all_enabled_engines',
+              executionMode: 'selected_engine_only',
               accounting,
               learning: {
                 observationCapture: learning.ok,
@@ -304,11 +320,55 @@ export async function POST(req: Request) {
           });
         }
 
+        // Persist every scanner-qualified execution rejection. Historically only
+        // successful opens were logged, which made false hard-gate misses
+        // impossible to reconstruct after the scan response expired.
+        for (const item of skippedList) {
+          const pair = typeof item?.pair === 'string' ? String(item.pair).toUpperCase() : null;
+          const signal = pair ? analysesByPair.get(pair) ?? null : null;
+          const direction = item?.direction === 'long' || item?.direction === 'short'
+            ? item.direction
+            : signal?.signal === 'buy'
+              ? 'long'
+              : signal?.signal === 'sell'
+                ? 'short'
+                : null;
+          const reason = typeof item?.reason === 'string'
+            ? item.reason
+            : 'Qualified execution was skipped without a concrete reason.';
+
+          await logTradeEvent({
+            userId: row.user_id,
+            broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+            brokerAccountId: credentials.accountId,
+            environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+            eventType: 'error',
+            instrument: pair,
+            side: direction,
+            entryPrice: typeof signal?.entry === 'number' ? signal.entry : null,
+            sl: typeof signal?.stopLoss === 'number' ? signal.stopLoss : null,
+            tp: typeof signal?.target1 === 'number' ? signal.target1 : null,
+            confidence: typeof signal?.confidence === 'number' ? signal.confidence : null,
+            recommendation: `${selectedEngine.toUpperCase()} qualified execution rejected`,
+            reason,
+            rawPayload: {
+              executionSource: 'auto_ai_qualified_rejection',
+              runId,
+              scanMode,
+              engine: selectedEngine,
+              accounting,
+              rejection: item,
+              signal,
+            },
+            edge: signal ? edgeSnapshotFromSignal(signal) : null,
+          });
+        }
+
         results.push({
           user: row.user_id,
           selectedEngine,
           activeEnvironment: resolved.activeEnvironment,
-          executionMode: 'all_enabled_engines',
+          executionMode: 'selected_engine_only',
           accounting,
           executionAllowed: payload.executionAllowed === true,
           learning,
@@ -331,7 +391,7 @@ export async function POST(req: Request) {
   const aggregateLate = [...new Set(selectedStates.flatMap((state) => [...state.lateEntryPairs]))];
 
   console.log(
-    `[AUTO_AI][SUMMARY][runId=${runId}] allEnginesActive=true engineFilter=${engineFilter ?? 'none'} ` +
+    `[AUTO_AI][SUMMARY][runId=${runId}] accountEngineIsolation=true engineFilter=${engineFilter ?? 'none'} ` +
     `users=${results.length} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
     `rejected=${rejected} executed=${executed} skipped=${skipped} ` +
     `learningObservations=${learningObservations} learningOutcomes=${learningOutcomes}`,
@@ -354,7 +414,7 @@ export async function POST(req: Request) {
     skipped,
     learningObservations,
     learningOutcomes,
-    executionMode: 'all_enabled_engines',
+    executionMode: 'selected_engine_only',
     enabledEngines: [...enabledEngines],
     engineWatchStates,
     nearQualifiedPairs: aggregateNear,

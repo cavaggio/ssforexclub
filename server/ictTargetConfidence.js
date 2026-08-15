@@ -27,7 +27,7 @@ export function computeIctTargetHitConfidence({
   targetAdjusted = false,
   spreadPips = null,
   maxSpreadPips = 3.5,
-  minConfidence = 93,
+  minConfidence = 75,
 } = {}) {
   const confluence = clamp(finite(confluenceScore, 0));
   const age = finite(triggerAgeBars);
@@ -114,7 +114,7 @@ export function repriceIctTargetHitConfidence({
   executablePrice,
   spreadPips = null,
   maxSpreadPips = 3.5,
-  minConfidence = 93,
+  minConfidence = 75,
 } = {}) {
   const entry = finite(executablePrice);
   const stop = finite(analysis.stopLoss);

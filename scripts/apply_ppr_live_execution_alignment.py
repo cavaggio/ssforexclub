@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce PPR's 80% execution floor, practice/live readiness, and scan counts.
+"""Enforce PPR's 75% execution floor, practice/live readiness, and scan counts.
 
 The repository regenerates server source during pretest/prebuild/prestart. This
 idempotent pass runs after the PPR generator so deployment source cannot restore
@@ -25,7 +25,11 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 engine = ENGINE.read_text(encoding="utf-8")
 engine = engine.replace(
     "minConfidence: Math.max(0, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 85))),",
+    "minConfidence: 75,",
+)
+engine = engine.replace(
     "minConfidence: Math.max(80, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 80))),",
+    "minConfidence: 75,",
 )
 
 previous_readiness_helper = """
@@ -197,7 +201,7 @@ else:
     engine = replace_once(engine, base_return, new_return, "PPR scan count/readiness metadata")
 
 for marker in [
-    "PPR_MIN_CONFIDENCE', 80",
+    "minConfidence: 75",
     "export function pprExecutionReadiness",
     "practiceReady",
     "orderSubmissionReady",
@@ -222,8 +226,7 @@ trade = replace_once(
 
 floor_helper = """
 export function pprExecutionConfidenceFloor() {
-  const configured = Number(process.env.PPR_MIN_CONFIDENCE || 80);
-  return Math.max(80, Math.min(100, Number.isFinite(configured) ? configured : 80));
+  return HARD_SCALP_CONFIDENCE_FLOOR;
 }
 """
 trade = replace_once(
@@ -261,4 +264,4 @@ for marker in [
         raise RuntimeError(f"Shared executor PPR alignment incomplete: missing {marker}")
 
 TRADE.write_text(trade, encoding="utf-8")
-print("PPR execution aligned: 80% floor, practice/live readiness, and exact scan accounting")
+print("PPR execution aligned: 75% floor, practice/live readiness, and exact scan accounting")

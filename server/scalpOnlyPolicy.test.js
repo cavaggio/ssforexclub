@@ -9,11 +9,11 @@ import {
   scalpMinConfidence,
 } from './scalpOnlyPolicy.js';
 
-test('scalp confidence can never be configured below 85', () => {
+test('scalp confidence is exactly 75 even when stale environment values differ', () => {
   const before = process.env.FOREX_MIN_CONFIDENCE;
   process.env.FOREX_MIN_CONFIDENCE = '70';
-  assert.equal(HARD_SCALP_CONFIDENCE_FLOOR, 85);
-  assert.equal(scalpMinConfidence(), 85);
+  assert.equal(HARD_SCALP_CONFIDENCE_FLOOR, 75);
+  assert.equal(scalpMinConfidence(), 75);
   if (before == null) delete process.env.FOREX_MIN_CONFIDENCE;
   else process.env.FOREX_MIN_CONFIDENCE = before;
 });

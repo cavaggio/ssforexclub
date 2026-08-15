@@ -46,7 +46,16 @@ test('lifecycle row preserves originating account and engine instead of current 
       direction: 'long',
       opened_at: '2026-07-21T14:35:48.369Z',
       risk_usd: 500,
-      raw_payload: { engine: 'ict' },
+      raw_payload: {
+        engine: 'ict',
+        result: {
+          executed: [{
+            signal: {
+              combinedLearningContext: { auditId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          }],
+        },
+      },
     },
     trade: {
       id: '85',
@@ -69,6 +78,7 @@ test('lifecycle row preserves originating account and engine instead of current 
   assert.equal(row.broker_account_id, '101-001-39311050-001');
   assert.equal(row.engine, 'ict');
   assert.equal(row.broker_trade_id, '85');
+  assert.equal(row.learning_audit_id, '123e4567-e89b-42d3-a456-426614174000');
   assert.equal(row.pair, 'USD_CHF');
   assert.equal(row.result, 'win');
   assert.equal(row.realized_r, 1.5);

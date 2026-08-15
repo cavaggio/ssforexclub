@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Pin the central caps to their documented defaults (1% / 2% / 0.5% after loss / 85).
+// Pin the central caps to their documented defaults (1% / 2% / 0.5% after loss / 75).
 delete process.env.RISK_MAX_PER_TRADE_PERCENT;
 delete process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT;
 delete process.env.RISK_POST_LOSS_NEXT_TRADE_PERCENT;
@@ -29,12 +29,12 @@ const {
 
 const NOW = new Date('2026-06-10T15:00:00Z');
 
-test('defaults are 1% per trade, 2% daily drawdown, 0.5% post-loss, and 85 confidence', () => {
+test('defaults are 1% per trade, 2% daily drawdown, 0.5% post-loss, and 75 confidence', () => {
   const cfg = riskConfig();
   assert.equal(cfg.maxRiskPerTradePercent, 1);
   assert.equal(cfg.dailyMaxDrawdownPercent, 2);
   assert.equal(cfg.postLossRiskPercent, 0.5);
-  assert.equal(cfg.autoExecutionMinConfidence, 85);
+  assert.equal(cfg.autoExecutionMinConfidence, 75);
 });
 
 test('environment variables cannot raise risk above the hard policy', () => {
@@ -197,14 +197,14 @@ test('daily lock and pending 0.5% recovery sizing survive a process restart', as
   __setRiskPersistenceForTests(null);
 });
 
-test('confidence at 85 passes the auto-execution floor', () => {
-  assert.equal(checkAutoExecutionConfidence(85).passed, true);
+test('confidence at 75 passes the auto-execution floor', () => {
+  assert.equal(checkAutoExecutionConfidence(75).passed, true);
 });
 
-test('confidence below 85 fails the auto-execution floor', () => {
-  const result = checkAutoExecutionConfidence(84);
+test('confidence below 75 fails the auto-execution floor', () => {
+  const result = checkAutoExecutionConfidence(74);
   assert.equal(result.passed, false);
-  assert.match(result.reason, /floor 85%/);
+  assert.match(result.reason, /floor 75%/);
 });
 
 test('insufficient margin is blocked with the exact message', () => {
