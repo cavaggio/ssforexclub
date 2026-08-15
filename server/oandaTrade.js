@@ -61,10 +61,10 @@ import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifec
 // ─── Config from env ──────────────────────────────────────────────────────────
 const AUTO_TRADE_ENABLED    = process.env.FOREX_AUTO_TRADE_ENABLED === 'true';
 const MIN_SCORE             = parseInt(process.env.FOREX_MIN_SCORE     || '8',   10);
-const MIN_CONFIDENCE        = Math.max(HARD_SCALP_CONFIDENCE_FLOOR, parseFloat(process.env.FOREX_MIN_CONFIDENCE || '85'));
+const MIN_CONFIDENCE        = HARD_SCALP_CONFIDENCE_FLOOR;
 
 // High-edge Auto AI gate. R:R alone is not enough; Auto AI must have probability edge.
-const AUTO_AI_MIN_ENTRY_CONFIDENCE = parseFloat(process.env.AUTO_AI_MIN_ENTRY_CONFIDENCE || '85');
+const AUTO_AI_MIN_ENTRY_CONFIDENCE = HARD_SCALP_CONFIDENCE_FLOOR;
 const AUTO_AI_MIN_ALIGNMENT_SCORE  = parseFloat(process.env.AUTO_AI_MIN_ALIGNMENT_SCORE  || '70');
 const AUTO_AI_MIN_V3_SCORE         = parseFloat(process.env.AUTO_AI_MIN_V3_SCORE         || '70');
 const AUTO_AI_MIN_TP_PROBABILITY   = parseFloat(process.env.AUTO_AI_MIN_TP_PROBABILITY   || '0.60');
@@ -83,8 +83,7 @@ const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS      
 const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');
 
 export function pprExecutionConfidenceFloor() {
-  const configured = Number(process.env.PPR_MIN_CONFIDENCE || 80);
-  return Math.max(80, Math.min(100, Number.isFinite(configured) ? configured : 80));
+  return HARD_SCALP_CONFIDENCE_FLOOR;
 }
 
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
@@ -771,7 +770,7 @@ export async function executeTrade(signal, options = {}) {
   if (isExplicitSwingSignal(signal)) {
     return blocked('Scalp-only execution: swing trade signals are disabled.');
   }
-  // Auto execution confidence floor (≥90) — central, applies to autonomous runs.
+  // Shared 75% auto-execution confidence floor for ICT, PPR and V3.
   if (autoAi) {
     const confCheck = purePprExecution
       ? checkAutoExecutionConfidence(confidence, {
@@ -1987,7 +1986,7 @@ export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
 
-  if (rr >= 1.5 && confidence >= 85) return "SCALP";
+  if (rr >= 1.5 && confidence >= 75) return "SCALP";
   return "NONE";
 }
 // === END ACTIVE TRADE LOGIC PATCH ===

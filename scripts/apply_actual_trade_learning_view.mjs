@@ -26,12 +26,18 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
     .replace(
       'migration 20260730110000_engine_trade_learning.sql is required; market study remains active',
       'migrations 20260730110000 and 20260730162000 are required; market study remains active',
+    )
+    .replace(
+      'migrations 20260730110000 and 20260730162000 are required; market study remains active',
+      'migrations 20260730110000, 20260730162000 and 20260815120000 are required; market study remains active',
     );
 
   const required = [
     "loadRows('engine_combined_pair_stats'",
     "loadRows('engine_actual_account_pair_accuracy_7d'",
     "loadAccountRows('engine_actual_account_accuracy_7d'",
+    "loadRows('engine_signal_learning_stats'",
+    "loadRows('engine_learning_adjustment_effectiveness_stats'",
   ];
   const missing = required.filter((marker) => !after.includes(marker));
   if (missing.length) {
@@ -50,7 +56,7 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
 
   // This runs last in prestart, after the legacy generators and account-isolation
   // passes, so execution accuracy, its audit trail, exact scan reasons, and the
-  // approved 80% ICT threshold cannot be overwritten before scanning begins.
+  // approved 75% ICT threshold cannot be overwritten before scanning begins.
   const ictEnginePath = resolve(root, 'server/ictEngine.js');
   const ictExecutionPath = resolve(root, 'server/ictExecution.js');
   const serverIndexPath = resolve(root, 'server/index.js');
@@ -58,12 +64,12 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
     const engineSource = readFileSync(ictEnginePath, 'utf8');
     const executionSource = readFileSync(ictExecutionPath, 'utf8');
     const exactThresholdAlreadyApplied =
-      engineSource.includes('minConfidence: 80,') &&
-      executionSource.includes('minConfidence: 80,');
+      engineSource.includes('minConfidence: 75,') &&
+      executionSource.includes('minConfidence: 75,');
     if (!exactThresholdAlreadyApplied) {
       applyIctRuntimeGateFix(root);
     } else {
-      console.log('[ACTUAL_TRADE_LEARNING] exact ICT 80% runtime gate already applied');
+      console.log('[ACTUAL_TRADE_LEARNING] exact ICT 75% runtime gate already applied');
     }
   }
 

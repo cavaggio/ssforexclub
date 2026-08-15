@@ -5,7 +5,7 @@
 
 const watched = new Map();
 
-const MIN_CONFIDENCE = Number(process.env.RETRACE_WATCH_MIN_CONFIDENCE || 80);
+const MIN_CONFIDENCE = 75;
 const MIN_RR = Number(process.env.RETRACE_WATCH_MIN_RR || 1.5);
 const TTL_MS = Number(process.env.RETRACE_WATCH_TTL_MS || 45 * 60 * 1000);
 const MAX_WATCHED = Number(process.env.RETRACE_WATCH_MAX_PAIRS || 8);

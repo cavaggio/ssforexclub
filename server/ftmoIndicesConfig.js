@@ -30,7 +30,7 @@ export function ftmoIndicesConfig(env = process.env) {
     accountModel: String(env.FTMO_ACCOUNT_MODEL || 'two_step').trim().toLowerCase(),
     symbols: configuredFtmoIndexSymbols(env),
     primarySymbol: String(env.FTMO_INDICES_PRIMARY_SYMBOL || FTMO_INDEX_SYMBOLS.US500).trim(),
-    minConfidence: Math.max(80, number(env.FTMO_INDICES_MIN_CONFIDENCE, 88)),
+    minConfidence: 75,
     minRR: Math.max(1.5, number(env.FTMO_INDICES_MIN_RR, 1.5)),
     riskPercent: Math.min(0.75, Math.max(0.1, number(env.FTMO_INDICES_RISK_PERCENT, 0.5))),
     aPlusRiskPercent: Math.min(0.75, Math.max(0.1, number(env.FTMO_INDICES_A_PLUS_RISK_PERCENT, 0.75))),

@@ -15,7 +15,7 @@ import alpacaAssets from './alpacaAssets.js';
 import { runDiagnostics } from './oandaDiagnostics.js';
 import { getAccountSummary, getInstruments, getPricing, getCandles } from './oandaMarketData.js';
 import { V3_MODE } from './v3Engine.js';
-import { analyzeICTPairs, ICT_MODE } from './ictEngine.js';
+import { analyzeICTPairs, ICT_MODE, isIctExecutionEnabled } from './ictEngine.js';
 import { executeIctTrade } from './ictExecution.js';
 import { buildFtmoClient, validateFtmoCredentials } from './ftmoClient.js';
 import { runAutoAiForUser } from './ictAutoTrade.js';
@@ -27,6 +27,7 @@ import { executePprTrade } from './pprExecution.js';
 import { runV3DashboardScan } from './v3DashboardScan.js';
 import { isExecutableEnvironment } from './autoAiGating.js';
 import { getRiskStatus, resetDailyRisk } from './riskManager.js';
+import { deriveQualifiedManualRisk } from './manualExecutionRisk.js';
 import {
   executeTrade,
   closePosition,
@@ -2184,10 +2185,27 @@ app.post('/api/internal/oanda/ict/trade', async (req, res) => {
   assertClientMatchesRequest(client, req.body);
   logInternalCall('ICT_TRADE', req.body);
   try {
-    const { pair, direction, units, entry, stopLoss, targetProfit, ictSignalId } = req.body || {};
+    const {
+      pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
+      signalConfidence, signalRR, manualExecution, executionSource,
+    } = req.body || {};
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => executeIctTrade({ pair, direction, units, entry, stopLoss, targetProfit, ictSignalId }, { client }),
+      async () => {
+        const manualRisk = await deriveQualifiedManualRisk({ client });
+        req.body.targetRiskUSD = manualRisk.targetRiskUSD;
+        return executeIctTrade(
+          {
+            pair, direction, units, entry, stopLoss, targetProfit, ictSignalId,
+            signalConfidence, signalRR,
+            manualExecution: manualExecution === true,
+            // Qualified-button invariant: manualExecution: true when the request flag is true.
+            executionSource,
+            targetRiskUSD: manualRisk.targetRiskUSD,
+          },
+          { client },
+        );
+      },
     );
     console.log(
       `[INTERNAL ICT_TRADE] accountId=${maskAccountId(client.accountId)} ` +
@@ -2260,7 +2278,21 @@ app.post('/api/internal/oanda/auto', async (req, res) => {
   try {
     const result = await runUserScoped(
       { accountId: client.accountId, environment: client.environment },
-      () => runAutoForUser({ client, engine, runId: req.body?.runId, scanMode, pairs }),
+      async () => {
+        const manualExecution = engine === 'ppr' &&
+          String(req.body?.executionSource || '') === 'qualified_signal_button_ppr';
+        const manualRisk = manualExecution ? await deriveQualifiedManualRisk({ client }) : null;
+        if (manualRisk) req.body.targetRiskUSD = manualRisk.targetRiskUSD;
+        return runAutoForUser({
+          client,
+          engine,
+          runId: req.body?.runId,
+          scanMode,
+          pairs,
+          targetRiskUSD: manualRisk?.targetRiskUSD ?? null,
+          manualExecution,
+        });
+      },
     );
     res.json(result);
   } catch (err) {
@@ -2572,16 +2604,14 @@ app.listen(PORT, '0.0.0.0', () => {
   // Signal Stack V3 engine mode at boot — confirms FOREX_V3_ENGINE_MODE reached
   // THIS service/process. `off` ⇒ evaluateV3() never runs and every signal.v3 is null.
   console.log(`[V3] FOREX_V3_ENGINE_MODE=${process.env.FOREX_V3_ENGINE_MODE ?? '(unset)'} → resolved V3_MODE='${V3_MODE}' (${V3_MODE === 'off' ? 'V3 OFF — no v3 on signals' : 'V3 ON'})`);
-  // ICT engine is shadow-only analysis (never trades); 'off' disables the tab's data.
-  const ictExecutionEnabled =
-    process.env.ICT_ENGINE_MODE === 'live' &&
-    process.env.ICT_AUTO_TRADE_ENABLED === 'true';
+  // Use the scanner/executor's authoritative gate so boot diagnostics cannot disagree.
+  const ictExecutionEnabled = isIctExecutionEnabled();
 
   console.log(
     `[ICT] mode=${process.env.ICT_ENGINE_MODE || 'shadow'} ` +
     `autoTrade=${process.env.ICT_AUTO_TRADE_ENABLED === 'true'} ` +
     `executionEnabled=${ictExecutionEnabled} ` +
-    `minConfidence=${process.env.ICT_MIN_CONFIDENCE || 80} ` +
+    `minConfidence=75 ` +
     `minRR=${process.env.ICT_MIN_RR || 2.0} ` +
     `maxRiskPercent=${process.env.ICT_MAX_RISK_PERCENT || 1} ` +
     `signalTtlSec=${process.env.ICT_SIGNAL_TTL_SEC || 300}`
@@ -2600,7 +2630,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`OANDA env:    ${process.env.OANDA_ENV || 'practice'}`);
   console.log(`Auto-trade:   ${process.env.FOREX_AUTO_TRADE_ENABLED || 'false'}`);
   console.log(`Min score:    ${process.env.FOREX_MIN_SCORE || '15'}/20`);
-  console.log(`Min conf:     ${process.env.FOREX_MIN_CONFIDENCE || '85'}%`);
+  console.log('Min conf:     75%');
   console.log(`Max spread:   ${process.env.FOREX_MAX_SPREAD_PIPS || '2.0'} pips`);
 
   // Startup reconciliation — wipe any stale in-memory trade locks that no longer

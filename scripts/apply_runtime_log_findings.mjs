@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXACT_CONFIDENCE_LINE =
-  '  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(80, Math.min(80, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 80))));';
+  '  process.env.ICT_EXECUTION_MIN_CONFIDENCE = String(Math.max(75, Math.min(75, finiteNumber(process.env.ICT_EXECUTION_MIN_CONFIDENCE, 75))));';
 
 function replaceRequired(source, before, after, label) {
   if (source.includes(after)) return source;
@@ -23,8 +23,10 @@ export function patchRuntimeStartExactConfidence(source) {
   let out = source
     .replaceAll('ICT_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
     .replaceAll('ICT_EXECUTION_EXECUTION_MIN_CONFIDENCE', 'ICT_EXECUTION_MIN_CONFIDENCE')
-    .replaceAll('Math.max(93', 'Math.max(80')
-    .replaceAll("|| '93'", "|| '80'")
+    .replaceAll('Math.max(93', 'Math.max(75')
+    .replaceAll('Math.max(80', 'Math.max(75')
+    .replaceAll("|| '93'", "|| '75'")
+    .replaceAll("|| '80'", "|| '75'")
     .replace(/^  process\.env\.ICT_EXECUTION_MIN_CONFIDENCE[^\n]*\n?/gm, '');
 
   const functionMarker = 'function enforceRuntimeFloors() {\n';
@@ -41,31 +43,32 @@ export function patchExactIctConfidenceSource(source, kind) {
   let out = source;
   if (kind === 'engine') {
     out = out.replace(
-      /minConfidence:\s*Math\.max\(80,\s*parseFloat\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE \|\| '80'\)\),/,
-      'minConfidence: 80,',
+      /minConfidence:\s*Math\.max\((?:75|80),\s*parseFloat\(process\.env\.ICT_EXECUTION_MIN_CONFIDENCE \|\| '(?:75|80)'\)\),/,
+      'minConfidence: 75,',
     );
-    if (!out.includes('minConfidence: 80,')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT engine exact 80% marker missing');
+    if (!out.includes('minConfidence: 75,')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT engine exact 75% marker missing');
     return out;
   }
 
   if (kind === 'autoTrade') {
     out = out.replace(
       /((?:export\s+)?function buildIctWatchState\(analyses = \[\], minConfidence = )\d+(, minRR = 1\.5\))?/,
-      (_, prefix, suffix = '') => `${prefix}80${suffix}`,
+      (_, prefix, suffix = '') => `${prefix}75${suffix}`,
     );
     out = out
-      .replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5')
-      .replaceAll('confidence >= 85 && rr >= 1.5', 'confidence >= 80 && rr >= 1.5');
-    if (!out.includes('minConfidence = 80')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT Auto AI exact 80% marker missing');
+      .replaceAll('confidence >= 93 && rr >= 1.5', 'confidence >= 75 && rr >= 1.5')
+      .replaceAll('confidence >= 85 && rr >= 1.5', 'confidence >= 75 && rr >= 1.5')
+      .replaceAll('confidence >= 80 && rr >= 1.5', 'confidence >= 75 && rr >= 1.5');
+    if (!out.includes('minConfidence = 75')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT Auto AI exact 75% marker missing');
     return out;
   }
 
   if (kind === 'execution') {
     out = out.replace(
-      /minConfidence:\s*Math\.max\(80,\s*Number\(rawConfig\?\.minConfidence\) \|\| 80\),/,
-      'minConfidence: 80,',
+      /minConfidence:\s*Math\.max\((?:75|80),\s*Number\(rawConfig\?\.minConfidence\) \|\| (?:75|80)\),/,
+      'minConfidence: 75,',
     );
-    if (!out.includes('minConfidence: 80,')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT executor exact 80% marker missing');
+    if (!out.includes('minConfidence: 75,')) throw new Error('[RUNTIME_LOG_FINDINGS] ICT executor exact 75% marker missing');
     return out;
   }
 
@@ -199,7 +202,7 @@ function patchFile(root, relativePath, patcher) {
 }
 
 export function applyRuntimeLogFindings(root = DEFAULT_ROOT) {
-  process.env.ICT_EXECUTION_MIN_CONFIDENCE = '80';
+  process.env.ICT_EXECUTION_MIN_CONFIDENCE = '75';
 
   const changed = [];
   if (patchFile(root, 'scripts/runtime_execution_start.mjs', patchRuntimeStartExactConfidence)) changed.push('scripts/runtime_execution_start.mjs');
@@ -208,7 +211,7 @@ export function applyRuntimeLogFindings(root = DEFAULT_ROOT) {
   if (patchFile(root, 'server/ictExecution.js', (source) => patchExactIctConfidenceSource(source, 'execution'))) changed.push('server/ictExecution.js');
   if (patchFile(root, 'server/index.js', patchManualTargetRiskIndex)) changed.push('server/index.js');
 
-  console.log('[RUNTIME_LOG_FINDINGS] exact ICT confidence=80 and manual target-risk route verified');
+  console.log('[RUNTIME_LOG_FINDINGS] exact ICT confidence=75 and manual target-risk route verified');
   return changed;
 }
 

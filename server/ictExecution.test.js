@@ -8,7 +8,7 @@ process.env.FOREX_ALLOW_LIVE_EXECUTION = 'true';
 const { executeIctTrade } = await import('./ictExecution.js');
 
 const NOW = new Date('2026-06-04T15:00:00Z');
-const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 80, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
+const LIVE_CFG = { mode: 'live', autoTradeEnabled: true, minConfidence: 75, minRR: 2.0, maxRiskPercent: 1, signalTtlSec: 300 };
 const freshId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 30_000}`;   // 30s old → fresh
 const staleId = (pair = 'EUR_USD') => `${pair}:${NOW.getTime() - 600_000}`;  // 600s old → stale
 
@@ -80,7 +80,7 @@ test('stale signal is rejected', async () => {
 });
 
 test('low confidence is rejected', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 74 }) }));
   assert.equal(r.blocked, true);
   assert.match(r.reason, /confidence/i);
 });
@@ -88,10 +88,10 @@ test('low confidence is rejected', async () => {
 test('an injected lower threshold cannot bypass the authoritative ICT floor', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     cfg: { ...LIVE_CFG, minConfidence: 0 },
-    getAnalysis: goodAnalysis({ confidence: 79 }),
+    getAnalysis: goodAnalysis({ confidence: 74 }),
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /79 < (?:80|93)/);
+  assert.match(r.reason, /74 < 75/);
 });
 
 test('low RR is rejected', async () => {

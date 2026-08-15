@@ -8,7 +8,7 @@ test('PPR normalization reports exact scanned, qualified, watching, and rejected
     qualified: [{ pair: 'GBP_USD', status: 'qualified', confidence: 82, rr: 1.8 }],
     watchCandidates: [{ pair: 'EUR_GBP', status: 'hot', reason: 'waiting' }],
     rejected: [{ pair: 'GBP_JPY', status: 'rejected', reason: 'spread' }],
-    meta: { pairsScanned: 3, minConfidence: 80, minRR: 1.5 },
+    meta: { pairsScanned: 3, minConfidence: 75, minRR: 1.5 },
   });
   assert.equal(scan.meta.pairsScanned, 3);
   assert.equal(scan.meta.qualifiedCount, 1);
@@ -16,7 +16,7 @@ test('PPR normalization reports exact scanned, qualified, watching, and rejected
   assert.equal(scan.meta.rejectedCount, 1);
   assert.equal(scan.meta.accountedFor, 3);
   assert.equal(scan.meta.countInvariantOk, true);
-  assert.equal(scan.meta.minConfidence, 80);
+  assert.equal(scan.meta.minConfidence, 75);
 });
 
 test('PPR hot candidates keep missing confidence as null instead of converting it to 0%', () => {

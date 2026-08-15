@@ -119,7 +119,7 @@ export function maskAccountForLog(id) {
 
 const maskAccount = maskAccountForLog;
 
-export function buildIctWatchState(analyses = [], minConfidence = 93, minRR = 1.5) {
+export function buildIctWatchState(analyses = [], minConfidence = 75, minRR = 1.5) {
   const nearQualifiedPairs = new Set();
   const hotPairs = new Set();
   const lateEntryPairs = new Set();

@@ -216,8 +216,7 @@ async function loadAccountRows(view, accountId, engine) {
     .from(view)
     .select('*')
     .eq('broker_account_id', accountId)
-    .eq('engine', engine)
-    .eq('horizon_minutes', 60);
+    .eq('engine', engine);
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }`,

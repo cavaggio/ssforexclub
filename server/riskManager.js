@@ -35,10 +35,7 @@ export function riskConfig() {
     maxRiskPerTradePercent: boundedPositive(process.env.RISK_MAX_PER_TRADE_PERCENT, 1, 1),
     dailyMaxDrawdownPercent: boundedPositive(process.env.RISK_DAILY_MAX_DRAWDOWN_PERCENT, 2, 2),
     postLossRiskPercent: boundedPositive(process.env.RISK_POST_LOSS_NEXT_TRADE_PERCENT, 0.5, 0.5),
-    autoExecutionMinConfidence: Math.max(
-      85,
-      parseFloat(process.env.RISK_AUTO_EXECUTION_MIN_CONFIDENCE || process.env.FOREX_MIN_CONFIDENCE || '85'),
-    ),
+    autoExecutionMinConfidence: 75,
   };
 }
 

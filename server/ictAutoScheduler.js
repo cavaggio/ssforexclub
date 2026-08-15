@@ -25,6 +25,7 @@ const engineWatchStates = Object.fromEntries(
 );
 let timers = [];
 let lastDailyStudyDateKey = null;
+let lastEngineLearningBackfillDateKey = null;
 
 function inWindow(date, window) {
   const et = etParts(date);
@@ -154,6 +155,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
   void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
   // Do not run active management immediately on process startup. The first close-capable review occurs on the five-minute scheduler cadence.
   void transactionSyncTick(nextUrl, secret);
+  void engineLearningBackfillTick(nextUrl, secret, { force: true });
   void dailyMarketStudyTick(nextUrl, secret);
   return {
     started: true,
@@ -201,6 +203,20 @@ async function transactionSyncTick(nextUrl, secret) {
   return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');
 }
 
+export async function engineLearningBackfillTick(nextUrl, secret, { now = new Date(), force = false } = {}) {
+  const dayKey = newYorkDateKey(now);
+  if (!force && lastEngineLearningBackfillDateKey === dayKey) {
+    return { ok: true, skipped: true, reason: 'engine_learning_backfill_already_completed', dayKey };
+  }
+  const result = await post(nextUrl, secret, '/api/cron/engine-learning-backfill', {
+    source: force ? 'railway-startup' : 'daily-market-study',
+    tradingDays: 7,
+    calendarLookbackDays: 14,
+  }, `[ENGINE_LEARNING_BACKFILL][dayKey=${dayKey}]`);
+  if (result.ok) lastEngineLearningBackfillDateKey = dayKey;
+  return { ...result, dayKey };
+}
+
 function newYorkDateKey(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -228,9 +244,12 @@ export async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {
         source: 'railway-scheduler', dayKey,
       }, `[EDGE_LEARNING][dayKey=${dayKey}]`)
     : { ok: false, skipped: true, reason: 'daily_market_study_failed' };
-  const ok = studiesOk && learning.ok;
+  const accountAccuracy = studiesOk
+    ? await engineLearningBackfillTick(nextUrl, secret, { now, force: true })
+    : { ok: false, skipped: true, reason: 'daily_market_study_failed' };
+  const ok = studiesOk && learning.ok && accountAccuracy.ok;
   if (ok) lastDailyStudyDateKey = dayKey;
-  return { ok, dayKey, results, learning };
+  return { ok, dayKey, results, learning, accountAccuracy };
 }
 
 function applyReturnedWatchState(engine, returned, scanMode, scannedPairs) {
@@ -312,6 +331,6 @@ export function softenRejectReasons(reasons = [], now = new Date()) {
 export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);
   const confidence = Number(candidate.confidence ?? candidate.score ?? 0);
-  return rr >= 1.5 && confidence >= 85 ? 'SCALP' : 'NONE';
+  return rr >= 1.5 && confidence >= 75 ? 'SCALP' : 'NONE';
 }
 export function prioritizeRetraceWatchPairs(pairs = []) { return [...new Set([...getRetraceWatchPairs(), ...pairs])]; }

@@ -90,7 +90,7 @@ export function maskAccountForLog(id) {
 
 const maskAccount = maskAccountForLog;
 
-export function buildIctWatchState(analyses = [], minConfidence = 80, minRR = 1.5) {
+export function buildIctWatchState(analyses = [], minConfidence = 75, minRR = 1.5) {
   const nearQualifiedPairs = new Set();
   const hotPairs = new Set();
   const lateEntryPairs = new Set();
@@ -395,7 +395,7 @@ function rankOpportunity(candidate = {}) {
   if (candidate.entryStatus === "wait_for_retest") score += 8;
   if (candidate.macroBias && candidate.direction && String(candidate.macroBias).includes(candidate.direction)) score += 10;
 
-  if (confidence >= 80 && rr >= 1.5) {
+  if (confidence >= 75 && rr >= 1.5) {
     return { mode: "SCALP", score, reject: null };
   }
 

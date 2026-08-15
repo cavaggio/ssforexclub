@@ -2,10 +2,10 @@
  * Central scalp-only strategy policy.
  *
  * All scanners may still use higher timeframes as directional context, but every
- * qualified/executable order must be a short-duration scalp with confidence >=85%.
+ * qualified/executable order must be a short-duration scalp with confidence >=75%.
  */
 
-export const HARD_SCALP_CONFIDENCE_FLOOR = 85;
+export const HARD_SCALP_CONFIDENCE_FLOOR = 75;
 
 function envNumber(name, fallback) {
   const n = Number(process.env[name]);
@@ -13,12 +13,9 @@ function envNumber(name, fallback) {
 }
 
 export function scalpMinConfidence() {
-  // Environment configuration may make the bot stricter, never looser than 85%.
-  return Math.max(
-    HARD_SCALP_CONFIDENCE_FLOOR,
-    envNumber('SCALP_MIN_CONFIDENCE', HARD_SCALP_CONFIDENCE_FLOOR),
-    envNumber('FOREX_MIN_CONFIDENCE', HARD_SCALP_CONFIDENCE_FLOOR),
-  );
+  // One authoritative floor across ICT, PPR and V3. Stale environment values
+  // must not silently restore the previous 80/85/90 percent thresholds.
+  return HARD_SCALP_CONFIDENCE_FLOOR;
 }
 
 export function scalpMaxHoldMinutes() {

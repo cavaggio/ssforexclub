@@ -56,7 +56,7 @@ update('lib/scannerEngine.js', (input) => {
         "      rejectedCount,\n" +
         "      accountedFor,\n" +
         "      countInvariantOk,\n" +
-        "      minConfidence: numberOrNull(meta.minConfidence) ?? 80,\n" +
+        "      minConfidence: numberOrNull(meta.minConfidence) ?? 75,\n" +
         "      minRR: numberOrNull(meta.minRR) ?? 1.5,",
       'normalized PPR metadata counts',
     );

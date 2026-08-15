@@ -29,7 +29,7 @@ export function pprConfig() {
   return {
     dailyEma: Math.max(2, Math.floor(numberEnv('PPR_DAILY_EMA', 9))),
     h1Ema: Math.max(2, Math.floor(numberEnv('PPR_H1_EMA', 9))),
-    minConfidence: Math.max(80, Math.min(100, numberEnv('PPR_MIN_CONFIDENCE', 80))),
+    minConfidence: 75,
     minRR: Math.max(1.5, numberEnv('PPR_MIN_RR', 1.5)),
     volumeLookback: Math.max(5, Math.floor(numberEnv('PPR_VOLUME_LOOKBACK', 20))),
     volumeSpikeMultiplier: Math.max(1, numberEnv('PPR_VOLUME_SPIKE_MULTIPLIER', 1.5)),

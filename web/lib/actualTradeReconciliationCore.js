@@ -11,6 +11,36 @@ function text(value) {
   return normalized || null;
 }
 
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function auditIdFromOpening(opening = {}) {
+  const raw = object(opening.raw_payload);
+  const validAuditId = (value) => {
+    const candidate = text(value);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate || '')
+      ? candidate
+      : null;
+  };
+  const queue = [raw];
+  const visited = new Set();
+  let inspected = 0;
+  while (queue.length && inspected < 500) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    inspected += 1;
+    const direct = validAuditId(current.learningAuditId) ||
+      validAuditId(object(current.combinedLearningContext).auditId);
+    if (direct) return direct;
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return null;
+}
+
 export function normalizeEngine(value) {
   const engine = String(value || '').trim().toLowerCase();
   return ENGINES.has(engine) ? engine : null;
@@ -88,6 +118,7 @@ export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, reconci
     broker: 'oanda',
     engine,
     broker_trade_id: brokerTradeId,
+    learning_audit_id: auditIdFromOpening(opening),
     source_trade_log_id: text(opening.trade_log_id),
     pair,
     direction,
