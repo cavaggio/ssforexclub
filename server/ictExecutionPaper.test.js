@@ -101,9 +101,9 @@ test('ICT shadow mode remains blocked', async () => {
 });
 
 test('auto execution rejects confidence below the authoritative threshold', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 74 }) }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /79 < (?:80|93)/);
+  assert.match(r.reason, /74 < 75/);
 });
 
 test('insufficient margin blocks the paper trade with the exact message', async () => {

@@ -224,6 +224,6 @@ test('dashboard status surfaces current and next-trade risk policy', () => {
   assert.equal(status.postLossRiskPercent, 0.5);
   assert.equal(status.dailyLossLimitPercent, 2);
   assert.equal(status.dailyLossLimitUSD, 200);
-  assert.equal(status.autoExecutionConfidenceThreshold, 85);
+  assert.equal(status.autoExecutionConfidenceThreshold, 75);
   assert.equal(status.tradingLocked, false);
 });

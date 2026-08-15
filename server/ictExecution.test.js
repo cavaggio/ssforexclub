@@ -80,7 +80,7 @@ test('stale signal is rejected', async () => {
 });
 
 test('low confidence is rejected', async () => {
-  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 79 }) }));
+  const r = await executeIctTrade(validParams(), baseDeps({ getAnalysis: goodAnalysis({ confidence: 74 }) }));
   assert.equal(r.blocked, true);
   assert.match(r.reason, /confidence/i);
 });
@@ -88,10 +88,10 @@ test('low confidence is rejected', async () => {
 test('an injected lower threshold cannot bypass the authoritative ICT floor', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     cfg: { ...LIVE_CFG, minConfidence: 0 },
-    getAnalysis: goodAnalysis({ confidence: 79 }),
+    getAnalysis: goodAnalysis({ confidence: 74 }),
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /79 < (?:80|93)/);
+  assert.match(r.reason, /74 < 75/);
 });
 
 test('low RR is rejected', async () => {
