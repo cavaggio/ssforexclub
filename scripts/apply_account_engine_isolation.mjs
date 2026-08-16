@@ -222,15 +222,16 @@ async function loadAccountRows(view, accountId, engine) {
 }`,
       );
     }
-    out = replaceRequired(
-      out,
-      `    const [pairRows, contextStats, confirmationStats, qualityRows] = await Promise.all([
+    if (!out.includes("loadRows('engine_account_pair_accuracy_7d'")) {
+      out = replaceRequired(
+        out,
+        `    const [pairRows, contextStats, confirmationStats, qualityRows] = await Promise.all([
       loadRows('engine_executed_pair_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_executed_context_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_executed_confirmation_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_execution_quality_stats', accountId, normalizedEngine, normalizedPair),
     ]);`,
-      `    const [pairRows, recentPairRows, accountRows7d, contextStats, confirmationStats, qualityRows] = await Promise.all([
+        `    const [pairRows, recentPairRows, accountRows7d, contextStats, confirmationStats, qualityRows] = await Promise.all([
       loadRows('engine_executed_pair_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_account_pair_accuracy_7d', accountId, normalizedEngine, normalizedPair),
       loadAccountRows('engine_account_accuracy_7d', accountId, normalizedEngine),
@@ -238,8 +239,9 @@ async function loadAccountRows(view, accountId, engine) {
       loadRows('engine_executed_confirmation_stats', accountId, normalizedEngine, normalizedPair),
       loadRows('engine_execution_quality_stats', accountId, normalizedEngine, normalizedPair),
     ]);`,
-      'account accuracy profile query',
-    );
+        'account accuracy profile query',
+      );
+    }
     out = replaceRequired(
       out,
       `      pairSummary: pairRows[0] || null,

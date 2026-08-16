@@ -767,6 +767,7 @@ export interface CalibrationSnapshot {
   monthly: MonthlyCalibrationBucket[];
   rolling: {
     sampleCount: number;
+    resolvedTradeCount?: number;
     sumExpected?: number;
     sumRealized?: number;
     avgExpectedRR?: number;
@@ -779,6 +780,36 @@ export interface CalibrationSnapshot {
   minSamplesForAdjust: number;
   lookbackTrades: number;
   adjustmentReason: string;
+  source?: string;
+  accountScoped?: boolean;
+  brokerAccountMask?: string;
+  environment?: string;
+  thresholdApplication?: 'diagnostic_only' | 'execution_gate';
+  executionApplication?: {
+    source: string;
+    evaluatedCandidates: number;
+    adjustedCandidates: number;
+    linkedActualTrades: number;
+    lastEvaluatedAt: string | null;
+    lastEngine: string | null;
+    lastPair: string | null;
+    lastOriginalConfidence: number | null;
+    lastFinalConfidence: number | null;
+    confidenceFloor: number;
+    appliedAtCandidateLevel: boolean;
+  };
+  playbookPriority?: {
+    source: string;
+    lastEvaluatedAt: string | null;
+    engine: string | null;
+    nyTimeBucket: string | null;
+    playbooksLoaded: number;
+    eligiblePlaybooks: number;
+    windowMatchedPlaybooks: number;
+    selectedPairs: string[];
+    prescanAttempted: boolean;
+    prescanOk: boolean;
+  } | null;
   computedAt: string;
 }
 

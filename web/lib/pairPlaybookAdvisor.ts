@@ -31,8 +31,10 @@ function deterministicNarrative(profile: JsonRecord, reason: string): PairPlaybo
       : 'No scalp window has enough positive evidence yet.',
     valuableSignals: valuable.slice(0, 5).map((item) => String(item.confirmation ?? '')).filter(Boolean),
     avoidSignals: weak.slice(0, 5).map((item) => String(item.confirmation ?? '')).filter(Boolean),
-    evidenceWarning: stage === 'calibration_ready'
-      ? 'Evidence is sufficient for bounded validation, but this version remains shadow-only until explicitly activated.'
+    evidenceWarning: profile.autoTradePriorityEligible === true
+      ? 'Eligible for account-scoped priority inside a matching proven ET window; confidence, R:R, risk, and all native execution gates remain unchanged.'
+      : stage === 'calibration_ready'
+      ? 'Evidence is sufficient for bounded validation but does not meet the auto-trade priority policy.'
       : 'Evidence is preliminary. Do not change live thresholds from this narrative.',
     rawReason: reason,
   };

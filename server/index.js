@@ -1790,12 +1790,12 @@ function assertClientMatchesRequest(client, body) {
 }
 
 function buildClientFromBody(body, res) {
-  const { apiKey, accountId, baseUrl, environment } = body || {};
+  const { apiKey, accountId, baseUrl, environment, userId } = body || {};
   if (!apiKey)    { res.status(400).json({ ok: false, error: 'Missing apiKey in body' });    return null; }
   if (!accountId) { res.status(400).json({ ok: false, error: 'Missing accountId in body' }); return null; }
   if (!baseUrl)   { res.status(400).json({ ok: false, error: 'Missing baseUrl in body' });   return null; }
   try {
-    const client = createOandaClient({ apiKey, accountId, baseUrl, environment });
+    const client = createOandaClient({ apiKey, accountId, baseUrl, environment, userId });
     // Guardrail: any internal-endpoint call MUST use the per-request client.
     // Surface a structured log with masked accountId. Never log apiKey/token.
     return client;

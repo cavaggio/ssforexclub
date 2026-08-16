@@ -391,7 +391,11 @@ export async function refreshPairPlaybooksForAccount({
         ai_summary: narrative,
         validator: {
           approvedForLiveCalibration: false,
-          reason: 'Phase 1 stores and shadows pair learning. Live thresholds remain unchanged.',
+          approvedForAutoTradePriority: profile.autoTradePriorityEligible === true,
+          priorityPolicy: profile.autoTradePriorityPolicy,
+          reason: profile.autoTradePriorityEligible === true
+            ? 'Eligible for account-scoped priority only during a matching proven ET window. Native execution gates remain unchanged.'
+            : 'Not eligible for auto-trade priority; live thresholds remain unchanged.',
           hardGatesPreserved: ['risk', 'daily_drawdown', 'rr', 'spread', 'news', 'margin', 'duplicate', 'broker'],
         },
         max_confidence_adjustment: 0,
@@ -460,13 +464,37 @@ export async function getSignalLearningDashboard({
     if (result.error) throw result.error;
   }
 
+  const playbooks = (playbooksResult.data || []).map((row: JsonRecord) => {
+    const windows = Array.isArray(row.preferred_scalp_windows) ? row.preferred_scalp_windows : [];
+    const priorityEligible = String(row.recommendation_stage || '') === 'calibration_ready' &&
+      Number(row.sample_size || 0) >= 50 &&
+      Number(row.win_rate) > 80 &&
+      Number(row.expectancy_r) > 0 &&
+      Number(row.profit_factor) > 1 &&
+      windows.length > 0;
+    return {
+      ...row,
+      status: priorityEligible ? 'active' : row.status,
+      validator: {
+        ...(row.validator && typeof row.validator === 'object' ? row.validator : {}),
+        approvedForAutoTradePriority: priorityEligible,
+        priorityPolicy: {
+          minPairWinRateExclusive: 80,
+          minSampleSize: 50,
+          matchingEtWindowRequired: true,
+          mode: 'priority_prescan_only',
+        },
+      },
+    };
+  });
+
   return {
-    playbooks: playbooksResult.data || [],
+    playbooks,
     summaries: summariesResult.data || [],
     timeStats: timeResult.data || [],
     confirmationStats: confirmationResult.data || [],
     safeguards: {
-      mode: 'display_and_shadow_only',
+      mode: 'matching_et_window_priority_only',
       liveThresholdsChanged: false,
       maxConfidenceAdjustment: 0,
     },

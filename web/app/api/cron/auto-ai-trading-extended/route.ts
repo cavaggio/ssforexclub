@@ -5,6 +5,10 @@ import { callInternalEndpoint } from '@/lib/scannerProxy';
 import { logTradeEvent } from '@/lib/tradeLogs';
 import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
 import { recordSignalLearningCycle } from '@/lib/signalLearning';
+import {
+  loadAccountPairPlaybookPriority,
+  recordPairPlaybookPriorityAudit,
+} from '@/lib/accountPairPlaybookPriority';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -175,6 +179,9 @@ export async function POST(req: Request) {
   let countMismatches = 0;
   let learningObservations = 0;
   let learningOutcomes = 0;
+  let playbookPriorityAccounts = 0;
+  let playbookPriorityPrescans = 0;
+  let playbookPriorityAuditFailures = 0;
 
   for (const row of (data ?? []) as Array<{ user_id: string; auto_ai_engine?: string }>) {
     const configuredEngine = normalizeEngine(row.auto_ai_engine);
@@ -218,162 +225,258 @@ export async function POST(req: Request) {
       for (const selectedEngine of selectedEngines) {
         enabledEngines.add(selectedEngine);
 
-        const result = await callInternalEndpoint('/api/internal/oanda/auto', {
+        const credentialBody = {
           apiKey: credentials.token,
           accountId: credentials.accountId,
           baseUrl: resolved.baseUrl,
           environment: resolved.activeEnvironment,
-          runId: `${runId}-${selectedEngine}`,
+          userId: row.user_id,
+          engine: selectedEngine,
+        };
+        const accountRunId = `${runId}-${selectedEngine}`;
+        const playbookPriority = scanMode === 'full'
+          ? await loadAccountPairPlaybookPriority({
+              userId: row.user_id,
+              brokerAccountId: credentials.accountId,
+              engine: selectedEngine,
+            })
+          : {
+              enabled: false,
+              version: null,
+              mode: 'not_evaluated_for_targeted_or_study_scan',
+              selectedPairs: [],
+              selectedDetails: [],
+              evaluations: [],
+              reason: 'Playbook priority is evaluated on full account scans only.',
+            };
+        if (scanMode === 'full' && Number(playbookPriority.eligibleCount || 0) > 0) {
+          playbookPriorityAccounts += 1;
+        }
+
+        let priorityResult: Awaited<ReturnType<typeof callInternalEndpoint>> | null = null;
+        const priorityPairs = Array.isArray(playbookPriority.selectedPairs)
+          ? playbookPriority.selectedPairs.slice(0, 3)
+          : [];
+        if (scanMode === 'full' && playbookPriority.enabled === true && priorityPairs.length > 0) {
+          playbookPriorityPrescans += 1;
+          console.log(
+            `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] ` +
+            `playbookPriority=${playbookPriority.version} nyBucket=${playbookPriority.nyTimeBucket} ` +
+            `pairs=${priorityPairs.join(',')} mode=priority_prescan_only thresholdsChanged=false`,
+          );
+          priorityResult = await callInternalEndpoint('/api/internal/oanda/auto', {
+            ...credentialBody,
+            runId: `${accountRunId}-playbook-priority`,
+            scanMode: 'near_recheck',
+            pairs: priorityPairs,
+          });
+        }
+
+        if (scanMode === 'full') {
+          const audit = await recordPairPlaybookPriorityAudit({
+            userId: row.user_id,
+            brokerAccountId: credentials.accountId,
+            environment: resolved.activeEnvironment,
+            engine: selectedEngine,
+            runId: accountRunId,
+            scanMode,
+            priority: playbookPriority,
+            prescanAttempted: priorityResult !== null,
+            prescanOk: priorityResult ? priorityResult.ok : null,
+            prescanStatus: priorityResult && !priorityResult.ok ? priorityResult.status : null,
+            prescanError: priorityResult && !priorityResult.ok ? priorityResult.error : null,
+          });
+          if (!audit.ok) playbookPriorityAuditFailures += 1;
+        }
+
+        const scheduledResult = await callInternalEndpoint('/api/internal/oanda/auto', {
+          ...credentialBody,
+          runId: accountRunId,
           scanMode,
           pairs: scanMode === 'daily_study' ? [] : engineFilter ? pairs : [],
-          engine: selectedEngine,
         });
-
-        if (!result.ok) {
-          results.push({ user: row.user_id, engine: selectedEngine, error: result.error, status: result.status });
-          continue;
+        const scanRuns: Array<{
+          runKind: 'playbook_priority' | 'scheduled';
+          runScanMode: ScanMode;
+          runIdentifier: string;
+          result: Awaited<ReturnType<typeof callInternalEndpoint>>;
+        }> = [];
+        if (priorityResult) {
+          scanRuns.push({
+            runKind: 'playbook_priority',
+            runScanMode: 'near_recheck',
+            runIdentifier: `${accountRunId}-playbook-priority`,
+            result: priorityResult,
+          });
         }
+        scanRuns.push({ runKind: 'scheduled', runScanMode: scanMode, runIdentifier: accountRunId, result: scheduledResult });
 
-        const payload = (result.data ?? {}) as Record<string, any>;
-        const accounting = scanAccounting(payload);
-        const executedList = Array.isArray(payload.executed) ? payload.executed : [];
-        const skippedList = Array.isArray(payload.skipped) ? payload.skipped : [];
-        const analysesByPair = new Map<string, Record<string, any>>(
-          (Array.isArray(payload.results) ? payload.results : [])
-            .filter((item: any) => typeof item?.pair === 'string')
-            .map((item: any) => [String(item.pair).toUpperCase(), item]),
-        );
-        const state = watchStates[selectedEngine];
-        const learning = await recordSignalLearningCycle({
-          userId: row.user_id,
-          brokerAccountId: credentials.accountId,
-          environment: resolved.activeEnvironment,
-          engine: selectedEngine,
-          scanMode,
-          runId: `${runId}-${selectedEngine}`,
-          payload,
-        });
+        for (const scanRun of scanRuns) {
+          if (!scanRun.result.ok) {
+            results.push({
+              user: row.user_id,
+              engine: selectedEngine,
+              runKind: scanRun.runKind,
+              error: scanRun.result.error,
+              status: scanRun.result.status,
+              playbookPriority,
+            });
+            continue;
+          }
 
-        learningObservations += learning.observationsWritten;
-        learningOutcomes += learning.outcomesWritten;
-        scanned += accounting.scanned;
-        qualified += accounting.qualified;
-        watching += accounting.watching;
-        rejected += accounting.rejected;
-        executed += executedList.length;
-        skipped += Array.isArray(payload.skipped) ? payload.skipped.length : 0;
-        if (!accounting.countInvariantOk) countMismatches += 1;
-
-        addPairs(state.nearQualifiedPairs, payload.nearQualifiedPairs);
-        addPairs(state.hotPairs, payload.hotPairs);
-        addPairs(state.lateEntryPairs, payload.lateEntryPairs);
-        for (const pair of state.lateEntryPairs) {
-          state.nearQualifiedPairs.delete(pair);
-          state.hotPairs.delete(pair);
-        }
-
-        console.log(
-          `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] accountEngineIsolation=true ` +
-          `environment=${resolved.activeEnvironment} scanMode=${scanMode} scanned=${accounting.scanned} ` +
-          `qualified=${accounting.qualified} watching=${accounting.watching} rejected=${accounting.rejected} ` +
-          `executionAllowed=${payload.executionAllowed === true} executed=${executedList.length} ` +
-          `learningObservations=${learning.observationsWritten} learningOutcomes=${learning.outcomesWritten}`,
-        );
-
-        for (const item of executedList) {
-          const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
-          await logTradeEvent({
+          const payload = (scanRun.result.data ?? {}) as Record<string, any>;
+          const accounting = scanAccounting(payload);
+          const executedList = Array.isArray(payload.executed) ? payload.executed : [];
+          const skippedList = Array.isArray(payload.skipped) ? payload.skipped : [];
+          const analysesByPair = new Map<string, Record<string, any>>(
+            (Array.isArray(payload.results) ? payload.results : [])
+              .filter((item: any) => typeof item?.pair === 'string')
+              .map((item: any) => [String(item.pair).toUpperCase(), item]),
+          );
+          const state = watchStates[selectedEngine];
+          const learning = await recordSignalLearningCycle({
             userId: row.user_id,
-            broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
             brokerAccountId: credentials.accountId,
-            environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
-            eventType: 'opened',
+            environment: resolved.activeEnvironment,
             engine: selectedEngine,
-            strategy: typeof item?.strategy === 'string' ? item.strategy : selectedEngine.toUpperCase(),
-            brokerTradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-            instrument: typeof item?.pair === 'string' ? item.pair : null,
-            tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-            brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
-            side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
-            units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
-            entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
-            sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
-            tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
-            confidence: typeof item?.confidence === 'number' ? item.confidence : null,
-            recommendation: typeof item?.expectedRR === 'number'
-              ? `RR ${item.expectedRR}`
-              : `${selectedEngine.toUpperCase()}_AUTO`,
-            reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during account-scoped engine run ${runId}`,
-            rawPayload: {
-              runId,
-              scanMode,
-              engine: selectedEngine,
-              executionMode: 'selected_engine_only',
-              accounting,
-              learning: {
-                observationCapture: learning.ok,
-                migrationRequired: learning.migrationRequired === true,
+            scanMode: scanRun.runScanMode,
+            runId: scanRun.runIdentifier,
+            payload,
+          });
+
+          learningObservations += learning.observationsWritten;
+          learningOutcomes += learning.outcomesWritten;
+          scanned += accounting.scanned;
+          qualified += accounting.qualified;
+          watching += accounting.watching;
+          rejected += accounting.rejected;
+          executed += executedList.length;
+          skipped += skippedList.length;
+          if (!accounting.countInvariantOk) countMismatches += 1;
+
+          addPairs(state.nearQualifiedPairs, payload.nearQualifiedPairs);
+          addPairs(state.hotPairs, payload.hotPairs);
+          addPairs(state.lateEntryPairs, payload.lateEntryPairs);
+          for (const pair of state.lateEntryPairs) {
+            state.nearQualifiedPairs.delete(pair);
+            state.hotPairs.delete(pair);
+          }
+
+          console.log(
+            `[AUTO_AI][${selectedEngine.toUpperCase()}][runId=${runId}] accountEngineIsolation=true ` +
+            `environment=${resolved.activeEnvironment} runKind=${scanRun.runKind} scanMode=${scanRun.runScanMode} ` +
+            `scanned=${accounting.scanned} qualified=${accounting.qualified} watching=${accounting.watching} ` +
+            `rejected=${accounting.rejected} executionAllowed=${payload.executionAllowed === true} ` +
+            `executed=${executedList.length} learningObservations=${learning.observationsWritten} ` +
+            `learningOutcomes=${learning.outcomesWritten}`,
+          );
+
+          for (const item of executedList) {
+            const signal = item?.signal && typeof item.signal === 'object' ? item.signal : item;
+            const itemPair = typeof item?.pair === 'string' ? String(item.pair).toUpperCase() : null;
+            const matchedPlaybook = itemPair
+              ? (playbookPriority.selectedDetails || []).find((detail: any) => detail?.pair === itemPair) || null
+              : null;
+            await logTradeEvent({
+              userId: row.user_id,
+              broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+              brokerAccountId: credentials.accountId,
+              environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+              eventType: 'opened',
+              instrument: typeof item?.pair === 'string' ? item.pair : null,
+              tradeId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+              brokerOrderId: typeof item?.tradeId === 'string' ? item.tradeId : null,
+              side: item?.direction === 'long' || item?.direction === 'short' ? item.direction : null,
+              units: typeof item?.units === 'number' ? Math.abs(item.units) : null,
+              entryPrice: typeof item?.fillPrice === 'number' ? item.fillPrice : null,
+              sl: typeof item?.stopLoss === 'number' ? item.stopLoss : null,
+              tp: typeof item?.takeProfit === 'number' ? item.takeProfit : null,
+              confidence: typeof item?.confidence === 'number' ? item.confidence : null,
+              recommendation: typeof item?.expectedRR === 'number'
+                ? `RR ${item.expectedRR}`
+                : `${selectedEngine.toUpperCase()}_AUTO`,
+              reason: `Auto AI ${selectedEngine.toUpperCase()} opened trade during account-scoped ${scanRun.runKind} run ${runId}`,
+              rawPayload: {
+                runId,
+                scanMode: scanRun.runScanMode,
+                runKind: scanRun.runKind,
+                engine: selectedEngine,
+                executionMode: 'selected_engine_only',
+                accounting,
+                learning: {
+                  observationCapture: learning.ok,
+                  migrationRequired: learning.migrationRequired === true,
+                },
+                playbookPriority: matchedPlaybook ? {
+                  policyVersion: playbookPriority.version,
+                  nyTimeBucket: playbookPriority.nyTimeBucket,
+                  matchedPlaybook,
+                  changesScanOrderOnly: true,
+                } : null,
+                item,
               },
-              item,
-            },
-            edge: edgeSnapshotFromSignal(signal),
+              edge: edgeSnapshotFromSignal(signal),
+            });
+          }
+
+          for (const item of skippedList) {
+            const pair = typeof item?.pair === 'string' ? String(item.pair).toUpperCase() : null;
+            const signal = pair ? analysesByPair.get(pair) ?? null : null;
+            const direction = item?.direction === 'long' || item?.direction === 'short'
+              ? item.direction
+              : signal?.signal === 'buy'
+                ? 'long'
+                : signal?.signal === 'sell'
+                  ? 'short'
+                  : null;
+            const reason = typeof item?.reason === 'string'
+              ? item.reason
+              : 'Qualified execution was skipped without a concrete reason.';
+
+            await logTradeEvent({
+              userId: row.user_id,
+              broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
+              brokerAccountId: credentials.accountId,
+              environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+              eventType: 'error',
+              instrument: pair,
+              side: direction,
+              entryPrice: typeof signal?.entry === 'number' ? signal.entry : null,
+              sl: typeof signal?.stopLoss === 'number' ? signal.stopLoss : null,
+              tp: typeof signal?.target1 === 'number' ? signal.target1 : null,
+              confidence: typeof signal?.confidence === 'number' ? signal.confidence : null,
+              recommendation: `${selectedEngine.toUpperCase()} qualified execution rejected`,
+              reason,
+              rawPayload: {
+                executionSource: 'auto_ai_qualified_rejection',
+                runId,
+                runKind: scanRun.runKind,
+                scanMode: scanRun.runScanMode,
+                engine: selectedEngine,
+                accounting,
+                playbookPriority: pair
+                  ? (playbookPriority.selectedDetails || []).find((detail: any) => detail?.pair === pair) || null
+                  : null,
+                rejection: item,
+                signal,
+              },
+              edge: signal ? edgeSnapshotFromSignal(signal) : null,
+            });
+          }
+
+          results.push({
+            user: row.user_id,
+            selectedEngine,
+            runKind: scanRun.runKind,
+            activeEnvironment: resolved.activeEnvironment,
+            executionMode: 'selected_engine_only',
+            accounting,
+            executionAllowed: payload.executionAllowed === true,
+            playbookPriority,
+            learning,
+            result: payload,
           });
         }
-
-        // Persist every scanner-qualified execution rejection. Historically only
-        // successful opens were logged, which made false hard-gate misses
-        // impossible to reconstruct after the scan response expired.
-        for (const item of skippedList) {
-          const pair = typeof item?.pair === 'string' ? String(item.pair).toUpperCase() : null;
-          const signal = pair ? analysesByPair.get(pair) ?? null : null;
-          const direction = item?.direction === 'long' || item?.direction === 'short'
-            ? item.direction
-            : signal?.signal === 'buy'
-              ? 'long'
-              : signal?.signal === 'sell'
-                ? 'short'
-                : null;
-          const reason = typeof item?.reason === 'string'
-            ? item.reason
-            : 'Qualified execution was skipped without a concrete reason.';
-
-          await logTradeEvent({
-            userId: row.user_id,
-            broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
-            brokerAccountId: credentials.accountId,
-            environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
-            eventType: 'error',
-            instrument: pair,
-            side: direction,
-            entryPrice: typeof signal?.entry === 'number' ? signal.entry : null,
-            sl: typeof signal?.stopLoss === 'number' ? signal.stopLoss : null,
-            tp: typeof signal?.target1 === 'number' ? signal.target1 : null,
-            confidence: typeof signal?.confidence === 'number' ? signal.confidence : null,
-            recommendation: `${selectedEngine.toUpperCase()} qualified execution rejected`,
-            reason,
-            rawPayload: {
-              executionSource: 'auto_ai_qualified_rejection',
-              runId,
-              scanMode,
-              engine: selectedEngine,
-              accounting,
-              rejection: item,
-              signal,
-            },
-            edge: signal ? edgeSnapshotFromSignal(signal) : null,
-          });
-        }
-
-        results.push({
-          user: row.user_id,
-          selectedEngine,
-          activeEnvironment: resolved.activeEnvironment,
-          executionMode: 'selected_engine_only',
-          accounting,
-          executionAllowed: payload.executionAllowed === true,
-          learning,
-          result: payload,
-        });
       }
     } catch (err) {
       results.push({
@@ -392,9 +495,10 @@ export async function POST(req: Request) {
 
   console.log(
     `[AUTO_AI][SUMMARY][runId=${runId}] accountEngineIsolation=true engineFilter=${engineFilter ?? 'none'} ` +
-    `users=${results.length} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
+    `users=${data?.length || 0} scanned=${scanned} qualified=${qualified} watching=${watching} ` +
     `rejected=${rejected} executed=${executed} skipped=${skipped} ` +
-    `learningObservations=${learningObservations} learningOutcomes=${learningOutcomes}`,
+    `learningObservations=${learningObservations} learningOutcomes=${learningOutcomes} ` +
+    `playbookPriorityAccounts=${playbookPriorityAccounts} playbookPriorityPrescans=${playbookPriorityPrescans}`,
   );
 
   return NextResponse.json({
@@ -403,7 +507,7 @@ export async function POST(req: Request) {
     scanMode,
     engine: engineFilter,
     pairs,
-    users: results.length,
+    users: data?.length || 0,
     scanned,
     qualified,
     watching,
@@ -414,6 +518,9 @@ export async function POST(req: Request) {
     skipped,
     learningObservations,
     learningOutcomes,
+    playbookPriorityAccounts,
+    playbookPriorityPrescans,
+    playbookPriorityAuditFailures,
     executionMode: 'selected_engine_only',
     enabledEngines: [...enabledEngines],
     engineWatchStates,

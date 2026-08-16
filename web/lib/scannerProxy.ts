@@ -210,6 +210,7 @@ export async function callScannerForCurrentUser(args: {
     baseUrl: resolved.baseUrl,
     environment: resolved.activeEnvironment,
     ...extraBody,
+    userId,
   });
 
   const afterCtx: AfterCallContext = {

@@ -113,6 +113,7 @@ export function createOandaClient(ctx) {
   return {
     apiKey: ctx.apiKey,
     accountId: ctx.accountId,
+    userId: typeof ctx.userId === 'string' && ctx.userId.trim() ? ctx.userId.trim() : null,
     baseUrl,
     environment,
     isDefault: false,
