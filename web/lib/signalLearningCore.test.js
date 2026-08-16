@@ -102,7 +102,26 @@ test('keeps small samples display-only and promotes evidence without activating 
 
   assert.equal(mature.stage, 'calibration_ready');
   assert.equal(mature.status, 'shadow');
+  assert.equal(mature.autoTradePriorityEligible, false);
   assert.equal(mature.valuableConfirmations[0].confirmation, 'liquidity_sweep');
   assert.equal(mature.strongCombinations.length, 1);
   assert.equal(mature.safeguards.maxConfidenceAdjustment, 0);
+});
+
+test('playbook priority activates only above 80 percent with a proven window', () => {
+  const base = {
+    outcomes: 100, wins: 80, losses: 20, win_rate: 80, expectancy_r: 0.5, profit_factor: 2,
+  };
+  const timeStats = [{
+    session: 'london', time_bucket_15m: '03:45', direction: 'long', outcomes: 30,
+    win_rate: 85, expectancy_r: 1, profit_factor: 3,
+  }];
+  const exact = buildPairPlaybook({ pair: 'EUR_USD', engine: 'ict', summary: base, timeStats });
+  const above = buildPairPlaybook({ pair: 'EUR_USD', engine: 'ict', summary: { ...base, win_rate: 80.01 }, timeStats });
+
+  assert.equal(exact.autoTradePriorityEligible, false);
+  assert.equal(exact.status, 'shadow');
+  assert.equal(above.autoTradePriorityEligible, true);
+  assert.equal(above.status, 'active');
+  assert.equal(above.safeguards.priorityChangesScanOrderOnly, true);
 });

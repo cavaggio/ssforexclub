@@ -43,6 +43,11 @@ function accountIdOf(client) {
   return String(client?.accountId || client?.accountID || client?.account_id || 'default');
 }
 
+function userIdOf(client) {
+  const value = String(client?.userId || client?.user_id || '').trim();
+  return value || null;
+}
+
 function cacheTtlMs() {
   const configured = finiteNumber(process.env.ENGINE_TRADE_LEARNING_CACHE_MS, 300_000);
   return Math.max(30_000, Math.min(3_600_000, configured));
@@ -73,28 +78,32 @@ function schemaMissing(error) {
     /engine_signal_learning_stats|engine_learning_adjustment_effectiveness_stats/i.test(message);
 }
 
-async function loadRows(view, accountId, engine, pair) {
+async function loadRows(view, userId, accountId, engine, pair) {
   const supabase = db();
   if (!supabase) return [];
-  const { data, error } = await supabase
+  let query = supabase
     .from(view)
     .select('*')
     .eq('broker_account_id', accountId)
     .eq('engine', engine)
     .eq('pair', pair)
     .eq('horizon_minutes', 60);
+  if (userId) query = query.eq('user_id', userId);
+  const { data, error } = await query;
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }
 
-async function loadAccountRows(view, accountId, engine) {
+async function loadAccountRows(view, userId, accountId, engine) {
   const supabase = db();
   if (!supabase) return [];
-  const { data, error } = await supabase
+  let query = supabase
     .from(view)
     .select('*')
     .eq('broker_account_id', accountId)
     .eq('engine', engine);
+  if (userId) query = query.eq('user_id', userId);
+  const { data, error } = await query;
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }
@@ -103,26 +112,28 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
   const normalizedEngine = normalizeEngine(engine);
   const normalizedPair = normalizePair(pair);
   const accountId = accountIdOf(client);
+  const userId = userIdOf(client);
   if (!normalizedEngine || !normalizedPair || !db()) return null;
-  const key = `${accountId}:${normalizedEngine}:${normalizedPair}`;
+  const key = `${userId || 'legacy'}:${accountId}:${normalizedEngine}:${normalizedPair}`;
   const cached = profileCache.get(key);
   if (!force && cached && Date.now() - cached.loadedAt < cacheTtlMs()) return cached.profile;
 
   try {
     const [pairRows, recentPairRows, accountRows7d, contextStats, confirmationStats, qualityRows] = await Promise.all([
-      loadRows('engine_combined_pair_stats', accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_actual_account_pair_accuracy_7d', accountId, normalizedEngine, normalizedPair),
-      loadAccountRows('engine_actual_account_accuracy_7d', accountId, normalizedEngine),
-      loadRows('engine_executed_context_stats', accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_executed_confirmation_stats', accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_execution_quality_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_combined_pair_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_actual_account_pair_accuracy_7d', userId, accountId, normalizedEngine, normalizedPair),
+      loadAccountRows('engine_actual_account_accuracy_7d', userId, accountId, normalizedEngine),
+      loadRows('engine_executed_context_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_executed_confirmation_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_execution_quality_stats', userId, accountId, normalizedEngine, normalizedPair),
     ]);
     const [signalQualityRows, adjustmentEffectivenessRows] = await Promise.all([
-      loadRows('engine_signal_learning_stats', accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_learning_adjustment_effectiveness_stats', accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_signal_learning_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_learning_adjustment_effectiveness_stats', userId, accountId, normalizedEngine, normalizedPair),
     ]);
     const profile = {
       accountId,
+      userId,
       engine: normalizedEngine,
       pair: normalizedPair,
       pairSummary: pairRows[0] || null,
@@ -173,6 +184,7 @@ async function persistAudit({ client, engine, pair, candidate, confidence, engin
     const { data, error } = await supabase
       .from('engine_learning_adjustment_audit')
       .insert({
+        user_id: userIdOf(client),
         broker_account_id: accountIdOf(client),
         environment: String(client?.environment || 'unknown'),
         engine,

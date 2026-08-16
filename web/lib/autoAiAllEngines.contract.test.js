@@ -48,6 +48,11 @@ test('Auto AI executes only the configured engine for each account while studies
     assert.match(source, /accountEngineIsolation=true/);
     assert.match(source, /engineWatchStates/);
     assert.match(source, /Targeted near\/hot rechecks require an engine/);
+    assert.match(source, /loadAccountPairPlaybookPriority/);
+    assert.match(source, /matching_et_window_priority_prescan_only|playbookPriority/);
+    assert.match(source, /recordPairPlaybookPriorityAudit/);
+    assert.match(source, /scanMode: 'near_recheck'/);
+    assert.match(source, /thresholdsChanged=false/);
     assert.doesNotMatch(source, /executionMode: 'all_enabled_engines'/);
     assert.doesNotMatch(source, /allEnginesActive=true/);
   } finally {

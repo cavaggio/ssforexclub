@@ -234,6 +234,7 @@ export async function POST(req: Request) {
         accountId: credentials.accountId,
         baseUrl: resolved.baseUrl,
         environment: resolved.activeEnvironment,
+        userId,
         runId,
         scanMode,
         pairs,

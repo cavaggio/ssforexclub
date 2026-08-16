@@ -471,17 +471,33 @@ export function buildPairPlaybook({ pair, engine, summary, timeStats = [], confi
       expectancyR: numberValue(row.expectancy_r),
     }));
 
+  const summaryWinRate = numeric(summary?.win_rate);
+  const summaryExpectancy = numeric(summary?.expectancy_r);
+  const summaryProfitFactor = numeric(summary?.profit_factor);
+  const autoTradePriorityEligible = stage === 'calibration_ready' &&
+    summaryWinRate > 80 &&
+    summaryExpectancy > 0 &&
+    summaryProfitFactor > 1 &&
+    preferredWindows.length > 0;
+
   return {
     pair,
     engine,
     stage,
-    status: stage === 'display_only' ? 'display_only' : 'shadow',
+    status: autoTradePriorityEligible ? 'active' : stage === 'display_only' ? 'display_only' : 'shadow',
     sampleSize: outcomes,
     wins: numberValue(summary?.wins),
     losses: numberValue(summary?.losses),
-    winRate: numeric(summary?.win_rate),
-    expectancyR: numeric(summary?.expectancy_r),
-    profitFactor: numeric(summary?.profit_factor),
+    winRate: summaryWinRate,
+    expectancyR: summaryExpectancy,
+    profitFactor: summaryProfitFactor,
+    autoTradePriorityEligible,
+    autoTradePriorityPolicy: {
+      minPairWinRateExclusive: 80,
+      minSampleSize: calibrationMinimum,
+      matchingEtWindowRequired: true,
+      mode: 'priority_prescan_only',
+    },
     preferredWindows,
     valuableConfirmations,
     weakConfirmations,
@@ -495,6 +511,7 @@ export function buildPairPlaybook({ pair, engine, summary, timeStats = [], confi
       spreadBypass: false,
       newsBypass: false,
       accountScoped: true,
+      priorityChangesScanOrderOnly: true,
     },
   };
 }

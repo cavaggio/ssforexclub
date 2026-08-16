@@ -3167,7 +3167,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       <section style={s.section}>
         <SectionHeader
           title="Strategy calibration"
-          subtitle="Monthly Expected-RR vs Realized-R. The rejection threshold auto-tightens when projections consistently overshoot reality, so qualifying trades clear a higher bar."
+          subtitle="Account-scoped proof from actual broker lifecycles, per-candidate learning audits, and Edge Intelligence playbook priority runs."
           right={
             <button
               type="button"
@@ -3395,7 +3395,7 @@ function CalibrationPanel({ snapshot }: { snapshot: CalibrationSnapshot }) {
         }}
       >
         <StatChip
-          label="Active threshold"
+          label="Diagnostic RR threshold"
           value={String(snapshot.calibratedRejectionThreshold)}
           tone={tightened ? 'bad' : loosened ? 'good' : undefined}
         />
@@ -3405,7 +3405,10 @@ function CalibrationPanel({ snapshot }: { snapshot: CalibrationSnapshot }) {
           value={cr == null ? '—' : String(cr)}
           tone={cr == null ? undefined : cr >= 0.9 ? 'good' : cr < 0.7 ? 'bad' : undefined}
         />
-        <StatChip label="Sample size" value={String(snapshot.rolling.sampleCount)} />
+        <StatChip label="R-matched trades" value={String(snapshot.rolling.sampleCount)} />
+        {snapshot.rolling.resolvedTradeCount !== undefined && (
+          <StatChip label="Resolved broker trades" value={String(snapshot.rolling.resolvedTradeCount)} />
+        )}
         {snapshot.rolling.avgExpectedRR !== undefined && (
           <StatChip label="Avg Expected RR" value={String(snapshot.rolling.avgExpectedRR)} />
         )}
@@ -3430,6 +3433,61 @@ function CalibrationPanel({ snapshot }: { snapshot: CalibrationSnapshot }) {
         </strong>
         {snapshot.adjustmentReason}
       </div>
+
+      {snapshot.executionApplication && (
+        <div
+          style={{
+            padding: '12px 14px',
+            background: 'var(--bg)',
+            border: `1px solid ${snapshot.executionApplication.appliedAtCandidateLevel ? '#165c36' : 'var(--border)'}`,
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.55,
+            color: 'var(--muted)',
+          }}
+        >
+          <strong style={{ color: snapshot.executionApplication.appliedAtCandidateLevel ? 'var(--good)' : 'var(--warn)' }}>
+            {snapshot.executionApplication.appliedAtCandidateLevel
+              ? '✓ Candidate calibration is being applied and audited.'
+              : 'No candidate-calibration audit has been written for this account yet.'}
+          </strong>{' '}
+          {snapshot.executionApplication.evaluatedCandidates} candidates evaluated;{' '}
+          {snapshot.executionApplication.adjustedCandidates} received a non-zero bounded adjustment;{' '}
+          {snapshot.executionApplication.linkedActualTrades} actual trades link back to the exact audit. The confidence floor remains{' '}
+          {snapshot.executionApplication.confidenceFloor}%.
+          {snapshot.executionApplication.lastEvaluatedAt && (
+            <span>
+              {' '}Last evaluation: {new Date(snapshot.executionApplication.lastEvaluatedAt).toLocaleString()}
+              {snapshot.executionApplication.lastEngine ? ` · ${snapshot.executionApplication.lastEngine.toUpperCase()}` : ''}
+              {snapshot.executionApplication.lastPair ? ` · ${snapshot.executionApplication.lastPair.replace('_', '/')}` : ''}.
+            </span>
+          )}
+        </div>
+      )}
+
+      {snapshot.playbookPriority && (
+        <div
+          style={{
+            padding: '12px 14px',
+            background: 'var(--bg)',
+            border: `1px solid ${snapshot.playbookPriority.prescanOk ? '#165c36' : 'var(--border)'}`,
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.55,
+            color: 'var(--muted)',
+          }}
+        >
+          <strong style={{ color: snapshot.playbookPriority.prescanOk ? 'var(--good)' : 'var(--text)' }}>
+            Edge playbook priority audit:
+          </strong>{' '}
+          {snapshot.playbookPriority.playbooksLoaded} playbooks loaded;{' '}
+          {snapshot.playbookPriority.eligiblePlaybooks} above the bounded eligibility bar;{' '}
+          {snapshot.playbookPriority.windowMatchedPlaybooks} matched the {snapshot.playbookPriority.nyTimeBucket || 'current'} ET window.
+          {snapshot.playbookPriority.selectedPairs.length > 0 && (
+            <span> Priority scan: {snapshot.playbookPriority.selectedPairs.map((pair) => pair.replace('_', '/')).join(', ')}.</span>
+          )}
+        </div>
+      )}
 
       {snapshot.monthly.length === 0 ? (
         <EmptyBlock>No resolved trades yet — monthly stats appear once trades close.</EmptyBlock>
@@ -3497,13 +3555,12 @@ function CalibrationPanel({ snapshot }: { snapshot: CalibrationSnapshot }) {
         </div>
       )}
       <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-        Updated {new Date(snapshot.computedAt).toLocaleString()}. Sample window: rolling{' '}
+        Updated {new Date(snapshot.computedAt).toLocaleString()} for account {snapshot.brokerAccountMask || '—'} ({snapshot.environment || 'unknown'}). Sample window: rolling{' '}
         {snapshot.lookbackTrades} trades · minimum {snapshot.minSamplesForAdjust} required to
-        adjust threshold. {!snapshot.eligibleForAdjustment && '— Using default threshold until threshold becomes eligible.'}
+        calculate the Expected-RR diagnostic. {!snapshot.eligibleForAdjustment && '— Using the default diagnostic until enough planned-R/realized-R matches exist.'}
       </span>
       <span style={{ fontSize: 11, color: '#888', fontStyle: 'italic' }}>
-        Trade-history data is currently platform-wide; per-user calibration follows once trade
-        history moves into Supabase.
+        Source: {snapshot.source || 'unknown'}. The RR threshold shown here is diagnostic-only; live calibration is the bounded, audited confidence adjustment above. Playbook priority changes scan order only and never bypasses qualification or execution gates.
       </span>
     </div>
   );

@@ -115,7 +115,7 @@ export function SignalLearningPanel() {
           timeStats: Array.isArray(payload.timeStats) ? payload.timeStats : [],
           confirmationStats: Array.isArray(payload.confirmationStats) ? payload.confirmationStats : [],
           safeguards: payload.safeguards || {
-            mode: 'display_and_shadow_only',
+            mode: 'matching_et_window_priority_only',
             liveThresholdsChanged: false,
             maxConfidenceAdjustment: 0,
           },
@@ -343,13 +343,21 @@ function PlaybookGrid({ playbooks }: { playbooks: Playbook[] }) {
         <div style={grid}>
           {playbooks.map((playbook) => {
             const ai = playbook.ai_summary || {};
+            const validator = playbook.validator || {};
+            const priorityActive = validator.approvedForAutoTradePriority === true;
             const windows = Array.isArray(playbook.preferred_scalp_windows) ? playbook.preferred_scalp_windows : [];
             const valuable = Array.isArray(playbook.valuable_confirmations) ? playbook.valuable_confirmations : [];
             return (
               <article key={playbook.id} style={card}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                   <h3 style={{ margin: 0, fontSize: 15 }}>{displayPair(playbook.pair)} · {playbook.engine.toUpperCase()}</h3>
-                  <span style={statusBadge}>{label(playbook.recommendation_stage)} · v{playbook.version}</span>
+                  <span style={{
+                    ...statusBadge,
+                    borderColor: priorityActive ? '#165c36' : undefined,
+                    color: priorityActive ? 'var(--good)' : undefined,
+                  }}>
+                    {priorityActive ? 'auto priority' : label(playbook.recommendation_stage)} · v{playbook.version}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', margin: '12px 0', fontSize: 11, color: 'var(--muted)' }}>
                   <span>n{playbook.sample_size}</span>
@@ -361,7 +369,11 @@ function PlaybookGrid({ playbooks }: { playbooks: Playbook[] }) {
                 <p style={muted}><strong style={{ color: 'var(--accent)' }}>Entry context:</strong> {String(ai.bestEntryContext || 'Insufficient evidence.')}</p>
                 <MiniList title="Proven windows" values={windows.map((item) => `${String(item.timeBucketEt || '—')} ET · ${label(item.session)} · ${rValue(item.expectancyR)}`)} />
                 <MiniList title="Valuable confirmations" values={valuable.map((item) => `${label(item.confirmation)} · ${rValue(item.liftR)} lift`)} />
-                <p style={{ ...muted, color: 'var(--warn)', marginBottom: 0 }}>{String(ai.evidenceWarning || 'Shadow-only.')}</p>
+                <p style={{ ...muted, color: priorityActive ? 'var(--good)' : 'var(--warn)', marginBottom: 0 }}>
+                  {priorityActive
+                    ? 'Auto-trade priority is active only during a matching proven ET window. Confidence, R:R, risk, and all native execution gates remain unchanged.'
+                    : String(ai.evidenceWarning || 'Not eligible for auto-trade priority.')}
+                </p>
               </article>
             );
           })}

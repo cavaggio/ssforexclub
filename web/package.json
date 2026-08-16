@@ -15,7 +15,7 @@
     "lint": "next lint",
     "pretypecheck": "npm run apply:web-runtime",
     "typecheck": "tsc --noEmit",
-    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js lib/autoAiAllEngines.contract.test.js lib/pprCountsReadiness.contract.test.js lib/reassessCard.contract.test.js lib/actualTradeReconciliationCore.test.js lib/actualTradeReconciliation.contract.test.js lib/oandaTransactionSyncAccounts.contract.test.js && node scripts/verify-ict-scanner-results.mjs && node scripts/verify-ict-close-policy.mjs"
+    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js lib/autoAiAllEngines.contract.test.js lib/pprCountsReadiness.contract.test.js lib/reassessCard.contract.test.js lib/pairPlaybookPriorityCore.test.js lib/accountCalibrationCore.test.js lib/actualTradeReconciliationCore.test.js lib/actualTradeReconciliation.contract.test.js lib/oandaTransactionSyncAccounts.contract.test.js && node scripts/verify-ict-scanner-results.mjs && node scripts/verify-ict-close-policy.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
