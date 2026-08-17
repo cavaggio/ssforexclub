@@ -101,6 +101,26 @@ test('uses missed winners, late/poor scans, and applied-adjustment audits as bou
   assert.equal(result.hardGatesPreserved, true);
 });
 
+test('uses exact exhausted-momentum and direction failures as bounded pair evidence', () => {
+  const result = computeEngineTradeAdjustment(ictCandidate, matureProfile({
+    pairSummary: { outcomes: 100, expectancy_r: 0 },
+    contextStats: [],
+    confirmationStats: [],
+    executionQuality: {},
+    failureStats: {
+      outcomes: 20,
+      exhausted_continuation_failures: 4,
+      direction_confirmation_failures: 3,
+      stale_trigger_failures: 1,
+      expectancy_r: -0.25,
+    },
+  }));
+  const component = result.components.find((item) => item.name === 'attributed_ict_failure_reasons');
+  assert.ok(component);
+  assert.equal(component.adjustment < 0, true);
+  assert.equal(result.hardGatesPreserved, true);
+});
+
 test('combines market study and engine learning within a five-point total cap', () => {
   const result = applyBoundedConfidence({
     originalConfidence: 97,

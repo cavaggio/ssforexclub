@@ -30,6 +30,26 @@ function num(...values: unknown[]): number | null {
   return null;
 }
 
+function deepValue(root: unknown, keys: string[]): unknown {
+  const queue: unknown[] = [root];
+  const visited = new Set<unknown>();
+  let inspected = 0;
+  while (queue.length && inspected < 750) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    inspected += 1;
+    const candidate = current as Record<string, unknown>;
+    for (const key of keys) {
+      if (candidate[key] !== undefined && candidate[key] !== null && candidate[key] !== '') return candidate[key];
+    }
+    for (const value of Object.values(candidate)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return null;
+}
+
 function normalizePair(value: unknown): string | null {
   const pair = str(value);
   return pair ? pair.replace('/', '_').toUpperCase() : null;
@@ -101,6 +121,7 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     close.tradeId,
     result.tradeId,
     request.tradeId,
+    deepValue(rawPayload, ['brokerTradeId', 'tradeId', 'tradeID']),
   );
   const brokerOrderId = str(
     payload.broker_order_id,
@@ -201,6 +222,8 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
       rawEdge.macro_risk,
       context.macro.risk,
     ),
+    candidate_signal_id: str(deepValue(rawPayload, ['candidateSignalId', 'signalId', 'ictSignalId'])),
+    entry_context: record(deepValue(rawPayload, ['entryContext'])),
   };
 }
 

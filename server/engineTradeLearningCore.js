@@ -360,6 +360,27 @@ export function computeEngineTradeAdjustment(candidate = {}, profile = {}, optio
     }
   }
 
+  // Exact broker-trade failure attribution. This is a bounded confidence input;
+  // the deterministic ICT corrective gate rejects the same conditions without
+  // waiting for a statistical sample.
+  const failureStats = profile.failureStats || {};
+  const attributedOutcomes = finiteNumber(failureStats.outcomes, 0);
+  const exhaustedFailures = finiteNumber(failureStats.exhausted_continuation_failures, 0);
+  const directionFailures = finiteNumber(failureStats.direction_confirmation_failures, 0);
+  const staleFailures = finiteNumber(failureStats.stale_trigger_failures, 0);
+  const attributedFailures = exhaustedFailures + directionFailures + staleFailures;
+  if (attributedOutcomes >= segmentMinimum && attributedFailures > 0) {
+    const rate = attributedFailures / attributedOutcomes;
+    components.push(component(
+      'attributed_ict_failure_reasons',
+      -0.25 - (0.75 * Math.min(1, rate) * evidenceWeight(attributedOutcomes, segmentMinimum, 60)),
+      attributedOutcomes,
+      failureStats.expectancy_r,
+      `${profileEngine.toUpperCase()} ${profilePair} has ${attributedFailures} attributed exhausted-momentum, direction-confirmation, or stale-trigger failures.`,
+      { exhaustedFailures, directionFailures, staleFailures },
+    ));
+  }
+
   const rawAdjustment = roundQuarter(clamp(
     components.reduce((sum, item) => sum + finiteNumber(item.adjustment, 0), 0),
     -maxAdjustment,

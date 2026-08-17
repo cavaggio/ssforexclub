@@ -78,6 +78,7 @@ function observation(overrides = {}) {
     direction: 'bullish',
     htfAligned: true,
     h1Aligned: true,
+    h1MomentumAligned: true,
     keyLevelTap: { aligned: false },
     sweepAligned: false,
     sweep: null,
@@ -180,13 +181,13 @@ test('continuation entries require an active parent cycle and aligned H1', () =>
   const blocked = advanceIctMarketMakerCycle({
     context: context(activeCycle),
     observation: observation({
-      h1Aligned: false,
+      h1MomentumAligned: false,
       continuationBreakout: { ready: true, mode: 'm5_continuation_breakout', cycleId: 'break:1.102' },
     }),
     now: '2026-06-04T06:45:00.000Z',
   });
   assert.equal(blocked.entryAuthorization.ready, false);
-  assert.match(blocked.entryAuthorization.reason, /H1 no longer aligns/i);
+  assert.match(blocked.entryAuthorization.reason, /H1 active momentum.*no longer aligns/i);
 });
 
 test('execution remains fail-closed when the 02:00 ET study is missing', () => {

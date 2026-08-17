@@ -52,6 +52,7 @@ function fakeAnalysis() {
       studyReady: true,
       stage: 'DISTRIBUTION_ACTIVE',
     },
+    correctiveGate: { passed: true, decision: 'authorize', family: 'reversal', failureCodes: [] },
     h1Transition: {
       ready: true,
       transitionId: 'bullish:2026-06-04T15:00:00Z',

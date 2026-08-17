@@ -35,6 +35,7 @@ const goodAnalysis = (over = {}) => async () => ({
     cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
   },
   marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
+  correctiveGate: { passed: true, decision: 'authorize', family: 'reversal', failureCodes: [] },
   h1Transition: {
     ready: true,
     transitionId: 'bullish:2026-06-04T15:00:00.000Z',

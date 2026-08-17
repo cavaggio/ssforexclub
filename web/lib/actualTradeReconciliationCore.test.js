@@ -5,6 +5,7 @@ import {
   buildActualTradeLifecycleRow,
   classifyActualResult,
   computeActualRealizedR,
+  computeTradeExcursion,
 } from './actualTradeReconciliationCore.js';
 
 test('actual result is sourced from the closed OANDA trade P&L', () => {
@@ -12,6 +13,20 @@ test('actual result is sourced from the closed OANDA trade P&L', () => {
   assert.equal(classifyActualResult('CLOSED', '-40.00'), 'loss');
   assert.equal(classifyActualResult('CLOSED', '0'), 'breakeven');
   assert.equal(classifyActualResult('OPEN', '100'), 'open');
+});
+
+test('MFE and MAE are measured from the exact broker trade candle path', () => {
+  const excursion = computeTradeExcursion({
+    pair: 'EUR_USD', direction: 'long', entryPrice: 1.1000, stopLoss: 1.0980,
+    candles: [
+      { mid: { h: '1.1010', l: '1.0995' } },
+      { mid: { h: '1.1030', l: '1.0990' } },
+    ],
+  });
+  assert.equal(excursion.mfePips, 30);
+  assert.equal(excursion.maePips, 10);
+  assert.equal(excursion.mfeR, 1.5);
+  assert.equal(excursion.maeR, -0.5);
 });
 
 test('realized R prefers broker P&L divided by immutable planned risk', () => {
@@ -50,6 +65,15 @@ test('lifecycle row preserves originating account and engine instead of current 
         engine: 'ict',
         result: {
           executed: [{
+            entryContext: {
+              candidateSignalId: 'USD_CHF:1784650000000',
+              timeframeState: { d1: 'bullish', h4: 'bullish', h1Structure: 'bullish' },
+              h1Momentum: { aligned: true, activeDirection: 'bullish', phase: 'impulse' },
+              m5Authorization: { ready: true, mode: 'm5_continuation_breakout', triggerAgeBars: 0, fresh: true },
+              powerOfThree: { stage: 'DISTRIBUTION_ACTIVE' },
+              htfLiquidityCondition: { keyLevelTap: { aligned: true } },
+              correctiveGate: { passed: true, failureCodes: [] },
+            },
             signal: {
               combinedLearningContext: { auditId: '123e4567-e89b-42d3-a456-426614174000' },
             },
@@ -84,4 +108,9 @@ test('lifecycle row preserves originating account and engine instead of current 
   assert.equal(row.realized_r, 1.5);
   assert.equal(row.engine_attribution_source, 'trade_log_open');
   assert.equal(row.actual_outcome_source, 'oanda_trade_detail');
+  assert.equal(row.candidate_signal_id, 'USD_CHF:1784650000000');
+  assert.equal(row.d1_state, 'bullish');
+  assert.equal(row.h1_momentum.activeDirection, 'bullish');
+  assert.equal(row.m5_trigger_age_bars, 0);
+  assert.equal(row.po3_stage, 'DISTRIBUTION_ACTIVE');
 });

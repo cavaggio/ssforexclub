@@ -20,6 +20,13 @@ test('captures executed, watched, and rejected scan evidence with pair-specific 
       executed: [{
         pair: 'EUR_USD', direction: 'long', fillPrice: 1.1, stopLoss: 1.098,
         takeProfit: 1.104, expectedRR: 2, confidence: 94, currentPrice: 1.1,
+        tradeId: 'T-100', candidateSignalId: 'EUR_USD:100',
+        timeframeBias: { d1: 'bullish', h4: 'bullish', h1: 'bullish' },
+        h1Momentum: { aligned: true, activeDirection: 'bullish', phase: 'impulse' },
+        entryAuthorization: { ready: true, mode: 'm5_continuation_breakout', cycleId: 'cycle-100' },
+        triggerAgeBars: 0,
+        marketMakerModel: { stage: 'DISTRIBUTION_ACTIVE' },
+        correctiveGate: { passed: true, failureCodes: [] },
         conceptsDetected: ['Liquidity Sweep', 'Displacement', 'FVG'],
       }],
       watchCandidates: [{
@@ -41,6 +48,12 @@ test('captures executed, watched, and rejected scan evidence with pair-specific 
   assert.equal(eur.confirmations.liquidity_sweep, true);
   assert.equal(eur.confirmations.displacement, true);
   assert.match(eur.confirmation_signature, /fvg/);
+  assert.equal(eur.candidate_signal_id, 'EUR_USD:100');
+  assert.equal(eur.broker_trade_id, 'T-100');
+  assert.equal(eur.daily_direction, 'bullish');
+  assert.equal(eur.h1_momentum.activeDirection, 'bullish');
+  assert.equal(eur.m5_trigger_age_bars, 0);
+  assert.equal(eur.confirmations.ict_corrective_gate, true);
   const rejected = records.observations.find((row) => row.pair === 'GBP_USD');
   assert.equal(rejected.status, 'rejected');
   assert.equal(rejected.rejection_reason, 'spread too high');

@@ -1,4 +1,5 @@
 const ENGINES = new Set(['ict', 'ppr', 'v3']);
+import { classifyIctTradeFailure } from '../../server/ictTradeContext.js';
 
 function numeric(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -13,6 +14,57 @@ function text(value) {
 
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function deepFind(opening, keys) {
+  const queue = [object(opening?.raw_payload), object(opening)];
+  const visited = new Set();
+  let inspected = 0;
+  while (queue.length && inspected < 750) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    inspected += 1;
+    for (const key of keys) {
+      if (current[key] !== undefined && current[key] !== null && current[key] !== '') return current[key];
+    }
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return null;
+}
+
+export function computeTradeExcursion({ pair, direction, entryPrice, stopLoss, candles = [] } = {}) {
+  const side = normalizeDirection(direction);
+  const entry = numeric(entryPrice);
+  const stop = numeric(stopLoss);
+  if (!side || entry === null || stop === null || !Array.isArray(candles) || !candles.length) {
+    return { mfePips: null, maePips: null, mfeR: null, maeR: null };
+  }
+  const highs = candles.map((candle) => numeric(candle?.high ?? candle?.mid?.h)).filter((value) => value !== null);
+  const lows = candles.map((candle) => numeric(candle?.low ?? candle?.mid?.l)).filter((value) => value !== null);
+  if (!highs.length || !lows.length) return { mfePips: null, maePips: null, mfeR: null, maeR: null };
+  const high = Math.max(...highs);
+  const low = Math.min(...lows);
+  const favorable = side === 'long' ? high - entry : entry - low;
+  const adverse = side === 'long' ? entry - low : high - entry;
+  const risk = Math.abs(entry - stop);
+  const pip = String(pair || '').includes('JPY') ? 0.01 : 0.0001;
+  return {
+    mfePips: +(Math.max(0, favorable) / pip).toFixed(3),
+    maePips: +(Math.max(0, adverse) / pip).toFixed(3),
+    mfeR: risk > 0 ? +(Math.max(0, favorable) / risk).toFixed(6) : null,
+    maeR: risk > 0 ? +(-Math.max(0, adverse) / risk).toFixed(6) : null,
+  };
+}
+
+export function inferBrokerExitReason({ trade = {}, closingTransactions = [] } = {}) {
+  for (const transaction of Array.isArray(closingTransactions) ? closingTransactions : []) {
+    const reason = text(transaction?.reason || transaction?.type);
+    if (reason) return reason.toLowerCase();
+  }
+  return text(trade.closeReason || trade.reason) || (String(trade.state || '').toUpperCase() === 'CLOSED' ? 'broker_trade_closed' : null);
 }
 
 function auditIdFromOpening(opening = {}) {
@@ -83,7 +135,7 @@ export function computeActualRealizedR({ direction, entryPrice, exitPrice, stopL
   return Number(value.toFixed(6));
 }
 
-export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, reconciledAt = new Date() } = {}) {
+export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, closingTransactions = [], excursion = null, reconciledAt = new Date() } = {}) {
   const engine = normalizeEngine(opening.engine);
   const brokerAccountId = text(opening.broker_account_id);
   const brokerTradeId = text(opening.broker_trade_id || trade.id);
@@ -110,6 +162,19 @@ export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, reconci
     realizedPl,
     riskUsd,
   });
+  const entryContext = object(deepFind(opening, ['entryContext']));
+  const candidateSignalId = text(
+    entryContext.candidateSignalId || deepFind(opening, ['candidateSignalId', 'signalId', 'ictSignalId']),
+  );
+  const exitReason = inferBrokerExitReason({ trade, closingTransactions });
+  const measured = excursion && typeof excursion === 'object' ? excursion : {};
+  const failure = classifyIctTradeFailure({
+    entryContext,
+    realizedR,
+    mfeR: measured.mfeR,
+    maeR: measured.maeR,
+    exitReason,
+  });
 
   return {
     user_id: userId,
@@ -118,6 +183,7 @@ export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, reconci
     broker: 'oanda',
     engine,
     broker_trade_id: brokerTradeId,
+    candidate_signal_id: candidateSignalId,
     learning_audit_id: auditIdFromOpening(opening),
     source_trade_log_id: text(opening.trade_log_id),
     pair,
@@ -134,6 +200,22 @@ export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, reconci
     risk_usd: riskUsd,
     realized_pl: realizedPl,
     realized_r: realizedR,
+    entry_context: entryContext,
+    d1_state: text(entryContext.timeframeState?.d1),
+    h4_state: text(entryContext.timeframeState?.h4),
+    h1_state: text(entryContext.timeframeState?.h1Structure),
+    h1_momentum: object(entryContext.h1Momentum),
+    m5_authorization: object(entryContext.m5Authorization),
+    m5_trigger_age_bars: numeric(entryContext.m5Authorization?.triggerAgeBars),
+    po3_stage: text(entryContext.powerOfThree?.stage),
+    htf_liquidity_condition: object(entryContext.htfLiquidityCondition),
+    exit_reason: state === 'CLOSED' ? failure.exitReason : null,
+    mfe_pips: numeric(measured.mfePips),
+    mae_pips: numeric(measured.maePips),
+    mfe_r: numeric(measured.mfeR),
+    mae_r: numeric(measured.maeR),
+    failure_reasons: state === 'CLOSED' ? failure.failureReasons : [],
+    learning_adjustment: state === 'CLOSED' ? failure.adjustment : null,
     opening_transaction_ids: Array.isArray(trade.openingTransactionIDs)
       ? trade.openingTransactionIDs.map(String)
       : [],

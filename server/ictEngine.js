@@ -45,6 +45,8 @@ import { getNewsRisk } from './news/forexFactoryNews.js';
 import { configuredIctWatchlist } from './ictWatchlist.js';
 import { getIctInstrumentMeta } from './ictInstrumentCatalog.js';
 import { classifyIctHourlyEntryTransition } from './ictHourlyEntry.js';
+import { classifyIctH1Momentum } from './ictH1Momentum.js';
+import { evaluateIctCorrectiveGate } from './ictCorrectiveGate.js';
 import {
   classifyIctM5ContinuationEntry,
 } from './ictContinuationEntry.js';
@@ -324,6 +326,11 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
     bias: htfAligned ? dailyTfBias : null,
     now,
   });
+  const h1Momentum = classifyIctH1Momentum({
+    h1Candles: h1,
+    bias: htfAligned ? dailyTfBias : null,
+    transition: h1Transition,
+  });
 
   // 2. Liquidity map (pools from D/H4/H1/session); sweep + equal-levels on 5M.
   const analyzed = analyzeLiquidity({ pair, dailyCandles: daily, h4Candles: h4, h1Candles: h1, m15Candles: entryTf, currentPrice, atrPips });
@@ -438,6 +445,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
     candles: entryTf,
     bias: want,
     h1Bias: h1TfBias,
+    h1Momentum,
+    h1Transition,
     bos,
     rangeBreakout,
     retest,
@@ -451,6 +460,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
     direction: want,
     htfAligned,
     h1Aligned,
+    h1MomentumAligned: h1Momentum.aligned === true,
+    h1Momentum,
     keyLevelTap: htfKeyLevelTap,
     sweep,
     sweepAligned,
@@ -562,10 +573,38 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
   const triggerAgeBars = triggerAges.length ? Math.min(...triggerAges) : null;
   const freshImpulse = Number.isFinite(triggerAgeBars) && triggerAgeBars <= 1;
 
+  const correctiveGate = evaluateIctCorrectiveGate({
+    direction: want,
+    timeframeBias: {
+      d1: dailyTfBias,
+      h4: h4TfBias,
+      h1: h1TfBias,
+      d1H4Aligned: htfAligned,
+      direction: analysisDirection,
+    },
+    h1Momentum,
+    h1Transition,
+    entryAuthorization,
+    triggerAgeBars,
+    freshImpulse,
+    marketMakerModel: {
+      cycle: marketMakerResolution.cycle,
+      keyLevelTap: htfKeyLevelTap,
+      observation: marketMakerObservation,
+      entryAuthorization,
+    },
+    concepts: { mss, cisd, inverseFvg },
+  });
+
   // The persisted market-maker model opens the scalp window, while the order
   // still requires a current M5 impulse.
   if (htfAligned && entryAuthorization.ready && !freshImpulse) {
     hardFails.push('Hard gate: ICT entry cycle is authorized, but no fresh 5M execution trigger is present.');
+  }
+  if (htfAligned && entryAuthorization.ready && !correctiveGate.passed) {
+    for (const [index, reason] of correctiveGate.failureReasons.entries()) {
+      hardFails.push(`Hard gate [${correctiveGate.failureCodes[index]}]: ${reason}`);
+    }
   }
 
   const timing = gradeTiming({ pair, currentPrice, setup, atrPrice });
@@ -700,6 +739,9 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
       h4: h4TfBias,
       h1: h1TfBias,
       h1AnalysisOnly: true,
+      h1ActiveMomentum: h1Momentum.activeDirection,
+      h1MomentumPhase: h1Momentum.phase,
+      h1MomentumExecutionGate: true,
       d1H4Aligned: htfAligned,
       direction: analysisDirection,
     },
@@ -718,8 +760,10 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
     confluenceScore,
     targetConfidence,
     h1Transition,
+    h1Momentum,
     continuationBreakout,
     entryAuthorization,
+    correctiveGate,
     marketMakerModel: {
       studyReady: marketMakerContext?.studyReady === true,
       studyDate: marketMakerContext?.studyDate ?? null,
@@ -759,6 +803,8 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
         h4Bias: h4TfBias,
         h1Bias: h1TfBias,
         h1AnalysisOnly: true,
+        h1Momentum,
+        h1MomentumExecutionGate: true,
         aligned: htfAligned,
         h1Transition,
         continuationBreakout,
@@ -823,11 +869,17 @@ function blankAnalysis(pair, timestamp, reason) {
     },
     timeframeBias: {
       d1: 'neutral', h4: 'neutral', h1: 'neutral', h1AnalysisOnly: true,
+      h1ActiveMomentum: 'neutral', h1MomentumPhase: 'neutral', h1MomentumExecutionGate: true,
       d1H4Aligned: false, direction: 'none',
     },
     h1Transition: null,
+    h1Momentum: null,
     continuationBreakout: null,
     entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason },
+    correctiveGate: {
+      passed: false, decision: 'reject', family: null,
+      failureCodes: ['INSUFFICIENT_DATA'], failureReasons: [reason],
+    },
     marketMakerModel: {
       studyReady: false, studyDate: null, stage: null, cycle: null, changed: false,
       keyLevelTap: null, inverseFvg: null, cisd: null, observation: null,

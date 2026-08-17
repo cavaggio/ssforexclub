@@ -15,6 +15,32 @@ type TradeActivityRow = {
   exit_price: number | null;
   realized_pl: number | null;
   reason: string | null;
+  candidate_signal_id?: string | null;
+  lifecycle?: {
+    id: string;
+    broker_trade_id: string;
+    candidate_signal_id: string | null;
+    signal_observation_id: string | null;
+    d1_state: string | null;
+    h4_state: string | null;
+    h1_state: string | null;
+    h1_momentum: Record<string, unknown> | null;
+    m5_authorization: Record<string, unknown> | null;
+    m5_trigger_age_bars: number | null;
+    po3_stage: string | null;
+    htf_liquidity_condition: Record<string, unknown> | null;
+    exit_reason: string | null;
+    realized_r: number | null;
+    mfe_pips: number | null;
+    mae_pips: number | null;
+    mfe_r: number | null;
+    mae_r: number | null;
+    failure_reasons: string[] | null;
+    learning_adjustment: Record<string, unknown> | null;
+    applied_learning_audit_id: string | null;
+    learning_applied: boolean;
+    entry_context: Record<string, unknown> | null;
+  } | null;
 };
 
 type ActivityResponse = {
@@ -71,6 +97,23 @@ function formatTradingDate(value: string | null): string {
     day: 'numeric',
     year: 'numeric',
   }).format(new Date(year, month - 1, day));
+}
+
+function valueText(value: unknown): string {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(3);
+  if (typeof value === 'string') return value.replace(/_/g, ' ');
+  return JSON.stringify(value);
+}
+
+function Detail({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div style={{ minWidth: 150 }}>
+      <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ color: 'var(--text)', fontSize: 11, marginTop: 3, overflowWrap: 'anywhere' }}>{valueText(value)}</div>
+    </div>
+  );
 }
 
 export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
@@ -222,10 +265,10 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
 
       {!error && visibleRows.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 940 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Time', 'Pair', 'Event', 'Direction', 'Entry', 'Exit', 'P/L', 'Trade ID'].map((label) => (
+                {['Time', 'Pair', 'Event', 'Direction', 'Entry', 'Exit', 'P/L', 'Trade ID', 'ICT review'].map((label) => (
                   <th
                     key={label}
                     style={{
@@ -244,7 +287,12 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {visibleRows.map((row) => (
+              {visibleRows.map((row) => {
+                const lifecycle = row.lifecycle;
+                const momentum = lifecycle?.h1_momentum || {};
+                const authorization = lifecycle?.m5_authorization || {};
+                const liquidity = lifecycle?.htf_liquidity_condition || {};
+                return (
                 <tr key={row.id} style={{ borderBottom: '1px solid rgba(128,128,160,0.15)' }}>
                   <td style={{ padding: '11px 10px', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
                     {new Date(row.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
@@ -282,8 +330,31 @@ export function TradeActivityLog({ hasBroker }: { hasBroker: boolean }) {
                   <td title={row.trade_id ?? undefined} style={{ padding: '11px 10px', color: 'var(--muted)', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
                     {compactTradeId(row.trade_id)}
                   </td>
+                  <td style={{ padding: '8px 10px', fontSize: 11 }}>
+                    <details>
+                      <summary style={{ color: lifecycle ? '#4db8ff' : 'var(--muted)', cursor: lifecycle ? 'pointer' : 'default', whiteSpace: 'nowrap' }}>
+                        {lifecycle ? 'Open review' : 'Awaiting link'}
+                      </summary>
+                      {lifecycle && (
+                        <div style={{ marginTop: 10, width: 680, maxWidth: '75vw', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, padding: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 7 }}>
+                          <Detail label="Candidate ID" value={lifecycle.candidate_signal_id || row.candidate_signal_id} />
+                          <Detail label="Broker trade ID" value={lifecycle.broker_trade_id} />
+                          <Detail label="D1 / H4 / H1" value={`${valueText(lifecycle.d1_state)} / ${valueText(lifecycle.h4_state)} / ${valueText(lifecycle.h1_state)}`} />
+                          <Detail label="H1 active momentum" value={`${valueText(momentum.activeDirection)} · ${valueText(momentum.phase)} · aligned ${valueText(momentum.aligned)}`} />
+                          <Detail label="M5 authorization" value={`${valueText(authorization.mode)} · age ${valueText(lifecycle.m5_trigger_age_bars)} bars`} />
+                          <Detail label="PO3 stage" value={lifecycle.po3_stage} />
+                          <Detail label="HTF liquidity" value={liquidity} />
+                          <Detail label="Exit / realized R" value={`${valueText(lifecycle.exit_reason)} · ${valueText(lifecycle.realized_r)}R`} />
+                          <Detail label="MFE" value={`${valueText(lifecycle.mfe_pips)} pips · ${valueText(lifecycle.mfe_r)}R`} />
+                          <Detail label="MAE" value={`${valueText(lifecycle.mae_pips)} pips · ${valueText(lifecycle.mae_r)}R`} />
+                          <Detail label="Failure reasons" value={(lifecycle.failure_reasons || []).join(', ') || 'none'} />
+                          <Detail label="Learning adjustment" value={lifecycle.learning_applied ? `applied · ${lifecycle.applied_learning_audit_id || 'audit pending'}` : 'pending'} />
+                        </div>
+                      )}
+                    </details>
+                  </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>

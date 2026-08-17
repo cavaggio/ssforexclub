@@ -318,15 +318,15 @@ export function isTrueHardReject(reason = '') {
   return (r.includes('rr') && r.includes('1.5')) || (r.includes('risk reward') && r.includes('below')) ||
     r.includes('max daily loss') || r.includes('daily loss') || r.includes('max trades') || r.includes('duplicate') ||
     r.includes('spread too high') || r.includes('invalid broker') || r.includes('credentials') ||
+    r.includes('late entry') || r.includes('late_entry') || r.includes('overextended') ||
+    r.includes('h1 active momentum') || r.includes('momentum exhausted') ||
+    r.includes('direction confirmation') || r.includes('corrective gate') || r.includes('stale_m5_trigger') ||
     r.includes('missing stop') || r.includes('missing take profit') || r.includes('live trading disabled') || r.includes('execution disabled');
 }
 export function softenRejectReasons(reasons = [], now = new Date()) {
-  if (!isPrimaryTradeWindow(now)) return reasons;
-  return reasons.filter((reason) => {
-    const r = String(reason).toLowerCase();
-    if (isTrueHardReject(r)) return true;
-    return !['late_entry','late entry','flow opposes','institutional flow','missing smt','missing fvg','mixed ema','emaalignment=mixed','single opposing liquidity','liquidity proxy'].some((text) => r.includes(text));
-  });
+  void now;
+  // Scheduling may prioritize pairs, but it may not weaken entry rejection.
+  return Array.isArray(reasons) ? [...reasons] : [];
 }
 export function pickTradeMode(candidate = {}) {
   const rr = Number(candidate.rr ?? candidate.riskReward ?? candidate.expectedRR ?? 0);

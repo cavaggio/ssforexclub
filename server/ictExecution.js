@@ -49,6 +49,7 @@ import { loadIctMarketMakerContext, persistIctMarketMakerCycle } from './ictMark
 import { maybeRebaseIctTarget, selectIctPairQuote } from './ictExecutionTarget.js';
 import { requestIctStopAdvice } from './ictClaudeAdvisor.js';
 import { recordTrade } from './oandaTradeHistory.js';
+import { buildIctTradeEntryContext } from './ictTradeContext.js';
 
 import { evaluateUniversalEntryPolicy, setupFingerprint } from './executionPolicy.js';
 import { reserveExecution, markExecutionOpen, releaseExecution } from './executionReservations.js';
@@ -311,6 +312,12 @@ export async function executeIctTrade(params = {}, {
   const entryAuthorization = analysis?.entryAuthorization || {};
   if (!entryAuthorization.ready || !entryAuthorization.cycleId) {
     return blocked(`ICT central market-maker authorization failed: ${entryAuthorization.reason || 'the persistent reversal/continuation cycle is not ready'}.`);
+  }
+  if (analysis?.correctiveGate?.passed !== true || analysis?.correctiveGate?.decision !== 'authorize') {
+    const failures = Array.isArray(analysis?.correctiveGate?.failureCodes)
+      ? analysis.correctiveGate.failureCodes.join(', ')
+      : 'CORRECTIVE_GATE_MISSING';
+    return blocked(`ICT corrective gate rejected execution: ${failures}.`);
   }
   if (
     analysis?.marketMakerModel?.studyReady !== true ||
@@ -772,6 +779,7 @@ export async function executeIctTrade(params = {}, {
   const fillPrice = parseFloat(fill.price ?? entry);
   // Projected hold-time for the ICT lifecycle reassessment (recorded at open).
   const holdMinutes = estimateHoldMinutes(analysis.setupType, analysis.concepts?.killzone);
+  const entryContext = buildIctTradeEntryContext({ analysis, brokerTradeId: tradeId, filledAt: now });
   rec(`filled tradeId=${tradeId} price=${fillPrice} units=${units} holdMinutes=${holdMinutes}`);
   try {
     const actualFillRisk = Math.abs(fillPrice - stopLoss);
@@ -783,7 +791,7 @@ export async function executeIctTrade(params = {}, {
       entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? analysis.confidence,
       entryTpHitConfidence: analysis.targetHitConfidence ?? analysis.confidence,
       entryStrategy: 'ICT', strategy: 'ICT', score: analysis.confluenceScore ?? analysis.confidence,
-      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence, h1Transition: analysis.h1Transition, continuationBreakout: analysis.continuationBreakout, entryAuthorization },
+      scoreBreakdown: { setupType: analysis.setupType, conceptsDetected: analysis.conceptsDetected, riskModel: analysis.riskModel, claudeStopAdvice: analysis.claudeStopAdvice, targetConfidence: analysis.targetConfidence, h1Transition: analysis.h1Transition, h1Momentum: analysis.h1Momentum, continuationBreakout: analysis.continuationBreakout, entryAuthorization, correctiveGate: analysis.correctiveGate, entryContext },
       atrPips: analysis.atrPips, units, riskAmount: sizing.actualRiskUSD, oandaOrderId: String(tradeId),
       entryATR: analysis.atrPips, entryExpectedHoldTimeMinutes: holdMinutes, entryRiskRewardRatio: actualFillRR,
       entrySession: analysis.concepts?.killzone?.currentKillzone ?? 'ICT', originalRecommendedTP: targetProfit, originalRecommendedSL: stopLoss,
@@ -797,6 +805,8 @@ export async function executeIctTrade(params = {}, {
     stopLoss, takeProfit: targetProfit,
     riskUSD: sizing.actualRiskUSD, signalId: analysis.signalId,
     learningAuditId: analysis.combinedLearningContext?.auditId ?? null,
+    candidateSignalId: analysis.signalId,
+    entryContext,
     holdMinutes,
     entryConfidence: analysis.targetHitConfidence ?? analysis.confidence,
     entryQualityConfidence: analysis.confluenceScore ?? analysis.targetConfidence?.confluenceScore ?? null,
@@ -844,36 +854,23 @@ export function isTrueHardReject(reason = "") {
     r.includes("credentials") ||
     r.includes("missing stop") ||
     r.includes("missing take profit") ||
+    r.includes("late entry") ||
+    r.includes("late_entry") ||
+    r.includes("overextended") ||
+    r.includes("h1 active momentum") ||
+    r.includes("momentum exhausted") ||
+    r.includes("direction confirmation") ||
+    r.includes("corrective gate") ||
+    r.includes("stale_m5_trigger") ||
     r.includes("live trading disabled") ||
     r.includes("execution disabled")
   );
 }
 
 export function softenRejectReasons(reasons = [], now = new Date()) {
-  if (!isPrimaryTradeWindow(now)) return reasons;
-
-  return reasons.filter((reason) => {
-    const r = String(reason).toLowerCase();
-
-    if (isTrueHardReject(r)) return true;
-
-    if (
-      r.includes("late_entry") ||
-      r.includes("late entry") ||
-      r.includes("flow opposes") ||
-      r.includes("institutional flow") ||
-      r.includes("missing smt") ||
-      r.includes("missing fvg") ||
-      r.includes("mixed ema") ||
-      r.includes("emaalignment=mixed") ||
-      r.includes("single opposing liquidity") ||
-      r.includes("liquidity proxy")
-    ) {
-      return false;
-    }
-
-    return true;
-  });
+  void now;
+  // A session window can never erase a timing, momentum, or direction failure.
+  return Array.isArray(reasons) ? [...reasons] : [];
 }
 
 export function pickTradeMode(candidate = {}) {
