@@ -33,8 +33,10 @@ for (const forbidden of [
 
 for (const marker of [
   "ACTIVE_EXIT_POLICY = 'profit_protection_v2'",
+  'FIRST_PARTIAL_PROFIT_PIPS = 15',
   "action: 'MOVE_STOP_TO_BREAKEVEN'",
   "action: 'PARTIAL_CLOSE'",
+  'const percent = 50',
   "action: 'ARM_RUNNER'",
   "action: 'TRAIL_PROFIT'",
   'automaticFullCloseAllowed: false',
@@ -51,4 +53,4 @@ for (const forbidden of ["action: 'FULL_CLOSE'", "return 'ALL'"]) {
   }
 }
 
-console.log('Profit Protection v2 verified: no automatic full close; breakeven, one favorable-momentum partial, and post-TP trailing only.');
+console.log('Profit Protection v2 verified: no automatic full close; 50% partial at +15 pips, breakeven runner, and post-TP trailing only.');
