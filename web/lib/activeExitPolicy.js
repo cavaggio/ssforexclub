@@ -4,12 +4,13 @@
  * Automated management is deliberately unable to liquidate a full trade.
  * The broker stop remains the sole loss authority. Management can only:
  *   - move the stop to breakeven after sufficient favorable movement;
- *   - bank one partial while momentum is still favorable;
+ *   - bank one 50% partial once open profit reaches +15 pips;
  *   - remove the runner's fixed TP after that partial; and
  *   - trail the runner only after price reaches the original TP threshold.
  */
 
 export const ACTIVE_EXIT_POLICY = 'profit_protection_v2';
+export const FIRST_PARTIAL_PROFIT_PIPS = 15;
 
 const finite = (value, fallback = null) => {
   const parsed = Number(value);
@@ -205,6 +206,7 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     breakEvenSet,
     targetReached,
     breakoutConfirmed: breakout,
+    partialProfitTriggerPips: FIRST_PARTIAL_PROFIT_PIPS,
   };
 
   if (priorPartialCount > 0 && !runnerArmed) {
@@ -241,14 +243,18 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     });
   }
 
-  if (priorPartialCount < 1 && favorableMomentum && (profitR >= 1 || (profitR >= 0.5 && tpProgress >= 0.65))) {
-    const percent = profitR >= 1 ? 50 : 33;
+  // Profit milestone is intentionally independent of R geometry and momentum
+  // requalification. Once an un-partialed trade is at +15 pips, bank exactly
+  // half and protect the remainder. This prevents a profitable trade from
+  // missing protection merely because its original stop made +15p less than 1R.
+  if (priorPartialCount < 1 && currentProfitPips >= FIRST_PARTIAL_PROFIT_PIPS) {
+    const percent = 50;
     return actionResult({
       action: 'PARTIAL_CLOSE',
       percent,
-      reason: `Momentum remains favorable; bank ${percent}% now, move the remainder to breakeven, and convert the original TP into the runner's trailing-activation threshold.`,
-      confidence: breakout ? 90 : 84,
-      evidence: ['favorable_momentum', 'single_partial_limit', 'breakeven_runner'],
+      reason: `Profit reached +${currentProfitPips.toFixed(1)} pips; bank 50% now, move the remainder to breakeven, and convert the original TP into the runner's trailing-activation threshold.`,
+      confidence: 96,
+      evidence: ['fifteen_pip_profit_milestone', 'single_partial_limit', 'breakeven_runner'],
       metrics,
       stopLoss: entryPrice,
       cancelTakeProfit: true,
@@ -270,7 +276,7 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     action: 'HOLD_TO_TP',
     reason: reversalHigh || structureOpposes
       ? 'Contrary evidence is recorded, but automatic early liquidation is disabled; the protective SL remains the loss authority.'
-      : 'No profit-protection milestone is due; keep the original SL/TP and let the trade thesis resolve.',
+      : `No profit-protection milestone is due; wait for +${FIRST_PARTIAL_PROFIT_PIPS} pips or the existing breakeven milestone and let the trade thesis resolve.`,
     confidence: reversalHigh || structureOpposes ? 95 : 78,
     evidence: [
       'protective_sl_is_loss_authority',
