@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateActiveExit, closeUnitsForDecision } from './activeExitPolicy.js';
+import {
+  FIRST_PARTIAL_PROFIT_PIPS,
+  evaluateActiveExit,
+  closeUnitsForDecision,
+} from './activeExitPolicy.js';
 
 const base = {
   direction: 'long',
@@ -16,6 +20,10 @@ const base = {
   invalidationDetected: false,
   marketState: 'TRENDING',
 };
+
+test('the first automatic partial milestone is fixed at 15 pips', () => {
+  assert.equal(FIRST_PARTIAL_PROFIT_PIPS, 15);
+});
 
 test('the original broker SL/TP remain untouched before a protection milestone', () => {
   const decision = evaluateActiveExit(base);
@@ -51,7 +59,7 @@ test('high reversal risk near breakeven is recorded but not auto-closed', () => 
   assert.match(decision.reason, /automatic early liquidation is disabled/i);
 });
 
-test('favorable momentum banks a 33% partial near the target and arms breakeven', () => {
+test('near-target favorable momentum below 15 pips no longer takes an early partial', () => {
   const decision = evaluateActiveExit({
     ...base,
     currentPrice: 1.108,
@@ -60,44 +68,69 @@ test('favorable momentum banks a 33% partial near the target and arms breakeven'
     marketState: 'BREAKOUT',
     momentumDecayScore: 25,
   });
-  assert.equal(decision.action, 'PARTIAL_CLOSE');
-  assert.equal(decision.closePercent, 33);
-  assert.equal(decision.stopLoss, base.entryPrice);
-  assert.equal(decision.cancelTakeProfit, true);
-  assert.equal(closeUnitsForDecision(100000, decision), 33000);
+  assert.equal(decision.metrics.currentProfitPips, 8);
+  assert.equal(decision.action, 'HOLD_TO_TP');
+  assert.equal(decision.closePercent, 0);
 });
 
-test('favorable +1R momentum banks a 50% partial once', () => {
+test('exactly 15 pips banks a 50% partial even when 15 pips is less than 1R', () => {
   const decision = evaluateActiveExit({
     ...base,
-    currentPrice: 1.11,
-    profitRMultiple: 1.1,
-    tpProgress: 0.55,
-    momentumStatus: 'accelerating',
+    currentPrice: 1.1015,
+    profitRMultiple: 0.75,
+    initialRiskPips: 20,
+    tpProgress: 0.4,
+    momentumStatus: 'stable',
+  });
+  assert.equal(decision.metrics.currentProfitPips, 15);
+  assert.equal(decision.action, 'PARTIAL_CLOSE');
+  assert.equal(decision.closePercent, 50);
+  assert.equal(decision.stopLoss, base.entryPrice);
+  assert.equal(decision.cancelTakeProfit, true);
+  assert.equal(closeUnitsForDecision(439743, decision), 219871);
+});
+
+test('15 pip milestone protects profit even if momentum has deteriorated', () => {
+  const decision = evaluateActiveExit({
+    ...base,
+    currentPrice: 1.1015,
+    profitRMultiple: 0.75,
+    initialRiskPips: 20,
+    tpProgress: 0.4,
+    momentumStatus: 'reversal',
+    reversalRisk: 'high',
+    momentumDecayScore: 80,
   });
   assert.equal(decision.action, 'PARTIAL_CLOSE');
   assert.equal(decision.closePercent, 50);
+  assert.equal(decision.automaticFullCloseAllowed, false);
 });
 
-test('at +1R without favorable momentum the policy only moves to breakeven', () => {
+test('+1R below 15 pips moves the stop to breakeven but does not take a partial', () => {
   const decision = evaluateActiveExit({
     ...base,
-    currentPrice: 1.11,
+    currentPrice: 1.1011,
     profitRMultiple: 1.1,
+    initialRiskPips: 10,
     tpProgress: 0.55,
-    momentumStatus: 'reversal',
-    reversalRisk: 'high',
+    momentumStatus: 'accelerating',
   });
+  assert.equal(decision.metrics.currentProfitPips, 11);
   assert.equal(decision.action, 'MOVE_STOP_TO_BREAKEVEN');
   assert.equal(decision.stopLoss, base.entryPrice);
   assert.equal(decision.closePercent, 0);
 });
 
-test('a banked partial is converted into a breakeven runner', () => {
-  const decision = evaluateActiveExit(base, { priorPartialCount: 1 });
+test('a banked partial is converted into a breakeven runner and cannot fire twice', () => {
+  const decision = evaluateActiveExit({
+    ...base,
+    profitRMultiple: 1.8,
+    initialRiskPips: 10,
+  }, { priorPartialCount: 1 });
   assert.equal(decision.action, 'ARM_RUNNER');
   assert.equal(decision.stopLoss, base.entryPrice);
   assert.equal(decision.cancelTakeProfit, true);
+  assert.equal(closeUnitsForDecision(100000, decision), null);
 });
 
 test('an armed runner waits for the original TP threshold before trailing', () => {
