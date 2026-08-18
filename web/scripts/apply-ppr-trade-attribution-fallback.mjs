@@ -53,28 +53,33 @@ replaceOnce(
   'attributed fallback row',
 );
 
-replaceOnce(
-  `      const fallback = await supabase
+// Keep the fallback transform compatible with both the legacy immediate-return
+// path and the newer lifecycle-aware path. Only rewrite the failed attributed
+// insert itself; leave whatever success handling follows (including lifecycle
+// persistence) untouched.
+if (!source.includes('attributed fallback unavailable')) {
+  replaceOnce(
+    `      const fallback = await supabase
         .from('trade_logs')
         .insert(fallbackRow)
         .select('id')
-        .single();
+        .single();`,
+    `      let fallback = await supabase
+        .from('trade_logs')
+        .insert(fallbackRow)
+        .select('id')
+        .single();`,
+    'progressive fallback declaration',
+  );
 
-      if (fallback.error || !fallback.data) {
+  replaceOnce(
+    `      if (fallback.error || !fallback.data) {
         console.warn(
           \`[TRADE_LOG] fallback insert failed user=\${input.userId} event=\${input.eventType}: \${fallback.error?.message ?? 'no row'}\`,
         );
         return { ok: false, error: fallback.error?.message ?? error?.message ?? 'no row returned' };
-      }
-
-      return { ok: true, id: String(fallback.data.id) };`,
-  `      let fallback = await supabase
-        .from('trade_logs')
-        .insert(fallbackRow)
-        .select('id')
-        .single();
-
-      if (fallback.error || !fallback.data) {
+      }`,
+    `      if (fallback.error || !fallback.data) {
         console.warn(
           \`[TRADE_LOG] attributed fallback unavailable user=\${input.userId} event=\${input.eventType}: \${fallback.error?.message ?? 'no row'} — retrying legacy fallback\`,
         );
@@ -99,11 +104,10 @@ replaceOnce(
           };
         }
         fallback = legacyFallback;
-      }
-
-      return { ok: true, id: String(fallback.data.id) };`,
-  'progressive fallback insert',
-);
+      }`,
+    'progressive fallback insert',
+  );
+}
 
 for (const marker of [
   'engine?: string | null',
