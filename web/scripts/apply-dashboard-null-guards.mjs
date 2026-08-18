@@ -11,7 +11,10 @@ function replaceOnce(oldText, newText, label) {
   if (!source.includes(oldText)) {
     throw new Error(`Dashboard null-guard marker missing: ${label}`);
   }
-  source = source.replace(oldText, newText);
+  // Use a callback so replacement strings containing `$` (for currency JSX)
+  // are inserted literally instead of being interpreted as String.replace
+  // substitution tokens such as `$$`.
+  source = source.replace(oldText, () => newText);
 }
 
 // Reassessment payloads legitimately use null when a value cannot yet be
