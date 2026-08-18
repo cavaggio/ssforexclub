@@ -95,7 +95,10 @@ for (const forbidden of [
   'trade.profitRMultiple !== undefined',
   'trade.distanceToTP !== undefined && <SizingCell label="To TP"',
   'trade.distanceToSL !== undefined && <SizingCell label="To SL"',
-  'trade.distanceToSLPips.toFixed(1)}p away`}',
+  'sub={`${trade.distanceToSLPips.toFixed(1)}p away`}',
+  'sub={`${trade.distanceToTPPips.toFixed(1)}p to go',
+  '<SizingCell label="TP prob" value={`${(trade.tpProbability * 100).toFixed(0)}%`} />',
+  '<SizingCell label="SL prob" value={`${(trade.slProbability * 100).toFixed(0)}%`} />',
   'sig.spreadPips !== undefined && <span',
 ]) {
   if (source.includes(forbidden)) {
