@@ -51,6 +51,8 @@ export function classifyIctM5ContinuationEntry({
   candles = [],
   bias,
   h1Bias,
+  h1Momentum = null,
+  h1Transition = null,
   bos = null,
   rangeBreakout = null,
   retest = null,
@@ -62,6 +64,9 @@ export function classifyIctM5ContinuationEntry({
 } = {}) {
   const direction = normalizeBias(bias);
   const hourlyDirection = normalizeBias(h1Bias);
+  const activeMomentumAligned = h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;
+  const transitionAligned = h1Transition?.ready === true && normalizeBias(h1Transition?.bias) === direction;
+  const hourlyMomentumConfirmed = activeMomentumAligned || transitionAligned;
   const list = Array.isArray(candles) ? candles : [];
   const latest = list.at(-1) || null;
   const latestDirection = candleDirection(latest);
@@ -128,17 +133,18 @@ export function classifyIctM5ContinuationEntry({
   let ready = true;
   let status = 'ready';
   let reason = confirmedRetest
-    ? 'H1 confirms the Daily/H4 bias and M5 completed the first held retest of a fresh continuation break.'
-    : 'H1 confirms the Daily/H4 bias and M5 closed a displacement breakout with an aligned ICT PD array.';
+    ? 'H1 active momentum/transition confirms the Daily/H4 bias and M5 completed the first held retest of a fresh continuation break.'
+    : 'H1 active momentum/transition confirms the Daily/H4 bias and M5 closed a displacement breakout with an aligned ICT PD array.';
 
   if (!direction) {
     ready = false;
     status = 'no_htf_bias';
     reason = 'Daily/H4 continuation direction is unavailable.';
-  } else if (hourlyDirection !== direction) {
+  } else if (!hourlyMomentumConfirmed) {
     ready = false;
-    status = 'h1_not_aligned';
-    reason = `H1 analysis is ${hourlyDirection || 'neutral'}, not ${direction} with the Daily/H4 bias.`;
+    status = h1Momentum?.exhausted === true ? 'h1_momentum_exhausted' : 'h1_momentum_not_aligned';
+    reason = h1Momentum?.reason ||
+      `H1 structural bias is ${hourlyDirection || 'neutral'}, but active H1 momentum/transition is not ${direction}.`;
   } else if (!latest || list.length < 20) {
     ready = false;
     status = 'insufficient_m5';
@@ -176,6 +182,8 @@ export function classifyIctM5ContinuationEntry({
     mode,
     direction,
     h1Bias: hourlyDirection,
+    h1MomentumAligned: activeMomentumAligned,
+    h1TransitionAligned: transitionAligned,
     breakoutLevel,
     anchorTime,
     cycleId,

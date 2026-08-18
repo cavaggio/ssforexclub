@@ -27,6 +27,7 @@ function bullishBreakout(overrides = {}) {
     candles,
     bias: 'bullish',
     h1Bias: 'bullish',
+    h1Momentum: { aligned: true, activeAligned: true, activeDirection: 'bullish' },
     bos: {
       direction: 'bullish',
       brokenLevel: 1.1010,
@@ -52,11 +53,14 @@ test('aligned H1 plus fresh M5 displacement BOS authorizes a continuation breako
   assert.match(result.cycleId, /^bullish:m5_continuation_breakout:/);
 });
 
-test('H1 remains confirmation-only but must agree for the continuation path', () => {
-  const result = bullishBreakout({ h1Bias: 'bearish' });
+test('H1 active momentum—not structural bias—must agree for the continuation path', () => {
+  const result = bullishBreakout({
+    h1Bias: 'bullish',
+    h1Momentum: { aligned: false, activeAligned: false, exhausted: true, activeDirection: 'bearish', reason: 'H1 momentum reversed.' },
+  });
 
   assert.equal(result.ready, false);
-  assert.equal(result.status, 'h1_not_aligned');
+  assert.equal(result.status, 'h1_momentum_exhausted');
 });
 
 test('an extended breakout is rejected instead of chased', () => {
@@ -89,6 +93,7 @@ test('first held M5 retest uses the original break as a stable re-entry cycle id
     candles,
     bias: 'bullish',
     h1Bias: 'bullish',
+    h1Momentum: { aligned: true, activeAligned: true },
     retest: { direction: 'bullish', retestLevel: 1.1010 },
     fvgs: [{ type: 'bullish', status: 'partial' }],
     atrPrice: 0.0005,
@@ -108,6 +113,7 @@ test('first held M5 retest uses the original break as a stable re-entry cycle id
     candles: nextCandles,
     bias: 'bullish',
     h1Bias: 'bullish',
+    h1Momentum: { aligned: true, activeAligned: true },
     retest: { direction: 'bullish', retestLevel: 1.1010 },
     fvgs: [{ type: 'bullish', status: 'partial' }],
     atrPrice: 0.0005,

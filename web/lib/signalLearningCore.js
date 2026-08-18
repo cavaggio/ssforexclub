@@ -161,6 +161,12 @@ function confirmationMap(item) {
     if (boolish(first(sources, [key]))) confirmations[normalizeKey(key)] = true;
   }
 
+  const correctiveGate = object(first([item, analysis], ['correctiveGate']));
+  const h1Momentum = object(first([item, analysis], ['h1Momentum']));
+  if (correctiveGate.passed === true) confirmations.ict_corrective_gate = true;
+  if (h1Momentum.aligned === true) confirmations.h1_active_momentum_aligned = true;
+  if (h1Momentum.transitionAligned === true) confirmations.h1_transition_aligned = true;
+
   return confirmations;
 }
 
@@ -221,6 +227,10 @@ export function buildLearningRecords({
     const analysis = object(item.analysis);
     const marketRegime = object(item.marketRegime);
     const dailyStudy = object(item.dailyStudyContext);
+    const timeframeBias = object(first([item, analysis], ['timeframeBias']));
+    const h1Momentum = object(first([item, analysis], ['h1Momentum']));
+    const correctiveGate = object(first([item, analysis], ['correctiveGate']));
+    const entryContext = object(first([item, analysis], ['entryContext']));
     const pair = normalizePair(first([item, analysis], ['pair', 'instrument', 'symbol']));
     if (!pair) return;
     const direction = normalizeDirection(first([item, analysis], ['direction', 'side', 'signal']));
@@ -248,6 +258,8 @@ export function buildLearningRecords({
       scan_mode: scanMode,
       source_bucket: sourceBucket,
       status,
+      candidate_signal_id: String(first([item, analysis, entryContext], ['candidateSignalId', 'signalId', 'ictSignalId']) || '') || null,
+      broker_trade_id: String(first([item, analysis, entryContext], ['brokerTradeId', 'tradeId', 'orderId']) || '') || null,
       rejection_reason: String(first([item, analysis], ['rejectionReason', 'reason', 'skipReason', 'blockedReason']) || '') || null,
       confidence: numeric(first([item, analysis], ['baseConfidence', 'confidence'])),
       adjusted_confidence: numeric(first([item, analysis], ['confidence', 'adjustedConfidence'])),
@@ -260,15 +272,22 @@ export function buildLearningRecords({
       atr_pips: numeric(first([item, analysis], ['atrPips', 'atr'])),
       market_regime: String(first([item, analysis, marketRegime], ['regime', 'marketRegime', 'state']) || '') || null,
       volatility: String(first([item, analysis, marketRegime], ['volatility', 'volatilityState']) || '') || null,
-      daily_direction: String(first([item, analysis, dailyStudy], ['dailyDirection', 'dayDirection', 'day_direction']) || '') || null,
-      h4_direction: String(first([item, analysis], ['h4Direction', 'h4Trend']) || '') || null,
-      h1_direction: String(first([item, analysis], ['h1Direction', 'h1Trend']) || '') || null,
+      daily_direction: String(first([timeframeBias, item, analysis, dailyStudy], ['d1', 'dailyDirection', 'dayDirection', 'day_direction']) || '') || null,
+      h4_direction: String(first([timeframeBias, item, analysis], ['h4', 'h4Direction', 'h4Trend']) || '') || null,
+      h1_direction: String(first([timeframeBias, item, analysis], ['h1', 'h1Direction', 'h1Trend']) || '') || null,
+      h1_momentum: Object.keys(h1Momentum).length ? h1Momentum : null,
+      m5_authorization: object(first([item, analysis, entryContext], ['entryAuthorization', 'm5Authorization'])),
+      m5_trigger_age_bars: numeric(first([item, analysis], ['triggerAgeBars'])),
+      po3_stage: String(first([object(first([item, analysis], ['marketMakerModel'])), item, analysis], ['stage', 'po3Stage']) || '') || null,
+      htf_liquidity_condition: object(first([entryContext, item, analysis], ['htfLiquidityCondition'])),
+      corrective_gate: Object.keys(correctiveGate).length ? correctiveGate : null,
       m15_direction: String(first([item, analysis], ['m15Direction', 'm15Trend']) || '') || null,
       m5_direction: String(first([item, analysis], ['m5Direction', 'm5Trend']) || '') || null,
       liquidity_context: object(first([item, analysis], ['liquidityContext', 'liquidity', 'institutionalFlow'])),
       confirmations,
       confirmation_signature: signatureKeys.length ? signatureKeys.join('+') : 'none',
       missing_confirmations: missingConfirmations(item),
+      failure_reasons: Array.isArray(correctiveGate.failureCodes) ? correctiveGate.failureCodes : [],
       daily_study: Object.keys(dailyStudy).length ? dailyStudy : null,
       feature_snapshot: {
         setupType: first([item, analysis], ['setupType', 'strategy']),

@@ -18,6 +18,7 @@ const qualified = (over = {}) => ({
     cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
   },
   marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
+  correctiveGate: { passed: true, decision: 'authorize', failureCodes: [] },
   ...over,
 });
 
@@ -41,6 +42,7 @@ test('confidence cannot bypass the central market-maker authorization or stale l
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, freshImpulse: false }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryTimeframe: '15M' }), cfg), false);
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, entryCandle: { triggerReady: false } }), cfg), false);
+  assert.equal(isIctAutoQualified(qualified({ confidence: 99, correctiveGate: { passed: false, decision: 'reject' } }), cfg), false);
 });
 
 test('an activated parent cycle can authorize a fresh M5 continuation entry', () => {

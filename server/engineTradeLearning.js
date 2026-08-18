@@ -75,7 +75,7 @@ function schemaMissing(error) {
   const code = String(error?.code || '');
   return ['42P01', '42703', 'PGRST205', 'PGRST204'].includes(code) ||
     /engine_executed_|engine_combined_pair_stats|engine_actual_account_accuracy_7d|engine_actual_account_pair_accuracy_7d|engine_learning_adjustment_audit/i.test(message) ||
-    /engine_signal_learning_stats|engine_learning_adjustment_effectiveness_stats/i.test(message);
+    /engine_signal_learning_stats|engine_learning_adjustment_effectiveness_stats|ict_trade_failure_stats/i.test(message);
 }
 
 async function loadRows(view, userId, accountId, engine, pair) {
@@ -127,9 +127,10 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
       loadRows('engine_executed_confirmation_stats', userId, accountId, normalizedEngine, normalizedPair),
       loadRows('engine_execution_quality_stats', userId, accountId, normalizedEngine, normalizedPair),
     ]);
-    const [signalQualityRows, adjustmentEffectivenessRows] = await Promise.all([
+    const [signalQualityRows, adjustmentEffectivenessRows, failureRows] = await Promise.all([
       loadRows('engine_signal_learning_stats', userId, accountId, normalizedEngine, normalizedPair),
       loadRows('engine_learning_adjustment_effectiveness_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('ict_trade_failure_stats', userId, accountId, normalizedEngine, normalizedPair),
     ]);
     const profile = {
       accountId,
@@ -144,6 +145,7 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
       executionQuality: qualityRows[0] || null,
       signalQuality: signalQualityRows[0] || null,
       adjustmentEffectiveness: adjustmentEffectivenessRows[0] || null,
+      failureStats: failureRows[0] || null,
       loadedAt: new Date().toISOString(),
     };
     profileCache.set(key, { loadedAt: Date.now(), profile });
@@ -213,6 +215,10 @@ async function persistAudit({ client, engine, pair, candidate, confidence, engin
           ...(qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? []).map((item) => item.reason),
         ],
         hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
+        adjustment_type: 'pre_trade_calibration',
+        applied: true,
+        applied_at: new Date().toISOString(),
+        failure_reasons: [],
         candidate_snapshot: {
           ...compactCandidate(candidate),
           qualitySeparation,

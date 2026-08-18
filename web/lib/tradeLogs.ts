@@ -99,6 +99,93 @@ function numeric(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function deepValue(root: unknown, keys: string[]): unknown {
+  const queue: unknown[] = [root];
+  const visited = new Set<unknown>();
+  let inspected = 0;
+  while (queue.length && inspected < 750) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    inspected += 1;
+    const record = current as Record<string, unknown>;
+    for (const key of keys) {
+      if (record[key] !== undefined && record[key] !== null && record[key] !== '') return record[key];
+    }
+    for (const value of Object.values(record)) if (value && typeof value === 'object') queue.push(value);
+  }
+  return null;
+}
+
+async function persistLifecycleEvent(input: TradeLogInput, tradeLogId: string) {
+  if (input.broker !== 'oanda' || !input.brokerAccountId || !input.tradeId) return;
+  const raw = input.rawPayload && typeof input.rawPayload === 'object' ? input.rawPayload : {};
+  const engine = String(deepValue(raw, ['engine', 'strategy', 'entryStrategy']) || '').toLowerCase();
+  if (!['ict', 'ppr', 'v3'].includes(engine)) return;
+  const supabase = getServerSupabase();
+  try {
+    if (input.eventType === 'opened') {
+      const entryContext = deepValue(raw, ['entryContext']);
+      const context = entryContext && typeof entryContext === 'object'
+        ? entryContext as Record<string, any>
+        : {};
+      const timeframe = context.timeframeState || {};
+      const authorization = context.m5Authorization || {};
+      const auditId = String(context.learningAdjustment?.auditId || '');
+      await supabase.from('actual_trade_lifecycles').upsert({
+        user_id: input.userId,
+        broker_account_id: input.brokerAccountId,
+        environment: input.environment,
+        broker: 'oanda',
+        engine,
+        broker_trade_id: input.tradeId,
+        learning_audit_id: /^[0-9a-f-]{36}$/i.test(auditId) ? auditId : null,
+        source_trade_log_id: tradeLogId,
+        candidate_signal_id: context.candidateSignalId || deepValue(raw, ['candidateSignalId', 'signalId', 'ictSignalId']),
+        pair: normalizeInstrument(input.instrument),
+        direction: input.side,
+        opened_at: new Date().toISOString(),
+        state: 'open',
+        result: 'open',
+        entry_price: numeric(input.entryPrice),
+        units: numeric(input.units),
+        stop_loss: numeric(input.sl),
+        take_profit: numeric(input.tp),
+        risk_usd: numeric(deepValue(raw, ['riskUSD', 'riskUsd', 'riskAmount'])),
+        entry_context: context,
+        d1_state: timeframe.d1 || null,
+        h4_state: timeframe.h4 || null,
+        h1_state: timeframe.h1Structure || null,
+        h1_momentum: context.h1Momentum || {},
+        m5_authorization: authorization,
+        m5_trigger_age_bars: numeric(authorization.triggerAgeBars),
+        po3_stage: context.powerOfThree?.stage || null,
+        htf_liquidity_condition: context.htfLiquidityCondition || {},
+        opening_snapshot: sanitizePayload(raw),
+        actual_outcome_source: 'awaiting_oanda_trade_detail',
+        reconciled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,broker_account_id,broker_trade_id' });
+    } else if (input.eventType === 'closed' || input.eventType === 'manual_close_executed') {
+      await supabase.from('actual_trade_lifecycles').update({
+        state: 'closed',
+        result: input.realizedPL == null ? 'unresolved' : input.realizedPL > 0 ? 'win' : input.realizedPL < 0 ? 'loss' : 'breakeven',
+        closed_at: new Date().toISOString(),
+        exit_price: numeric(input.exitPrice),
+        realized_pl: numeric(input.realizedPL),
+        exit_reason: input.reason || 'broker_trade_closed',
+        actual_outcome_source: 'trade_log_close_pending_oanda_reconciliation',
+        updated_at: new Date().toISOString(),
+      })
+        .eq('user_id', input.userId)
+        .eq('broker_account_id', input.brokerAccountId)
+        .eq('broker_trade_id', input.tradeId);
+    }
+  } catch (error) {
+    console.warn(`[TRADE_LIFECYCLE] best-effort persistence failed trade=${input.tradeId}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /**
  * Map an optional EdgeSnapshotInput onto its DB columns. Returns an empty
  * object when no snapshot is provided, so the insert row is byte-identical to
@@ -214,10 +301,13 @@ export async function logTradeEvent(input: TradeLogInput): Promise<TradeLogResul
         );
         return { ok: false, error: fallback.error?.message ?? error?.message ?? 'no row returned' };
       }
-
-      return { ok: true, id: String(fallback.data.id) };
+      const id = String(fallback.data.id);
+      await persistLifecycleEvent(input, id);
+      return { ok: true, id };
     }
-    return { ok: true, id: String(data.id) };
+    const id = String(data.id);
+    await persistLifecycleEvent(input, id);
+    return { ok: true, id };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[TRADE_LOG] exception user=${input.userId} event=${input.eventType}: ${message}`);
@@ -275,6 +365,8 @@ export type TradeLogRow = {
   market_regime: string | null;
   macro_bias: string | null;
   macro_risk: string | null;
+  candidate_signal_id?: string | null;
+  entry_context?: Record<string, unknown> | null;
 };
 
 // Columns that actually exist on the production trade_logs table. We select ONLY

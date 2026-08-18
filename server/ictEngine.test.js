@@ -53,13 +53,14 @@ test('engine: returns the exact response object shape', () => {
   assert.ok(Array.isArray(r.conceptsDetected));
   assert.ok(Array.isArray(r.rejectionReasons));
   assert.deepEqual(Object.keys(r.timeframeBias).sort(), [
-    'd1', 'd1H4Aligned', 'direction', 'h1', 'h1AnalysisOnly', 'h4',
+    'd1', 'd1H4Aligned', 'direction', 'h1', 'h1ActiveMomentum', 'h1AnalysisOnly', 'h1MomentumExecutionGate', 'h1MomentumPhase', 'h4',
   ]);
   assert.equal(r.timeframeBias.h1AnalysisOnly, true);
+  assert.equal(r.timeframeBias.h1MomentumExecutionGate, true);
   assert.equal(r.concepts.htf.h1Bias, r.timeframeBias.h1);
 });
 
-test('timeframe display: D1/H4 own direction and H1 bias stays analysis-only', () => {
+test('timeframe display: D1/H4 own direction while H1 active momentum is an execution gate', () => {
   const c = buildCandles();
   const start = Date.UTC(2026, 5, 1, 0, 0, 0);
   c.h1 = gen(120, 1.13, -0.0002, 0.0004, start); // bearish H1 against bullish D1/H4
@@ -70,7 +71,9 @@ test('timeframe display: D1/H4 own direction and H1 bias stays analysis-only', (
   assert.equal(r.timeframeBias.h1, 'bearish');
   assert.equal(r.timeframeBias.direction, 'buy');
   assert.equal(r.timeframeBias.h1AnalysisOnly, true);
-  assert.ok(!r.rejectionReasons.some((reason) => /H1 (structure )?bias/i.test(reason)));
+  assert.equal(r.timeframeBias.h1MomentumExecutionGate, true);
+  assert.equal(r.h1Momentum.activeDirection, 'bearish');
+  assert.equal(r.h1Momentum.aligned, false);
 });
 
 test('scalp entry: H1 opens the window but the setup price comes from M5', () => {

@@ -377,7 +377,7 @@ export function advanceIctMarketMakerCycle({
       parentCycleId: cycle.activationId,
       reason: 'HTF key-level tap, liquidity manipulation, M5 displacement, and reversal confirmation activated distribution.',
     };
-  } else if (active && observation?.h1Aligned === true) {
+  } else if (active && observation?.h1MomentumAligned === true) {
     const continuation = observation?.continuationBreakout;
     if (continuation?.ready === true && continuation?.cycleId) {
       entryAuthorization = {
@@ -385,7 +385,7 @@ export function advanceIctMarketMakerCycle({
         mode: continuation.mode || 'm5_continuation_breakout',
         cycleId: `${cycle.activationId}:${continuation.cycleId}`,
         parentCycleId: cycle.activationId,
-        reason: 'The activated market-maker distribution cycle authorized a fresh aligned M5 continuation entry.',
+        reason: 'The activated distribution cycle authorized a fresh M5 continuation with aligned H1 active momentum.',
       };
     } else if (ifvgAligned || cisdAligned) {
       const trigger = ifvgAligned ? observation.inverseFvg : observation.cisd;
@@ -395,13 +395,13 @@ export function advanceIctMarketMakerCycle({
         mode,
         cycleId: `${cycle.activationId}:${mode}:${stableToken(eventTime(trigger, timestamp))}`,
         parentCycleId: cycle.activationId,
-        reason: `The activated market-maker distribution cycle authorized a fresh aligned ${ifvgAligned ? 'iFVG' : 'CISD'} continuation entry.`,
+        reason: `The activated distribution cycle authorized a fresh ${ifvgAligned ? 'iFVG' : 'CISD'} continuation with aligned H1 active momentum.`,
       };
     } else {
       entryAuthorization.reason = 'Distribution is active; waiting for a fresh M5 continuation BOS/retest, iFVG, or CISD confirmation.';
     }
   } else if (active) {
-    entryAuthorization.reason = 'Distribution is active, but H1 no longer aligns with the Daily/H4 direction.';
+    entryAuthorization.reason = 'Distribution is active, but H1 active momentum/transition no longer aligns with the Daily/H4 direction.';
   }
 
   return { cycle, changed, entryAuthorization };
