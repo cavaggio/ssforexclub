@@ -51,7 +51,19 @@ export function applyActualTradeLearningView(root = DEFAULT_ROOT) {
   const targetConfidencePath = resolve(root, 'server/ictTargetConfidence.js');
   const qualityModulePath = resolve(root, 'server/signalExecutionQuality.js');
   if (existsSync(targetConfidencePath) && existsSync(qualityModulePath)) {
-    applySignalExecutionQualitySeparation(root);
+    const targetConfidenceSource = readFileSync(targetConfidencePath, 'utf8');
+    const qualitySeparationAlreadyApplied =
+      after.includes("name: 'current_entry_execution_quality'") &&
+      after.includes('qualitySeparation?.executionQuality?.currentCandidateAdjustment') &&
+      after.includes('signalQualityConfidence: confidence.finalConfidence') &&
+      after.includes('executionQualityConfidence: executionConfidence.finalConfidence') &&
+      targetConfidenceSource.includes("model: 'ict_signal_execution_quality_v3'") &&
+      targetConfidenceSource.includes('executionQualityAdjustment');
+    if (qualitySeparationAlreadyApplied) {
+      console.log('[ACTUAL_TRADE_LEARNING] signal/execution quality separation already applied');
+    } else {
+      applySignalExecutionQualitySeparation(root);
+    }
   }
 
   // This runs last in prestart, after the legacy generators and account-isolation

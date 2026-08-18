@@ -29,10 +29,17 @@ function patchIct(source) {
     "applyStoredStudyCalibration(item, { client, engine: 'ict' })",
     "applyCombinedLearningCalibration(item, { client, engine: 'ict' })",
   );
-  out = replaceRequired(
-    out,
-    "executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });",
-    `executed.push({
+  const ictExecutedObservationAlreadyAttributed =
+    out.includes('fillPrice: res.fillPrice ?? a.entry') &&
+    out.includes('stopLoss: res.stopLoss ?? a.stopLoss') &&
+    out.includes('takeProfit: res.takeProfit ?? a.target1') &&
+    out.includes("strategy: 'ICT'") &&
+    out.includes('signal: a,');
+  if (!ictExecutedObservationAlreadyAttributed) {
+    out = replaceRequired(
+      out,
+      "executed.push({ pair: a.pair, direction, tradeId: res.tradeId, units: res.units, holdMinutes: res.holdMinutes });",
+      `executed.push({
         pair: a.pair,
         direction,
         tradeId: res.tradeId,
@@ -46,8 +53,9 @@ function patchIct(source) {
         strategy: 'ICT',
         signal: a,
       });`,
-    'ICT executed observation attribution',
-  );
+      'ICT executed observation attribution',
+    );
+  }
   out = replaceRequired(
     out,
     "return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], ...watchState };",

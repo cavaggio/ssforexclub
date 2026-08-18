@@ -35,6 +35,15 @@ function deepFind(opening, keys) {
   return null;
 }
 
+/**
+ * @param {{
+ *   pair?: unknown,
+ *   direction?: unknown,
+ *   entryPrice?: unknown,
+ *   stopLoss?: unknown,
+ *   candles?: Array<Record<string, any>>
+ * }} [options]
+ */
 export function computeTradeExcursion({ pair, direction, entryPrice, stopLoss, candles = [] } = {}) {
   const side = normalizeDirection(direction);
   const entry = numeric(entryPrice);
@@ -59,6 +68,12 @@ export function computeTradeExcursion({ pair, direction, entryPrice, stopLoss, c
   };
 }
 
+/**
+ * @param {{
+ *   trade?: Record<string, any>,
+ *   closingTransactions?: Array<Record<string, any>>
+ * }} [options]
+ */
 export function inferBrokerExitReason({ trade = {}, closingTransactions = [] } = {}) {
   for (const transaction of Array.isArray(closingTransactions) ? closingTransactions : []) {
     const reason = text(transaction?.reason || transaction?.type);
@@ -135,6 +150,15 @@ export function computeActualRealizedR({ direction, entryPrice, exitPrice, stopL
   return Number(value.toFixed(6));
 }
 
+/**
+ * @param {{
+ *   opening?: Record<string, any>,
+ *   trade?: Record<string, any>,
+ *   closingTransactions?: Array<Record<string, any>>,
+ *   excursion?: Record<string, any> | null,
+ *   reconciledAt?: Date | string | number
+ * }} [options]
+ */
 export function buildActualTradeLifecycleRow({ opening = {}, trade = {}, closingTransactions = [], excursion = null, reconciledAt = new Date() } = {}) {
   const engine = normalizeEngine(opening.engine);
   const brokerAccountId = text(opening.broker_account_id);

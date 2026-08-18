@@ -82,13 +82,25 @@ import {
     `async function persistAudit({ client, engine, pair, candidate, confidence, engineResult, qualitySeparation }) {`,
     'audit quality separation argument',
   );
-  out = replaceRequired(
-    out,
-    `        component_adjustments: engineResult.components,
+
+  // Newer learning/audit migrations may add metadata fields between the hard
+  // gates and candidate snapshot. Recognize the quality-separation payload by
+  // its semantic markers instead of requiring the original fields to remain
+  // adjacent, so repeated runtime generation is idempotent.
+  const separatedAuditPayloadAlreadyApplied =
+    out.includes("name: 'current_entry_execution_quality'") &&
+    out.includes('qualitySeparation?.executionQuality?.currentCandidateAdjustment') &&
+    out.includes("...(qualitySeparation?.executionQuality?.currentCandidate?.reasons ?? []).map((item) => item.reason)") &&
+    out.includes('...compactCandidate(candidate),') &&
+    out.includes('qualitySeparation,');
+  if (!separatedAuditPayloadAlreadyApplied) {
+    out = replaceRequired(
+      out,
+      `        component_adjustments: engineResult.components,
         reasons: engineResult.reasons,
         hard_gates_preserved: ENGINE_TRADE_LEARNING_HARD_GATES,
         candidate_snapshot: compactCandidate(candidate),`,
-    `        component_adjustments: [
+      `        component_adjustments: [
           ...(Array.isArray(engineResult.components) ? engineResult.components : []),
           {
             name: 'current_entry_execution_quality',
@@ -107,8 +119,9 @@ import {
           ...compactCandidate(candidate),
           qualitySeparation,
         },`,
-    'separated audit payload',
-  );
+      'separated audit payload',
+    );
+  }
   out = replaceRequired(
     out,
     `  const engineResult = computeEngineTradeAdjustment(
