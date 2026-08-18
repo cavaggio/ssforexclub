@@ -50,14 +50,16 @@ test('authenticated route only performs numeric partials or protection updates',
   assert.doesNotMatch(routeSource, /action: 'FULL_CLOSE'/);
 });
 
-test('policy exposes only breakeven, one partial, runner arming, trailing, or hold', () => {
+test('policy exposes only breakeven, one 15-pip partial, runner arming, trailing, or hold', () => {
+  assert.match(policySource, /FIRST_PARTIAL_PROFIT_PIPS = 15/);
+  assert.match(policySource, /currentProfitPips >= FIRST_PARTIAL_PROFIT_PIPS/);
+  assert.match(policySource, /const percent = 50/);
   assert.match(policySource, /action: 'HOLD_TO_TP'/);
   assert.match(policySource, /action: 'MOVE_STOP_TO_BREAKEVEN'/);
   assert.match(policySource, /action: 'PARTIAL_CLOSE'/);
   assert.match(policySource, /action: 'ARM_RUNNER'/);
   assert.match(policySource, /action: 'TRAIL_PROFIT'/);
   assert.match(policySource, /priorPartialCount < 1/);
-  assert.match(policySource, /favorableMomentum/);
   assert.match(policySource, /automaticFullCloseAllowed: false/);
   assert.doesNotMatch(policySource, /action: 'FULL_CLOSE'/);
   assert.doesNotMatch(policySource, /return 'ALL'/);
@@ -79,12 +81,13 @@ test('hard invalidation and losing reversal defer to the broker SL', () => {
   assert.equal(closeUnitsForDecision(100000, reversal), null);
 });
 
-test('favorable momentum partials once and the post-TP remainder trails', () => {
+test('the +15 pip milestone banks 50% once and the post-TP remainder trails', () => {
   const partial = evaluateActiveExit({
-    direction: 'long', entryPrice: 1.1, currentPrice: 1.111,
-    initialRiskPips: 10, profitRMultiple: 1.1, tpProgress: 0.55,
+    direction: 'long', entryPrice: 1.1, currentPrice: 1.1015,
+    initialRiskPips: 20, profitRMultiple: 0.75, tpProgress: 0.4,
     marketState: 'BREAKOUT', momentumDecayScore: 20, momentumStatus: 'accelerating',
   });
+  assert.equal(partial.metrics.currentProfitPips, 15);
   assert.equal(partial.action, 'PARTIAL_CLOSE');
   assert.equal(partial.closePercent, 50);
   assert.equal(closeUnitsForDecision(100000, partial), 50000);
