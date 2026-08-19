@@ -17,6 +17,12 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MAX_TRADE_LOG_ROWS = 50;
+const LIFECYCLE_EVENT_TYPES = new Set<TradeEventType>([
+  'opened',
+  'closed',
+  'partial_closed',
+  'manual_close_executed',
+]);
 
 const VALID_EVENT_TYPES: ReadonlySet<TradeEventType> = new Set([
   'opened',
@@ -70,9 +76,13 @@ export async function GET(req: Request) {
       limit: 200,
     });
 
-    const filtered = eventTypeRaw
-      ? rows.filter((row) => row.event_type === eventTypeRaw)
-      : canonicalizeTradeActivityRows(lifecycleTradeRows(rows));
+    const canonicalLifecycle = canonicalizeTradeActivityRows(lifecycleTradeRows(rows));
+    const eventType = eventTypeRaw as TradeEventType | null;
+    const filtered = eventType
+      ? LIFECYCLE_EVENT_TYPES.has(eventType)
+        ? canonicalLifecycle.filter((row) => row.event_type === eventType)
+        : rows.filter((row) => row.event_type === eventType)
+      : canonicalLifecycle;
     const history = filtered.slice(0, requestedLimit);
 
     return NextResponse.json({
