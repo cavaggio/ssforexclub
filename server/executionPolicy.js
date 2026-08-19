@@ -50,11 +50,29 @@ function confirmedBreakoutRetest(signal = {}, direction) {
 }
 export function setupFingerprint(signal = {}, accountId = '') {
   const v3 = extractV3(signal); const structure = v3.structure || signal.structure || {}; const liquidity = v3.liquidity || signal.liquidity || {};
-  const triggerTime = firstText(signal.triggerCandleTime, signal.signalTimestamp, signal.generatedAt, structure.bos?.time, structure.choch?.time, liquidity.liquiditySweep?.time);
+  const entryAuthorization = signal.entryAuthorization || {};
+  const entryCandle = signal.entryCandle || {};
+  // ICT reservations must rotate with the actual fresh M5 authorization rather
+  // than inheriting an older broad setup hash. This preserves loss-locking for
+  // the exact failed trigger while allowing a genuinely new qualified M5 setup
+  // (and/or new entry cycle) to reserve normally.
+  const triggerTime = firstText(
+    entryCandle.time,
+    entryAuthorization.triggerTime,
+    signal.triggerCandleTime,
+    signal.signalTimestamp,
+    signal.generatedAt,
+    structure.bos?.time,
+    structure.choch?.time,
+    liquidity.liquiditySweep?.time,
+  );
   const rangeHigh = firstNumber(signal.rangeHigh, signal.range?.high, structure.rangeHigh, structure.range?.high, v3.liquidity?.dealingRange?.high);
   const rangeLow = firstNumber(signal.rangeLow, signal.range?.low, structure.rangeLow, structure.range?.low, v3.liquidity?.dealingRange?.low);
   const event = firstText(liquidity.liquiditySweep?.sweptSource, liquidity.liquiditySweep?.subtype, structure.choch?.direction, structure.bos?.direction, 'none');
-  return [accountId || 'default', signal.pair || signal.instrument || 'unknown', signal.direction || 'none', signal.session?.name || signal.session || 'none', rangeHigh ?? 'na', rangeLow ?? 'na', event, triggerTime || 'na'].join('|');
+  const fingerprint = [accountId || 'default', signal.pair || signal.instrument || 'unknown', signal.direction || 'none', signal.session?.name || signal.session || 'none', rangeHigh ?? 'na', rangeLow ?? 'na', event, triggerTime || 'na'];
+  const ictCycleId = firstText(entryAuthorization.cycleId, signal.entryCycleId);
+  if (ictCycleId) fingerprint.push(`cycle:${ictCycleId}`);
+  return fingerprint.join('|');
 }
 export function evaluateUniversalEntryPolicy(signal = {}) {
   const reasons = [];
