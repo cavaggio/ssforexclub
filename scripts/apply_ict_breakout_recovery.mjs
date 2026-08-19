@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENGINE = path.join(ROOT, 'server', 'ictEngine.js');
+const CONTINUATION = path.join(ROOT, 'server', 'ictContinuationEntry.js');
 
 function replaceOnce(source, before, after, label) {
   if (source.includes(after)) return source;
@@ -16,6 +17,48 @@ function insertAfter(source, anchor, addition, label) {
   if (!source.includes(anchor)) throw new Error(`[ICT_BREAKOUT_RECOVERY] missing ${label}`);
   return source.replace(anchor, () => `${anchor}${addition}`);
 }
+
+let continuation = fs.readFileSync(CONTINUATION, 'utf8');
+
+// OANDA M5 candle timestamps identify the candle start. Trigger age begins when
+// the completed candle confirms five minutes later, not at its opening timestamp.
+continuation = replaceOnce(
+  continuation,
+  `  const eventMs = parseMs(eventTime);\n  const nowMs = now instanceof Date ? now.getTime() : parseMs(now);\n  if (Number.isFinite(eventMs) && Number.isFinite(nowMs) && nowMs >= eventMs) {\n    return +((nowMs - eventMs) / 60_000).toFixed(2);\n  }`,
+  `  const eventMs = parseMs(eventTime);\n  const nowMs = now instanceof Date ? now.getTime() : parseMs(now);\n  const confirmedAtMs = Number.isFinite(eventMs) ? eventMs + (5 * 60_000) : null;\n  if (Number.isFinite(confirmedAtMs) && Number.isFinite(nowMs)) {\n    if (nowMs <= confirmedAtMs) return 0;\n    return +((nowMs - confirmedAtMs) / 60_000).toFixed(2);\n  }`,
+  'M5 close-based trigger age',
+);
+
+// An external BOS/range label must still represent a decisive breakout. FVG/OB
+// is no longer mandatory, but a tiny close through structure cannot authorize.
+continuation = insertAfter(
+  continuation,
+  `  const externalIndex = externalTime\n    ? completed.findIndex((candle) => candle?.time === externalTime)\n    : completed.length - 1;\n`,
+  `  const externalCandle = externalIndex >= 0 ? completed[externalIndex] : null;\n  const externalBody = externalCandle\n    ? Math.abs(finite(externalCandle.close) - finite(externalCandle.open))\n    : null;\n  const externalBodyAtr = Number.isFinite(externalBody) && Number.isFinite(atrValue) && atrValue > 0\n    ? externalBody / atrValue\n    : null;\n  const externalDecisive = displacementAligned || (Number.isFinite(externalBodyAtr) && externalBodyAtr >= 0.35);\n`,
+  'decisive external breakout requirement',
+);
+continuation = replaceOnce(
+  continuation,
+  `  const externalEvent = Number.isFinite(externalLevel) && externalIsCompleted && externalIndex >= 0`,
+  `  const externalEvent = Number.isFinite(externalLevel) && externalIsCompleted && externalIndex >= 0 && externalDecisive`,
+  'decisive external breakout gate',
+);
+
+// Recovery means an actual held retest. A normal breakout from compression is
+// still a breakout; otherwise it can accidentally bypass the anti-chase branch.
+continuation = replaceOnce(
+  continuation,
+  `  const mode = retestEvent\n    ? 'm5_continuation_recovery'\n    : breakoutEvent\n      ? (recoveryFromPullback ? 'm5_continuation_recovery' : 'm5_continuation_breakout')\n      : null;`,
+  `  const mode = retestEvent\n    ? 'm5_continuation_recovery'\n    : breakoutEvent ? 'm5_continuation_breakout' : null;`,
+  'recovery-only-on-retest classification',
+);
+continuation = replaceOnce(
+  continuation,
+  `  } else if (overextended && mode !== 'm5_continuation_recovery') {`,
+  `  } else if (overextended) {`,
+  'anti-chase applies to recovery too',
+);
+fs.writeFileSync(CONTINUATION, continuation);
 
 let engine = fs.readFileSync(ENGINE, 'utf8');
 
@@ -82,5 +125,13 @@ for (const required of [
 ]) {
   if (!engine.includes(required)) throw new Error(`[ICT_BREAKOUT_RECOVERY] verification missing ${required}`);
 }
+for (const required of [
+  'confirmedAtMs',
+  'externalDecisive',
+  "breakoutEvent ? 'm5_continuation_breakout' : null",
+  '} else if (overextended) {',
+]) {
+  if (!continuation.includes(required)) throw new Error(`[ICT_BREAKOUT_RECOVERY] continuation verification missing ${required}`);
+}
 
-console.log('ICT breakout recovery applied: 10-minute fresh trigger retention, session-aware H1 confirmation, and pullback/re-break recovery.');
+console.log('ICT breakout recovery applied: 10-minute fresh trigger retention, session-aware H1 confirmation, and pullback/retest recovery.');
