@@ -72,14 +72,14 @@ export function classifyIctH1Momentum({
   const opposingBodies = wanted === 'bullish' ? bearishBodies : wanted === 'bearish' ? bullishBodies : 0;
   const transitionAligned = transition?.ready === true && normalizeDirection(transition?.bias) === wanted;
 
-  // Older H1 bodies are context, not a majority-vote veto. If the net completed
-  // impulse and latest completed H1 point with D1/H4, the continuation is active.
+  // Efficiency remains useful diagnostics, but it is not a hard directional veto.
+  // If the net completed H1 move and latest completed H1 candle agree with D1/H4,
+  // the continuation is directionally confirmed even after choppy consolidation.
   const completedImpulseAligned = Boolean(
     wanted &&
     recent.length >= 2 &&
     activeDirection === wanted &&
-    latestDirection === wanted &&
-    efficiency >= Math.max(0.05, Number(minEfficiency) || 0.18),
+    latestDirection === wanted,
   );
   const currentAligned = Boolean(
     wanted && live && currentDirection === wanted &&
@@ -92,9 +92,9 @@ export function classifyIctH1Momentum({
   const activeAligned = completedImpulseAligned || currentAligned;
   const aligned = !currentOpposing && (transitionAligned || activeAligned);
 
-  // Do not call a new impulse "exhausted" merely because two older candles in
-  // the lookback were countertrend. Exhaustion now requires genuinely opposing
-  // current action or both net + latest completed H1 to oppose D1/H4.
+  // Do not call a new impulse "exhausted" merely because older candles in the
+  // lookback were countertrend or inefficient. Exhaustion requires genuinely
+  // opposing current action or both net + latest completed H1 to oppose D1/H4.
   const exhausted = Boolean(
     wanted && recent.length >= 2 && !transitionAligned && !currentAligned && (
       currentOpposing ||
@@ -113,7 +113,7 @@ export function classifyIctH1Momentum({
   else if (currentOpposing) reason = `The live H1 candle is actively ${currentDirection} against the ${wanted} Daily/H4 direction.`;
   else if (transitionAligned) reason = `The live H1 transition is actively turning ${wanted} with the Daily/H4 direction.`;
   else if (currentAligned) reason = `The live H1 candle is actively ${wanted} with the Daily/H4 direction; older consolidation candles do not veto the new impulse.`;
-  else if (completedImpulseAligned) reason = `Completed H1 momentum is actively ${wanted} with the Daily/H4 direction.`;
+  else if (completedImpulseAligned) reason = `Completed H1 momentum is actively ${wanted} with the Daily/H4 direction; efficiency ${efficiency.toFixed(3)} is diagnostic only.`;
   else reason = `H1 structure may remain ${wanted}, but active completed momentum is ${activeDirection} and the latest completed H1 candle is ${latestDirection}; continuation is not yet directionally confirmed.`;
 
   return {
@@ -134,6 +134,8 @@ export function classifyIctH1Momentum({
     alignedBodies,
     opposingBodies,
     efficiency: +efficiency.toFixed(4),
+    efficiencyFloor: Math.max(0.05, Number(minEfficiency) || 0.18),
+    efficiencyInformationalOnly: true,
     latestCompletedAt: latest?.time ?? null,
     liveCandleAt: live?.time ?? null,
     reason,
