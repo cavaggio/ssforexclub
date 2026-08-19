@@ -3,9 +3,10 @@
  *
  * Signal Stack V3 — Edge Intelligence read endpoint.
  *
- * Edge Intelligence now consumes the exact same normalized trade activity event
- * stream shown on the dashboard. Visiting this endpoint also runs the shared,
- * guarded OANDA closure reconciliation so broker-side TP/SL/manual closes are
+ * Edge Intelligence consumes the same canonical trade lifecycle used by Trade
+ * Activity and Trade Logs: one open, unique partial closes, and at most one
+ * terminal close per broker trade. Visiting this endpoint also runs the shared
+ * OANDA transaction reconciliation so broker-side TP/SL/manual closes are
  * available to attribution even when the user opens Edge Intelligence directly.
  */
 
@@ -13,6 +14,7 @@ import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { generateAttributionReport } from '@/lib/edgeAnalytics';
 import { reconcileBrokerClosuresForUser } from '@/lib/tradeActivityReconciliation';
+import { canonicalizeTradeActivityRows } from '@/lib/tradeActivityCanonical.js';
 import { lifecycleTradeRows, listVisibleTradeLogsForUser } from '@/lib/visibleTradeLogs';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +29,7 @@ export async function GET() {
   try {
     const reconciliation = await reconcileBrokerClosuresForUser(userId);
     const { rows } = await listVisibleTradeLogsForUser(userId, { limit: 200 });
-    const lifecycleRows = lifecycleTradeRows(rows);
+    const lifecycleRows = canonicalizeTradeActivityRows(lifecycleTradeRows(rows));
     const report = generateAttributionReport(lifecycleRows, new Date().toISOString());
 
     return NextResponse.json({
