@@ -30,6 +30,7 @@ export function evaluateIctCorrectiveGate({
   timeframeBias = {},
   h1Momentum = null,
   h1Transition = null,
+  earlySessionDirection = null,
   entryAuthorization = null,
   triggerAgeBars = null,
   freshImpulse = false,
@@ -44,7 +45,9 @@ export function evaluateIctCorrectiveGate({
   const cycle = marketMakerModel?.cycle || {};
   const observation = marketMakerModel?.observation || {};
   const age = Number(triggerAgeBars);
-  const freshM5 = freshImpulse === true && Number.isFinite(age) && age <= 1;
+  // M5 continuation authorization is intentionally retained for up to two bars
+  // (10 minutes) so a just-closed breakout is not lost when the next live bar opens.
+  const freshM5 = freshImpulse === true && Number.isFinite(age) && age <= 2;
   const failures = [];
   const fail = (code, reason) => failures.push({ code, reason });
 
@@ -55,18 +58,22 @@ export function evaluateIctCorrectiveGate({
     fail(ICT_FAILURE_CODES.MISSING_M5_AUTHORIZATION, 'A concrete ICT authorization mode and stable cycle ID are required.');
   }
   if (!freshM5) {
-    fail(ICT_FAILURE_CODES.STALE_M5_TRIGGER, `The M5 trigger is not fresh (age=${Number.isFinite(age) ? age : 'unknown'} bars; maximum=1).`);
+    fail(ICT_FAILURE_CODES.STALE_M5_TRIGGER, `The M5 trigger is not fresh (age=${Number.isFinite(age) ? age : 'unknown'} bars; maximum=2).`);
   }
 
   if (family === 'continuation') {
     const transitionAligned = h1Transition?.ready === true && normalizeDirection(h1Transition?.bias) === wanted;
-    const momentumAligned = h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;
-    if (!momentumAligned && !transitionAligned) {
+    const momentumAligned = h1Momentum?.currentAligned === true ||
+      h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;
+    const earlySessionAligned = earlySessionDirection?.alignedWithBias === true &&
+      Number(earlySessionDirection?.completedCount || 0) >= 2;
+    const currentH1Opposing = h1Momentum?.currentOpposing === true;
+    if (currentH1Opposing || (!momentumAligned && !transitionAligned && !earlySessionAligned)) {
       fail(
-        h1Momentum?.exhausted === true
+        currentH1Opposing || h1Momentum?.exhausted === true
           ? ICT_FAILURE_CODES.H1_MOMENTUM_EXHAUSTED
           : ICT_FAILURE_CODES.H1_ACTIVE_MOMENTUM_NOT_ALIGNED,
-        h1Momentum?.reason || 'H1 active momentum or a live H1 transition must align with D1/H4.',
+        h1Momentum?.reason || 'Active/current H1 or the completed 01:00-03:00 ET narrative must align with D1/H4.',
       );
     }
   } else if (family === 'reversal') {
@@ -97,6 +104,6 @@ export function evaluateIctCorrectiveGate({
     failureReasons: failures.map((item) => item.reason),
     rule: family === 'reversal'
       ? 'HTF tap + liquidity sweep + opposing displacement + CISD/MSS + fresh M5'
-      : 'D1/H4 aligned + H1 active momentum/transition aligned + fresh M5',
+      : 'D1/H4 aligned + (active/current H1 OR completed 01:00-03:00 ET narrative) + fresh M5 breakout/recovery',
   };
 }
