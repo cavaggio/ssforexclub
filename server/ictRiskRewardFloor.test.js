@@ -85,6 +85,7 @@ test('executable target rebase fixes the EUR/USD 1.51R to 1.29R spread case', ()
   assert.equal(result.targetProfit, 1.15365);
   assert.ok(result.rebasedRR >= 1.5);
   assert.equal(result.extensionPips, 1.5);
+  assert.equal(result.extensionCapExceeded, false);
   assert.equal(result.pair, 'EUR_USD');
 });
 
@@ -104,10 +105,11 @@ test('executable target rebase mirrors correctly for a short pair', () => {
   assert.equal(result.adjusted, true);
   assert.equal(result.targetProfit, 1.09905);
   assert.ok(result.rebasedRR >= 1.5);
+  assert.equal(result.extensionCapExceeded, false);
   assert.equal(result.pair, 'EUR_USD');
 });
 
-test('a genuine excessive target extension remains rejected with the pair named', () => {
+test('TP extension above the former 5 pip cap is automatically applied, not rejected', () => {
   const result = maybeRebaseIctTarget({
     pair: 'EUR_USD',
     direction: 'long',
@@ -120,10 +122,14 @@ test('a genuine excessive target extension remains rejected with the pair named'
     maxExtensionPips: 5,
   });
 
-  assert.equal(result.adjusted, false);
-  assert.equal(result.reason, 'target_extension_exceeds_cap');
-  assert.match(result.blocker, /^EUR_USD requires a /);
-  assert.match(result.blocker, /execution cap$/);
+  assert.equal(result.adjusted, true);
+  assert.equal(result.targetProfit, 1.10250);
+  assert.equal(result.rebasedRR, 1.5);
+  assert.equal(result.extensionPips, 10);
+  assert.equal(result.extensionCapExceeded, true);
+  assert.equal(result.blocker, null);
+  assert.equal(result.reason, 'fresh_quote_minimum_rr_preserved_above_advisory_cap');
+  assert.match(result.advisory, /prior 5\.00p advisory threshold/);
 });
 
 test('fresh quote selection uses the requested pair instead of prices[0]', () => {
