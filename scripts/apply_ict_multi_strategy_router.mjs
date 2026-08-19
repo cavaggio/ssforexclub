@@ -90,12 +90,10 @@ engine = replaceOnce(
   'market-maker native versus selected authorization',
 );
 
-engine = replaceOnce(
-  engine,
-  `        h1Momentum,\n        h1MomentumExecutionGate: true,\n        aligned: htfAligned,`,
-  `        h1Momentum,\n        h1MomentumExecutionGate: true,\n        earlySessionDirection,\n        aligned: htfAligned,`,
-  'HTF early-session diagnostics',
-);
+// Keep the early-session profile on the top-level analysis object, where the
+// activity log and strategy router consume it. The nested `concepts.htf` object
+// is rewritten by older generated-source passes, so patching that duplicate
+// diagnostic is deliberately avoided to keep this transform idempotent.
 
 engine = replaceOnce(
   engine,
