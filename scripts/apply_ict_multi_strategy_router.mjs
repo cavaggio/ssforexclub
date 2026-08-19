@@ -6,10 +6,16 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENGINE = path.join(ROOT, 'server', 'ictEngine.js');
 const AUTO = path.join(ROOT, 'server', 'ictAutoTrade.js');
 const EXECUTION = path.join(ROOT, 'server', 'ictExecution.js');
+const EXECUTION_TEST = path.join(ROOT, 'server', 'ictExecution.test.js');
 
 function replaceOnce(source, before, after, label) {
   if (source.includes(after)) return source;
   if (!source.includes(before)) throw new Error(`[ICT_MULTI_STRATEGY] missing ${label}`);
+  return source.replace(before, () => after);
+}
+
+function replaceOptional(source, before, after) {
+  if (source.includes(after) || !source.includes(before)) return source;
   return source.replace(before, () => after);
 }
 
@@ -117,21 +123,47 @@ fs.writeFileSync(AUTO, auto);
 let execution = fs.readFileSync(EXECUTION, 'utf8');
 execution = replaceOnce(
   execution,
+  "    return blocked(`ICT central market-maker authorization failed: ${entryAuthorization.reason || 'the persistent reversal/continuation cycle is not ready'}.`);",
+  "    return blocked(`ICT strategy authorization failed: ${entryAuthorization.reason || 'no complete continuation or reversal strategy is ready'}.`);",
+  'execution strategy authorization wording',
+);
+execution = replaceOnce(
+  execution,
   `  if (\n    analysis?.marketMakerModel?.studyReady !== true ||\n    analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE'\n  ) {\n    return blocked('ICT execution requires a current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle.');\n  }`,
   `  if (analysis?.marketMakerModel?.studyReady !== true) {\n    return blocked('ICT execution requires the current-day 02:00 ET market study.');\n  }\n  const requiresMarketMakerActive = analysis?.entryAuthorization?.requiresMarketMakerActive === true;\n  if (requiresMarketMakerActive && analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE') {\n    return blocked(\n      \`ICT \${analysis?.entryAuthorization?.strategy || analysis?.entryAuthorization?.family || 'market-maker'} strategy requires an activated persistent Power-of-Three distribution cycle.\`,\n    );\n  }`,
   'execution strategy-specific market-maker gate',
 );
 fs.writeFileSync(EXECUTION, execution);
 
+// Older generator passes append execution-smoke cases that assert the retired
+// universal PO3 error text. Align only those generated expectations with the new
+// strategy-specific contract. This does not alter production code or relax a
+// gate; it keeps CI checking the correct reason for a PO3-dependent setup.
+if (fs.existsSync(EXECUTION_TEST)) {
+  let executionTest = fs.readFileSync(EXECUTION_TEST, 'utf8');
+  executionTest = replaceOptional(
+    executionTest,
+    "assert.equal(r.reason, 'ICT execution requires a current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle.');",
+    "assert.equal(r.reason, 'ICT market-maker strategy requires an activated persistent Power-of-Three distribution cycle.');",
+  );
+  executionTest = replaceOptional(
+    executionTest,
+    'assert.match(r.reason, /central market-maker authorization failed/i);',
+    'assert.match(r.reason, /strategy authorization failed/i);',
+  );
+  fs.writeFileSync(EXECUTION_TEST, executionTest);
+}
+
 fs.writeFileSync(ENGINE, engine);
 
 for (const required of [
-  "resolveIctStrategyAuthorization",
-  "classifyIctEarlySessionDirection",
-  "earlySessionAligned: earlySessionDirection.alignedWithBias === true",
-  "strategyRouter.entryAuthorization",
-  "Hard gate: no ICT strategy is authorized",
-  "requiresMarketMakerActive !== true",
+  'resolveIctStrategyAuthorization',
+  'classifyIctEarlySessionDirection',
+  'earlySessionAligned: earlySessionDirection.alignedWithBias === true',
+  'strategyRouter.entryAuthorization',
+  'Hard gate: no ICT strategy is authorized',
+  'ICT strategy authorization failed',
+  'requiresMarketMakerActive !== true',
 ]) {
   const combined = `${engine}\n${auto}\n${execution}`;
   if (!combined.includes(required)) throw new Error(`[ICT_MULTI_STRATEGY] verification missing ${required}`);
@@ -142,6 +174,9 @@ if (auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &
 }
 if (execution.includes('current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle')) {
   throw new Error('[ICT_MULTI_STRATEGY] executor still universally requires DISTRIBUTION_ACTIVE');
+}
+if (execution.includes('central market-maker authorization failed')) {
+  throw new Error('[ICT_MULTI_STRATEGY] executor still describes strategy authorization as market-maker-only');
 }
 
 console.log('ICT multi-strategy router applied: direct continuation OR reversal/PO3, with 01:00-03:00 ET H1 session context.');
