@@ -93,11 +93,12 @@ export function selectIctPairQuote(pricingPayload, pair) {
  * Preserve the configured minimum R:R when a fresh executable bid/ask moves a
  * scanner-qualified setup before submission.
  *
- * The former 0.10R shortfall gate duplicated the R:R rule and falsely rejected
- * valid setups (for example, a 1.51R scan becoming 1.29R after a sub-pip ask
- * change). The safety boundary is now the actual pair-priced TP extension: the
- * scanner must already pass, geometry must remain valid, and the required target
- * movement must stay within a small configured pip cap.
+ * The scanner must already satisfy the configured R:R floor and the fresh quote
+ * must still have valid entry/SL/TP geometry. If the fresh executable price has
+ * consumed reward, the TP is automatically moved outward to restore the floor.
+ * `maxExtensionPips` is retained as an observability/advisory threshold only;
+ * exceeding it is no longer an execution disqualifier for an otherwise-valid
+ * qualified ICT setup.
  */
 export function maybeRebaseIctTarget({
   pair,
@@ -132,6 +133,8 @@ export function maybeRebaseIctTarget({
     shortfallR: Math.max(0, floor - quoted),
     extensionPips: 0,
     extensionLimitPips: extensionLimit,
+    extensionCapExceeded: false,
+    advisory: null,
     blocker: null,
   };
 
@@ -189,15 +192,11 @@ export function maybeRebaseIctTarget({
   const rebasedTarget = Number((outwardTicks * tick).toFixed(dp));
   const pip = getPipSize(normalizedPair);
   const extensionPips = pip > 0 ? Math.abs(rebasedTarget - target) / pip : Infinity;
-  if (!Number.isFinite(extensionPips) || extensionPips > extensionLimit) {
-    const roundedExtension = Number.isFinite(extensionPips) ? +extensionPips.toFixed(2) : null;
+  if (!Number.isFinite(extensionPips)) {
     return {
       ...base,
-      extensionPips: roundedExtension,
-      reason: 'target_extension_exceeds_cap',
-      blocker: Number.isFinite(roundedExtension)
-        ? `${normalizedPair} requires a ${roundedExtension.toFixed(2)}p TP extension, above the ${extensionLimit.toFixed(2)}p execution cap`
-        : `${normalizedPair} required TP extension could not be calculated`,
+      reason: 'target_extension_unavailable',
+      blocker: `${normalizedPair} required TP extension could not be calculated`,
     };
   }
 
@@ -211,12 +210,20 @@ export function maybeRebaseIctTarget({
     };
   }
 
+  const roundedExtension = +extensionPips.toFixed(2);
+  const extensionCapExceeded = roundedExtension > extensionLimit;
   return {
     ...base,
     adjusted: true,
     targetProfit: rebasedTarget,
     rebasedRR: +rebasedRR.toFixed(2),
-    extensionPips: +extensionPips.toFixed(2),
-    reason: 'fresh_quote_minimum_rr_preserved',
+    extensionPips: roundedExtension,
+    extensionCapExceeded,
+    advisory: extensionCapExceeded
+      ? `${normalizedPair} TP auto-adjustment ${roundedExtension.toFixed(2)}p exceeds the prior ${extensionLimit.toFixed(2)}p advisory threshold`
+      : null,
+    reason: extensionCapExceeded
+      ? 'fresh_quote_minimum_rr_preserved_above_advisory_cap'
+      : 'fresh_quote_minimum_rr_preserved',
   };
 }
