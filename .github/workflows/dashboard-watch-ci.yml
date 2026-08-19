@@ -6,9 +6,15 @@ on:
       - 'web/app/api/scanner/scan/route.ts'
       - 'web/app/api/scanner/trade-activity/route.ts'
       - 'web/app/api/scanner/trade-logs/route.ts'
+      - 'web/app/api/edge-intelligence/route.ts'
       - 'web/app/dashboard/page.tsx'
       - 'web/components/scanner-watch-status.tsx'
       - 'web/components/trade-activity-log.tsx'
+      - 'web/components/edge-intelligence-panel.tsx'
+      - 'web/lib/tradeActivityCanonical.js'
+      - 'web/lib/tradeActivityCanonical.test.js'
+      - 'web/lib/edgeAnalytics.ts'
+      - 'web/lib/edgeIntelligenceCanonical.contract.test.js'
       - 'web/lib/tradingDay.js'
       - 'web/lib/tradingDay.test.js'
       - 'web/lib/v3PrimaryDirectionDisplay.js'
@@ -35,7 +41,9 @@ jobs:
           node --check web/lib/tradingDay.js
           node --check web/lib/v3PrimaryDirectionDisplay.js
           node --check web/lib/v3ScanDisplayPolicy.js
-          node --test web/lib/tradingDay.test.js web/lib/v3PrimaryDirectionDisplay.test.js web/lib/v3ScanDisplayPolicy.test.js
+          node --check web/lib/tradeActivityCanonical.js
+          node --check web/lib/edgeIntelligenceCanonical.contract.test.js
+          node --test web/lib/tradingDay.test.js web/lib/v3PrimaryDirectionDisplay.test.js web/lib/v3ScanDisplayPolicy.test.js web/lib/tradeActivityCanonical.test.js web/lib/edgeIntelligenceCanonical.contract.test.js
       - name: Install dashboard dependencies
         working-directory: web
         run: npm ci
