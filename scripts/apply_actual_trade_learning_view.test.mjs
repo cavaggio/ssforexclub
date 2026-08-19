@@ -185,7 +185,7 @@ test('a 0.04R fresh-quote shortfall rebases TP instead of rejecting a scanner-qu
   assert.ok(result.extensionPips <= 2);
 });
 
-test('a genuine large executable R:R collapse remains rejected by the pair-priced TP cap', () => {
+test('a large executable R:R collapse auto-adjusts TP and records the prior cap as advisory only', () => {
   const result = maybeRebaseIctTarget({
     pair: 'EUR_USD',
     direction: 'long',
@@ -198,8 +198,11 @@ test('a genuine large executable R:R collapse remains rejected by the pair-price
     maxExtensionPips: 2,
   });
 
-  assert.equal(result.adjusted, false);
-  assert.equal(result.reason, 'target_extension_exceeds_cap');
-  assert.match(result.blocker, /EUR_USD/);
-  assert.match(result.blocker, /execution cap/);
+  assert.equal(result.adjusted, true);
+  assert.ok(result.rebasedRR >= 1.5);
+  assert.ok(result.extensionPips > 2);
+  assert.equal(result.extensionCapExceeded, true);
+  assert.equal(result.reason, 'fresh_quote_minimum_rr_preserved_above_advisory_cap');
+  assert.match(result.advisory, /prior 2\.00p advisory threshold/);
+  assert.equal(result.blocker, null);
 });
