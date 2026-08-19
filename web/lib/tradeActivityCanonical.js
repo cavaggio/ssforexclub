@@ -12,11 +12,40 @@ function rawRecord(row) {
     : {};
 }
 
+function deepValue(root, keys) {
+  const queue = [root];
+  const visited = new Set();
+  let inspected = 0;
+  while (queue.length && inspected < 250) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    inspected += 1;
+    for (const key of keys) {
+      const value = current[key];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return null;
+}
+
+function brokerEventId(row) {
+  const raw = rawRecord(row);
+  const rawId = deepValue(raw, ['transactionId', 'brokerOrderId', 'orderID', 'orderId']);
+  if (rawId != null) return String(rawId);
+  const mappedOrder = String(row?.broker_order_id || '').trim();
+  const tradeId = String(row?.trade_id || '').trim();
+  return mappedOrder && mappedOrder !== tradeId ? mappedOrder : '';
+}
+
 function richness(row) {
   let score = 0;
   if (row?.realized_pl != null && Number.isFinite(Number(row.realized_pl))) score += 8;
   if (row?.exit_price != null && Number.isFinite(Number(row.exit_price))) score += 4;
-  if (row?.broker_order_id) score += 3;
+  if (brokerEventId(row)) score += 3;
   if (row?.instrument) score += 2;
   if (row?.side) score += 1;
   if (row?.reason) score += 1;
@@ -33,8 +62,8 @@ function chooseBetter(a, b, preferEarlier = false) {
 }
 
 function partialKey(row) {
-  const order = String(row?.broker_order_id || '').trim();
-  if (order) return `order:${order}`;
+  const eventId = brokerEventId(row);
+  if (eventId) return `broker-event:${eventId}`;
   return [
     'partial',
     row?.trade_id || '',
