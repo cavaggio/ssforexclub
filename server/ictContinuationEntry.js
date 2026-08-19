@@ -43,8 +43,10 @@ function completedCandles(candles) {
 function triggerAgeMinutes(eventTime, now, ageBars = null) {
   const eventMs = parseMs(eventTime);
   const nowMs = now instanceof Date ? now.getTime() : parseMs(now);
-  if (Number.isFinite(eventMs) && Number.isFinite(nowMs) && nowMs >= eventMs) {
-    return +((nowMs - eventMs) / 60_000).toFixed(2);
+  const confirmedAtMs = Number.isFinite(eventMs) ? eventMs + (5 * 60_000) : null;
+  if (Number.isFinite(confirmedAtMs) && Number.isFinite(nowMs)) {
+    if (nowMs <= confirmedAtMs) return 0;
+    return +((nowMs - confirmedAtMs) / 60_000).toFixed(2);
   }
   return Number.isFinite(ageBars) ? ageBars * 5 : null;
 }
@@ -200,7 +202,15 @@ export function classifyIctM5ContinuationEntry({
   const externalIndex = externalTime
     ? completed.findIndex((candle) => candle?.time === externalTime)
     : completed.length - 1;
-  const externalEvent = Number.isFinite(externalLevel) && externalIsCompleted && externalIndex >= 0
+  const externalCandle = externalIndex >= 0 ? completed[externalIndex] : null;
+  const externalBody = externalCandle
+    ? Math.abs(finite(externalCandle.close) - finite(externalCandle.open))
+    : null;
+  const externalBodyAtr = Number.isFinite(externalBody) && Number.isFinite(atrValue) && atrValue > 0
+    ? externalBody / atrValue
+    : null;
+  const externalDecisive = displacementAligned || (Number.isFinite(externalBodyAtr) && externalBodyAtr >= 0.35);
+  const externalEvent = Number.isFinite(externalLevel) && externalIsCompleted && externalIndex >= 0 && externalDecisive
     ? {
         time: externalTime || latestCompleted?.time || null,
         level: externalLevel,
@@ -253,9 +263,7 @@ export function classifyIctM5ContinuationEntry({
   });
   const mode = retestEvent
     ? 'm5_continuation_recovery'
-    : breakoutEvent
-      ? (recoveryFromPullback ? 'm5_continuation_recovery' : 'm5_continuation_breakout')
-      : null;
+    : breakoutEvent ? 'm5_continuation_breakout' : null;
 
   const anchorTime = selectedEvent
     ? firstBreakTime(completed, direction, breakoutLevel, selectedEvent.time)
@@ -304,7 +312,7 @@ export function classifyIctM5ContinuationEntry({
     ready = false;
     status = 'missing_extension_measure';
     reason = 'M5 breakout extension could not be measured against ATR.';
-  } else if (overextended && mode !== 'm5_continuation_recovery') {
+  } else if (overextended) {
     ready = false;
     status = 'await_recovery_pullback';
     reason = `M5 price is ${extensionAtr.toFixed(2)} ATR beyond the newest breakout level; do not chase. Recovery is armed for the first fresh M5 retest/re-break.`;
