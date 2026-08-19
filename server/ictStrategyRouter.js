@@ -91,12 +91,18 @@ export function resolveIctStrategyAuthorization({
     ? marketMakerCandidate
     : directContinuation || marketMakerCandidate;
 
+  // Preserve the most actionable continuation failure. If H1 active momentum is
+  // missing or exhausted, do not let a generic M5 candidate explanation mask it.
+  // This keeps the activity log/learning loop explicit about direction-confirmation
+  // failures rather than incorrectly reporting only "no breakout".
+  const h1FailureReason = h1Momentum?.exhausted === true
+    ? (h1Momentum?.reason || 'H1 active momentum is exhausted.')
+    : (h1Momentum?.reason || h1Transition?.reason || 'H1 active momentum/transition is not aligned.');
   const continuationReason = directContinuationReady
     ? directContinuation.reason
-    : continuationBreakout?.reason ||
-      (h1ActiveAligned
-        ? 'No fresh M5 continuation breakout/retest is ready.'
-        : h1Momentum?.reason || 'H1 active momentum/transition is not aligned.');
+    : !h1ActiveAligned
+      ? h1FailureReason
+      : continuationBreakout?.reason || 'No fresh M5 continuation breakout/retest is ready.';
   const reversalReason = marketMakerAuthorization?.reason || 'The reversal/PO3 model is not authorized.';
 
   const entryAuthorization = selected || {
