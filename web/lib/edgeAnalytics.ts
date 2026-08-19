@@ -3,10 +3,10 @@
  *
  * Signal Stack V3 — Edge Intelligence analytics for the dashboard.
  *
- * The source of truth is the same per-user trade activity/event history shown on
- * the dashboard. Open rows provide entry conditions; matching full-close rows
- * provide exit time and outcome. Partial closes contribute realised P/L but do
- * not mark the trade fully resolved by themselves.
+ * The source of truth is the same canonical per-user trade lifecycle shown in
+ * Trade Activity and Trade Logs. Open rows provide entry conditions; matching
+ * full-close rows provide exit time; partial + final close P/L is combined into
+ * the trade's net realized outcome.
  */
 
 import 'server-only';
@@ -92,6 +92,11 @@ function timestamp(row: TradeLogRow): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function netOutcome(pnl: number | null): string | null {
+  if (pnl == null) return null;
+  return pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
+}
+
 function snapshotFromEntryAndEvents(
   tradeId: string | null,
   entry: TradeLogRow,
@@ -109,10 +114,13 @@ function snapshotFromEntryAndEvents(
     ? Number(pnlValues.reduce((total, value) => total + value, 0).toFixed(2))
     : n(fullClose?.pnl ?? fullClose?.realized_pl ?? opened?.pnl ?? opened?.realized_pl ?? null);
 
-  let winLoss = s(fullClose?.win_loss ?? opened?.win_loss ?? null);
-  if (!winLoss && pnl != null && fullClose) {
-    winLoss = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
-  }
+  // A trade can take profit on a partial and then close the runner for a small
+  // loss. Edge Intelligence must score the lifecycle by NET realized P/L, not
+  // by the final fill alone. This also keeps the status label consistent with
+  // the displayed P/L (for example +81.86 must be WIN, not LOSS).
+  const winLoss = fullClose
+    ? netOutcome(pnl) ?? s(fullClose.win_loss ?? opened?.win_loss ?? null)
+    : s(opened?.win_loss ?? null);
 
   return {
     tradeId,
@@ -135,19 +143,18 @@ function snapshotFromEntryAndEvents(
   };
 }
 
-/** Reconstruct one trade snapshot from the shared trade-activity event stream. */
+/** Reconstruct one trade snapshot from the shared canonical activity stream. */
 export function snapshotsFromTradeLogs(rows: TradeLogRow[]): EdgeSnapshot[] {
   const byTrade = new Map<string, TradeLogRow[]>();
-  const orphans: TradeLogRow[] = [];
 
   for (const row of rows) {
-    if (row.trade_id) {
-      const list = byTrade.get(row.trade_id) ?? [];
-      list.push(row);
-      byTrade.set(row.trade_id, list);
-    } else {
-      orphans.push(row);
-    }
+    // Match Trade Activity/Trade Logs: rows without a recoverable broker trade
+    // ID cannot be safely attributed to a lifecycle and must not appear as
+    // standalone phantom trades in Edge Intelligence.
+    if (!row.trade_id) continue;
+    const list = byTrade.get(row.trade_id) ?? [];
+    list.push(row);
+    byTrade.set(row.trade_id, list);
   }
 
   const snapshots: EdgeSnapshot[] = [];
@@ -157,19 +164,6 @@ export function snapshotsFromTradeLogs(rows: TradeLogRow[]): EdgeSnapshot[] {
     const entry = ordered.find((row) => row.event_type === 'opened') ?? ordered[0];
     if (!entry) continue;
     snapshots.push(snapshotFromEntryAndEvents(tradeId, entry, ordered));
-  }
-
-  // Older rows can lack a recoverable broker trade ID. Keep them visible rather
-  // than making Edge Intelligence appear empty; each open/full-close row becomes
-  // a standalone historical snapshot.
-  for (const row of orphans) {
-    if (row.event_type === 'opened') {
-      snapshots.push(snapshotFromEntryAndEvents(null, row, [row]));
-      continue;
-    }
-    if (FULL_CLOSE_EVENTS.has(row.event_type)) {
-      snapshots.push(snapshotFromEntryAndEvents(null, row, [row]));
-    }
   }
 
   return snapshots.sort((a, b) => {
