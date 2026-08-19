@@ -6,7 +6,7 @@ const timeframeBias = {
   d1: 'bullish', h4: 'bullish', h1: 'bullish', d1H4Aligned: true, direction: 'buy',
 };
 
-test('continuation requires D1/H4, active H1 momentum, and a fresh M5 trigger', () => {
+test('continuation accepts active H1 momentum and a fresh M5 trigger', () => {
   const passed = evaluateIctCorrectiveGate({
     direction: 'bullish',
     timeframeBias,
@@ -16,11 +16,27 @@ test('continuation requires D1/H4, active H1 momentum, and a fresh M5 trigger', 
     freshImpulse: true,
   });
   assert.equal(passed.passed, true);
+});
 
+test('completed 01:00-03:00 ET direction can confirm continuation when H1 is not actively opposing', () => {
+  const result = evaluateIctCorrectiveGate({
+    direction: 'bullish',
+    timeframeBias,
+    h1Momentum: { aligned: false, activeAligned: false, currentOpposing: false },
+    earlySessionDirection: { alignedWithBias: true, completedCount: 3, direction: 'bullish' },
+    entryAuthorization: { ready: true, mode: 'm5_continuation_recovery', cycleId: 'cycle:session' },
+    triggerAgeBars: 2,
+    freshImpulse: true,
+  });
+  assert.equal(result.passed, true);
+});
+
+test('strong live H1 opposition still vetoes a continuation', () => {
   const exhausted = evaluateIctCorrectiveGate({
     direction: 'bullish',
     timeframeBias,
-    h1Momentum: { aligned: false, exhausted: true, reason: 'Momentum ended.' },
+    h1Momentum: { aligned: true, currentOpposing: true, exhausted: true, reason: 'Live H1 is bearish.' },
+    earlySessionDirection: { alignedWithBias: true, completedCount: 3, direction: 'bullish' },
     entryAuthorization: { ready: true, mode: 'm5_continuation_breakout', cycleId: 'cycle:2' },
     triggerAgeBars: 0,
     freshImpulse: true,
@@ -58,16 +74,26 @@ test('reversal requires the full HTF tap, sweep, displacement, CISD/MSS, fresh-M
   assert.ok(incomplete.failureCodes.includes(ICT_FAILURE_CODES.CISD_MSS_MISSING));
 });
 
-test('confidence is absent from the corrective gate and cannot override a stale trigger', () => {
-  const result = evaluateIctCorrectiveGate({
+test('two M5 bars remain fresh but a third bar is stale', () => {
+  const fresh = evaluateIctCorrectiveGate({
     direction: 'bullish',
     timeframeBias,
     h1Momentum: { aligned: true },
-    entryAuthorization: { ready: true, mode: 'm5_continuation_cisd', cycleId: 'cycle:3' },
+    entryAuthorization: { ready: true, mode: 'm5_continuation_breakout', cycleId: 'cycle:fresh' },
     triggerAgeBars: 2,
+    freshImpulse: true,
+  });
+  assert.equal(fresh.passed, true);
+
+  const stale = evaluateIctCorrectiveGate({
+    direction: 'bullish',
+    timeframeBias,
+    h1Momentum: { aligned: true },
+    entryAuthorization: { ready: true, mode: 'm5_continuation_breakout', cycleId: 'cycle:stale' },
+    triggerAgeBars: 3,
     freshImpulse: true,
     confidence: 100,
   });
-  assert.equal(result.passed, false);
-  assert.ok(result.failureCodes.includes(ICT_FAILURE_CODES.STALE_M5_TRIGGER));
+  assert.equal(stale.passed, false);
+  assert.ok(stale.failureCodes.includes(ICT_FAILURE_CODES.STALE_M5_TRIGGER));
 });

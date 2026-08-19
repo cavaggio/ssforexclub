@@ -23,6 +23,13 @@ function isContinuation(mode) {
   return value === 'h1_transition' || value.startsWith('m5_continuation_');
 }
 
+function continuationStrategy(mode) {
+  const value = String(mode || '').toLowerCase();
+  if (value === 'm5_continuation_recovery') return 'continuation_recovery';
+  if (value === 'm5_continuation_retest') return 'continuation_retest';
+  return 'continuation_breakout';
+}
+
 function earlySessionLabel(profile) {
   if (!profile || profile.availableCount < 1) return '01:00-03:00 ET context unavailable';
   return `01:00-03:00 ET context ${profile.direction}${profile.provisional ? ' (provisional)' : ''}`;
@@ -40,13 +47,18 @@ export function resolveIctStrategyAuthorization({
   const wanted = normalizeDirection(direction);
   const marketMakerAuthorization = marketMakerResolution?.entryAuthorization || {};
   const transitionAligned = h1Transition?.ready === true && normalizeDirection(h1Transition?.bias) === wanted;
-  const momentumAligned = h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;
-  const h1ActiveAligned = momentumAligned || transitionAligned;
+  const momentumAligned = h1Momentum?.currentAligned === true ||
+    h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;
+  const earlySessionAligned = earlySessionDirection?.alignedWithBias === true &&
+    Number(earlySessionDirection?.completedCount || 0) >= 2;
+  const currentH1Opposing = h1Momentum?.currentOpposing === true;
+  const h1ContextAligned = !currentH1Opposing &&
+    (momentumAligned || transitionAligned || earlySessionAligned);
 
   const directContinuationReady = Boolean(
     wanted &&
     htfAligned === true &&
-    h1ActiveAligned &&
+    h1ContextAligned &&
     continuationBreakout?.ready === true &&
     continuationBreakout?.cycleId,
   );
@@ -58,13 +70,11 @@ export function resolveIctStrategyAuthorization({
         cycleId: `direct:${continuationBreakout.cycleId}`,
         parentCycleId: null,
         family: 'continuation',
-        strategy: continuationBreakout.mode === 'm5_continuation_retest'
-          ? 'continuation_retest'
-          : 'continuation_breakout',
+        strategy: continuationStrategy(continuationBreakout.mode),
         source: 'direct_continuation',
         requiresMarketMakerActive: false,
         reason:
-          `D1/H4 direction, H1 active momentum/transition, and a fresh M5 ${continuationBreakout.mode === 'm5_continuation_retest' ? 'retest' : 'breakout'} ` +
+          `D1/H4 direction plus aligned H1/current-session context and a fresh M5 ${continuationStrategy(continuationBreakout.mode).replace('continuation_', '')} ` +
           `authorize continuation independently of the PO3 reversal cycle; ${earlySessionLabel(earlySessionDirection)}.`,
       }
     : null;
@@ -91,18 +101,16 @@ export function resolveIctStrategyAuthorization({
     ? marketMakerCandidate
     : directContinuation || marketMakerCandidate;
 
-  // Preserve the most actionable continuation failure. If H1 active momentum is
-  // missing or exhausted, do not let a generic M5 candidate explanation mask it.
-  // This keeps the activity log/learning loop explicit about direction-confirmation
-  // failures rather than incorrectly reporting only "no breakout".
-  const h1FailureReason = h1Momentum?.exhausted === true
-    ? (h1Momentum?.reason || 'H1 active momentum is exhausted.')
-    : (h1Momentum?.reason || h1Transition?.reason || 'H1 active momentum/transition is not aligned.');
+  const h1FailureReason = currentH1Opposing
+    ? (h1Momentum?.reason || 'The live H1 candle is actively opposing D1/H4.')
+    : h1Momentum?.exhausted === true
+      ? (h1Momentum?.reason || 'H1 active momentum is exhausted.')
+      : (h1Momentum?.reason || h1Transition?.reason || 'H1/current-session continuation context is not aligned.');
   const continuationReason = directContinuationReady
     ? directContinuation.reason
-    : !h1ActiveAligned
+    : !h1ContextAligned
       ? h1FailureReason
-      : continuationBreakout?.reason || 'No fresh M5 continuation breakout/retest is ready.';
+      : continuationBreakout?.reason || 'No fresh M5 continuation breakout/recovery is ready.';
   const reversalReason = marketMakerAuthorization?.reason || 'The reversal/PO3 model is not authorized.';
 
   const entryAuthorization = selected || {
@@ -123,12 +131,21 @@ export function resolveIctStrategyAuthorization({
     selectedFamily: entryAuthorization.family,
     selectedSource: entryAuthorization.source,
     earlySessionDirection,
+    h1Context: {
+      momentumAligned,
+      transitionAligned,
+      earlySessionAligned,
+      currentH1Opposing,
+      aligned: h1ContextAligned,
+    },
     candidates: {
       continuation: {
         ready: directContinuationReady,
         reason: continuationReason,
         mode: continuationBreakout?.mode || null,
         cycleId: continuationBreakout?.cycleId || null,
+        recoveryArmed: continuationBreakout?.recoveryArmed === true,
+        triggerAgeMinutes: continuationBreakout?.triggerAgeMinutes ?? null,
       },
       reversal: {
         ready: Boolean(marketMakerCandidate && isInitialReversal(marketMakerCandidate.mode)),
