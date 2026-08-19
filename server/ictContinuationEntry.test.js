@@ -27,7 +27,7 @@ function bullishBreakout(overrides = {}) {
     candles,
     bias: 'bullish',
     h1Bias: 'bullish',
-    h1Momentum: { aligned: true, activeAligned: true, activeDirection: 'bullish' },
+    h1Momentum: { aligned: true, activeAligned: true, currentOpposing: false, activeDirection: 'bullish' },
     bos: {
       direction: 'bullish',
       brokenLevel: 1.1010,
@@ -36,93 +36,118 @@ function bullishBreakout(overrides = {}) {
     displacement: {
       direction: 'bullish',
       candleIndex: candles.length - 1,
-      createdFVG: true,
+      createdFVG: false,
     },
-    fvgs: [{ type: 'bullish', status: 'open' }],
+    fvgs: [],
+    orderBlock: null,
     atrPrice: 0.0005,
+    now: new Date('2026-08-14T08:00:00Z'),
     ...overrides,
   });
 }
 
-test('aligned H1 plus fresh M5 displacement BOS authorizes a continuation breakout', () => {
+test('aligned H1 plus a fresh completed M5 BOS authorizes continuation without mandatory FVG/OB', () => {
   const result = bullishBreakout();
 
   assert.equal(result.ready, true);
   assert.equal(result.mode, 'm5_continuation_breakout');
   assert.equal(result.bosAligned, true);
+  assert.equal(result.pdArrayAligned, false);
   assert.match(result.cycleId, /^bullish:m5_continuation_breakout:/);
 });
 
-test('H1 active momentum—not structural bias—must agree for the continuation path', () => {
-  const result = bullishBreakout({
+test('a just-closed breakout survives after the next live M5 candle opens', () => {
+  const completed = m5Candles();
+  const breakoutTime = completed.at(-1).time;
+  const candles = [
+    ...completed,
+    {
+      ...completed.at(-1),
+      time: '2026-08-14T08:05:00.000Z',
+      open: 1.1014,
+      close: 1.10145,
+      high: 1.1015,
+      low: 1.10135,
+      complete: false,
+    },
+  ];
+  const result = classifyIctM5ContinuationEntry({
+    candles,
+    bias: 'bullish',
     h1Bias: 'bullish',
-    h1Momentum: { aligned: false, activeAligned: false, exhausted: true, activeDirection: 'bearish', reason: 'H1 momentum reversed.' },
+    h1Momentum: { aligned: true, activeAligned: true, currentOpposing: false },
+    bos: { direction: 'bullish', brokenLevel: 1.1010, time: breakoutTime },
+    atrPrice: 0.0005,
+    now: new Date('2026-08-14T08:06:00Z'),
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(result.triggerFresh, true);
+  assert.ok(result.triggerAgeMinutes <= 10);
+  assert.equal(result.breakoutTime, breakoutTime);
+});
+
+test('completed early-session direction can support continuation when current H1 is not opposing', () => {
+  const result = bullishBreakout({
+    h1Momentum: { aligned: false, activeAligned: false, currentOpposing: false },
+    earlySessionDirection: { alignedWithBias: true, completedCount: 3, direction: 'bullish' },
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(result.earlySessionAligned, true);
+});
+
+test('strong live H1 opposition still blocks continuation', () => {
+  const result = bullishBreakout({
+    h1Momentum: { aligned: true, activeAligned: true, currentOpposing: true, exhausted: true, reason: 'Live H1 reversed bearish.' },
+    earlySessionDirection: { alignedWithBias: true, completedCount: 3, direction: 'bullish' },
   });
 
   assert.equal(result.ready, false);
   assert.equal(result.status, 'h1_momentum_exhausted');
 });
 
-test('an extended breakout is rejected instead of chased', () => {
-  const candles = m5Candles({ close: 1.1020 });
-  const result = bullishBreakout({ candles, maxExtensionAtr: 1.25 });
+test('an extended breakout is not chased and explicitly arms recovery', () => {
+  const candles = m5Candles({ close: 1.1024 });
+  const result = bullishBreakout({ candles, maxExtensionAtr: 2.0 });
 
   assert.equal(result.ready, false);
-  assert.equal(result.status, 'breakout_overextended');
+  assert.equal(result.status, 'await_recovery_pullback');
+  assert.equal(result.recoveryArmed, true);
   assert.ok(result.extensionAtr > result.maxExtensionAtr);
+  assert.match(result.reason, /Recovery is armed/i);
 });
 
-test('a live M5 candle cannot authorize a continuation entry before close', () => {
-  const candles = m5Candles({ complete: false });
-  const result = bullishBreakout({ candles });
-
-  assert.equal(result.ready, false);
-  assert.equal(result.status, 'await_m5_close');
-});
-
-test('first held M5 retest uses the original break as a stable re-entry cycle id', () => {
+test('a first held retest can recover a missed breakout without requiring a PD array', () => {
   const candles = m5Candles({ close: 1.1011 });
-  candles[21] = {
-    ...candles[21],
-    open: 1.1008,
-    high: 1.1013,
-    low: 1.1007,
-    close: 1.1012,
-  };
-  const first = classifyIctM5ContinuationEntry({
+  const result = classifyIctM5ContinuationEntry({
     candles,
     bias: 'bullish',
     h1Bias: 'bullish',
-    h1Momentum: { aligned: true, activeAligned: true },
+    h1Momentum: { aligned: true, activeAligned: true, currentOpposing: false },
     retest: { direction: 'bullish', retestLevel: 1.1010 },
-    fvgs: [{ type: 'bullish', status: 'partial' }],
+    fvgs: [],
+    orderBlock: null,
     atrPrice: 0.0005,
-  });
-  const nextCandles = [
-    ...candles,
-    {
-      ...candles.at(-1),
-      time: '2026-08-14T08:05:00.000Z',
-      open: 1.1011,
-      close: 1.10115,
-      high: 1.1012,
-      low: 1.1010,
-    },
-  ];
-  const next = classifyIctM5ContinuationEntry({
-    candles: nextCandles,
-    bias: 'bullish',
-    h1Bias: 'bullish',
-    h1Momentum: { aligned: true, activeAligned: true },
-    retest: { direction: 'bullish', retestLevel: 1.1010 },
-    fvgs: [{ type: 'bullish', status: 'partial' }],
-    atrPrice: 0.0005,
+    now: new Date('2026-08-14T08:00:00Z'),
   });
 
-  assert.equal(first.ready, true);
-  assert.equal(first.mode, 'm5_continuation_retest');
-  assert.equal(next.ready, true);
-  assert.equal(first.cycleId, next.cycleId);
+  assert.equal(result.ready, true);
+  assert.equal(result.mode, 'm5_continuation_recovery');
+  assert.equal(result.pdArrayAligned, false);
+});
+
+test('a breakout older than 10 minutes is not chased but remains recovery-armed', () => {
+  const candles = m5Candles();
+  const result = bullishBreakout({
+    candles,
+    now: new Date('2026-08-14T08:11:00Z'),
+  });
+
+  assert.equal(result.ready, false);
+  assert.equal(result.status, 'await_recovery_pullback');
+  assert.equal(result.recoveryArmed, true);
+  assert.ok(result.triggerAgeMinutes > 10);
 });
 
 test('entry authorization falls back to M5 continuation when no fresh H1 transition exists', () => {
