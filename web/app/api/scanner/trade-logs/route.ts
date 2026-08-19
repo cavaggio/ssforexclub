@@ -1,20 +1,28 @@
 /**
  * Authenticated read-only endpoint for the current user's saved trade history.
  *
- * The default view returns the latest 50 lifecycle trade records (opens,
- * partial closes, and closes). Operational events such as reassessments remain
- * available only when an explicit event_type filter is requested.
+ * The default view returns the latest 50 canonical lifecycle trade records
+ * (opens, unique partial closes, and one terminal close per broker trade).
+ * Operational events such as reassessments remain available only when an
+ * explicit event_type filter is requested.
  */
 
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import type { TradeEventType } from '@/lib/tradeLogs';
 import { lifecycleTradeRows, listVisibleTradeLogsForUser } from '@/lib/visibleTradeLogs';
+import { canonicalizeTradeActivityRows } from '@/lib/tradeActivityCanonical.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MAX_TRADE_LOG_ROWS = 50;
+const LIFECYCLE_EVENT_TYPES = new Set<TradeEventType>([
+  'opened',
+  'closed',
+  'partial_closed',
+  'manual_close_executed',
+]);
 
 const VALID_EVENT_TYPES: ReadonlySet<TradeEventType> = new Set([
   'opened',
@@ -56,8 +64,9 @@ export async function GET(req: Request) {
   }
 
   try {
-    // Fetch a wider source window because lifecycle filtering happens after the
-    // production-safe row normalization and operational events can be interleaved.
+    // Fetch a wider source window because lifecycle filtering/canonicalization
+    // happens after the production-safe row normalization and operational events
+    // can be interleaved with broker lifecycle rows.
     const { rows } = await listVisibleTradeLogsForUser(userId, {
       instrument: sp.get('instrument') ?? undefined,
       tradeId: sp.get('trade_id') ?? undefined,
@@ -67,9 +76,13 @@ export async function GET(req: Request) {
       limit: 200,
     });
 
-    const filtered = eventTypeRaw
-      ? rows.filter((row) => row.event_type === eventTypeRaw)
-      : lifecycleTradeRows(rows);
+    const canonicalLifecycle = canonicalizeTradeActivityRows(lifecycleTradeRows(rows));
+    const eventType = eventTypeRaw as TradeEventType | null;
+    const filtered = eventType
+      ? LIFECYCLE_EVENT_TYPES.has(eventType)
+        ? canonicalLifecycle.filter((row) => row.event_type === eventType)
+        : rows.filter((row) => row.event_type === eventType)
+      : canonicalLifecycle;
     const history = filtered.slice(0, requestedLimit);
 
     return NextResponse.json({
@@ -77,7 +90,7 @@ export async function GET(req: Request) {
       rows: history,
       nextCursor: null,
       maxRows: MAX_TRADE_LOG_ROWS,
-      historyMode: eventTypeRaw ? 'event_filter' : 'last_50_trades',
+      historyMode: eventTypeRaw ? 'event_filter' : 'canonical_trade_lifecycle',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { lifecycleTradeRows, listVisibleTradeLogsForUser } from '@/lib/visibleTradeLogs';
+import { canonicalizeTradeActivityRows } from '@/lib/tradeActivityCanonical.js';
 import { reconcileBrokerClosuresForUser } from '@/lib/tradeActivityReconciliation';
 import { isSameNewYorkTradingDay, newYorkDateKey } from '@/lib/tradingDay.js';
 import { getServerSupabase } from '@/lib/db';
@@ -19,9 +20,9 @@ export async function POST() {
     const now = new Date();
     const tradingDateKey = newYorkDateKey(now);
     const { rows } = await listVisibleTradeLogsForUser(userId, { limit: 200 });
-    let activity = lifecycleTradeRows(rows)
-      .filter((row) => isSameNewYorkTradingDay(row.created_at, now))
-      .slice(0, 50);
+    let activity = canonicalizeTradeActivityRows(
+      lifecycleTradeRows(rows).filter((row) => isSameNewYorkTradingDay(row.created_at, now)),
+    ).slice(0, 50);
 
     const tradeIds = [...new Set(activity.map((row) => row.trade_id).filter(Boolean))] as string[];
     if (tradeIds.length) {
