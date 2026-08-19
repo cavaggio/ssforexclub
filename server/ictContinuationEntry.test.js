@@ -141,7 +141,7 @@ test('a breakout older than 10 minutes is not chased but remains recovery-armed'
   const candles = m5Candles();
   const result = bullishBreakout({
     candles,
-    now: new Date('2026-08-14T08:11:00Z'),
+    now: new Date('2026-08-14T08:16:00Z'),
   });
 
   assert.equal(result.ready, false);
