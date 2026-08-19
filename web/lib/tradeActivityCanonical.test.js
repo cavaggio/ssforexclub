@@ -54,6 +54,33 @@ test('one trade shows one open, unique partials, and one best terminal close', (
   assert.deepEqual(result.map((item) => item.id), ['broker-close', 'partial-duplicate', 'open-a']);
 });
 
+test('distinct OANDA partial transactions are preserved even when mapped broker order id falls back to trade id', () => {
+  const rows = [
+    row({ id: 'open', event_type: 'opened' }),
+    row({
+      id: 'partial-1',
+      event_type: 'partial_closed',
+      broker_order_id: '1341',
+      units_closed: 1000,
+      realized_pl: 25,
+      raw_payload: { source: 'oanda_transaction_sync', transactionId: '1501' },
+      created_at: '2026-08-19T14:30:00.000Z',
+    }),
+    row({
+      id: 'partial-2',
+      event_type: 'partial_closed',
+      broker_order_id: '1341',
+      units_closed: 900,
+      realized_pl: 30,
+      raw_payload: { source: 'oanda_transaction_sync', transactionId: '1510' },
+      created_at: '2026-08-19T14:40:00.000Z',
+    }),
+  ];
+
+  const result = canonicalizeTradeActivityRows(rows);
+  assert.deepEqual(result.map((item) => item.id), ['partial-2', 'partial-1', 'open']);
+});
+
 test('different broker trade IDs remain independent across pairs', () => {
   const rows = [
     row({ id: 'uj-open', trade_id: '1341', instrument: 'USD_JPY', event_type: 'opened' }),
