@@ -28,6 +28,9 @@ const goodAnalysis = (over = {}) => async () => ({
     ready: true,
     mode: 'initial_reversal_mss',
     cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
+    family: 'reversal',
+    strategy: 'reversal',
+    requiresMarketMakerActive: true,
   },
   marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
   correctiveGate: { passed: true, decision: 'authorize', family: 'reversal', failureCodes: [] },
@@ -120,14 +123,14 @@ test('direction mismatch with the recomputed signal is rejected', async () => {
   assert.match(r.reason, /no current ICT buy signal/i);
 });
 
-test('a qualified score cannot bypass central market-maker authorization', async () => {
+test('a qualified score cannot bypass strategy authorization', async () => {
   const r = await executeIctTrade(validParams(), baseDeps({
     getAnalysis: goodAnalysis({
-      entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason: 'Waiting for HTF key tap.' },
+      entryAuthorization: { ready: false, mode: 'none', cycleId: null, reason: 'No complete continuation or reversal model.' },
     }),
   }));
   assert.equal(r.blocked, true);
-  assert.match(r.reason, /central market-maker authorization failed/i);
+  assert.match(r.reason, /strategy authorization failed/i);
 });
 
 test('an activated market-maker cycle cannot execute without a fresh M5 setup', async () => {
@@ -153,14 +156,60 @@ test('a fresh M5 continuation breakout can execute inside an activated parent cy
       entryAuthorization: {
         ready: true,
         mode: 'm5_continuation_breakout',
-        cycleId: '2026-06-04:EUR_USD:bullish:activated:m5-breakout',
+        cycleId: 'direct:bullish:m5_continuation_breakout:1.1:2026-06-04T14:55:00.000Z',
+        family: 'continuation',
+        strategy: 'continuation_breakout',
+        requiresMarketMakerActive: false,
       },
+      correctiveGate: { passed: true, decision: 'authorize', family: 'continuation', failureCodes: [] },
     }),
   }));
 
   assert.equal(r.success, true, r.reason);
   assert.equal(r.entryAuthorization.mode, 'm5_continuation_breakout');
   assert.equal(client.calls.length, 1);
+});
+
+test('direct continuation does not require PO3 distribution-active stage', async () => {
+  const client = mockClient('ACC-DIRECT-CONTINUATION');
+  const r = await executeIctTrade(validParams(), baseDeps({
+    client,
+    getAnalysis: goodAnalysis({
+      marketMakerModel: { studyReady: true, stage: 'HTF_KEY_TAPPED' },
+      h1Transition: { ready: true, bias: 'bullish', transitionId: 'bullish:2026-06-04T15:00:00.000Z' },
+      continuationBreakout: {
+        ready: true,
+        mode: 'm5_continuation_breakout',
+        cycleId: 'bullish:m5_continuation_breakout:1.1:2026-06-04T14:55:00.000Z',
+        reason: 'Fresh aligned M5 continuation breakout.',
+      },
+      entryAuthorization: {
+        ready: true,
+        mode: 'm5_continuation_breakout',
+        cycleId: 'direct:bullish:m5_continuation_breakout:1.1:2026-06-04T14:55:00.000Z',
+        family: 'continuation',
+        strategy: 'continuation_breakout',
+        requiresMarketMakerActive: false,
+      },
+      correctiveGate: { passed: true, decision: 'authorize', family: 'continuation', failureCodes: [] },
+    }),
+  }));
+
+  assert.equal(r.success, true, r.reason);
+  assert.equal(r.entryAuthorization.strategy, 'continuation_breakout');
+  assert.equal(r.entryAuthorization.requiresMarketMakerActive, false);
+  assert.equal(client.calls.length, 1);
+});
+
+test('PO3-dependent reversal still requires distribution-active stage', async () => {
+  const r = await executeIctTrade(validParams(), baseDeps({
+    getAnalysis: goodAnalysis({
+      marketMakerModel: { studyReady: true, stage: 'HTF_KEY_TAPPED' },
+    }),
+  }));
+
+  assert.equal(r.blocked, true);
+  assert.match(r.reason, /reversal strategy requires an activated persistent Power-of-Three distribution cycle/i);
 });
 
 test('valid trade submits through the existing OANDA client', async () => {

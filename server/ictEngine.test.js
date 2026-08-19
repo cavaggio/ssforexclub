@@ -110,7 +110,7 @@ test('scalp entry: M15 cannot substitute for missing M5 candles', () => {
   assert.match(r.rejectionReasons[0], /Insufficient 5M candle data/i);
 });
 
-test('scalp entry: a ready H1 transition cannot bypass the central market-maker cycle', () => {
+test('scalp entry: a ready H1 transition still requires a complete strategy-specific M5 trigger', () => {
   const c = buildCandles();
   c.h1[c.h1.length - 2] = {
     time: '2026-06-04T14:00:00Z', open: 1.1020, high: 1.1022,
@@ -131,7 +131,8 @@ test('scalp entry: a ready H1 transition cannot bypass the central market-maker 
   assert.equal(r.entryTimeframe, '5M');
   assert.equal(r.entryCandle.triggerReady, false);
   assert.equal(r.signal, 'none');
-  assert.ok(r.rejectionReasons.some((reason) => /central market-maker execution is not authorized/i.test(reason)));
+  assert.ok(r.rejectionReasons.some((reason) => /no ICT strategy is authorized/i.test(reason)));
+  assert.ok(!r.rejectionReasons.some((reason) => /central market-maker execution is not authorized/i.test(reason)));
 });
 
 test('refactor: only hard gates reject — soft concepts never appear as hard rejections', () => {
