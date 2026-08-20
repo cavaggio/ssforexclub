@@ -142,6 +142,42 @@ test('broker-clear cleanup does not erase a post-stop-loss reentry lock', async 
   assert.match(blocked.reason, /loss_locked/);
 });
 
+test('post-stop-loss lock expires at the next New York trading date even inside 24 hours', async () => {
+  reset();
+  const fingerprint = 'account-5:GBP_USD:long:setup-e';
+  const lossTime = new Date('2026-08-19T15:00:00.000Z'); // 11:00 ET
+  const first = await reservations.reserveExecution({
+    fingerprint,
+    accountId: 'account-5',
+    pair: 'GBP_USD',
+    direction: 'long',
+    now: lossTime,
+  });
+  assert.equal(first.allowed, true);
+
+  await reservations.markExecutionOpen({ hash: first.hash, tradeId: 'trade-505' });
+  await reservations.lockTradeAfterLoss('trade-505', 24, lossTime);
+
+  const sameDay = await reservations.reserveExecution({
+    fingerprint,
+    accountId: 'account-5',
+    pair: 'GBP_USD',
+    direction: 'long',
+    now: new Date('2026-08-19T20:00:00.000Z'), // 16:00 ET
+  });
+  assert.equal(sameDay.allowed, false);
+  assert.match(sameDay.reason, /loss_locked/);
+
+  const nextTradingDate = await reservations.reserveExecution({
+    fingerprint,
+    accountId: 'account-5',
+    pair: 'GBP_USD',
+    direction: 'long',
+    now: new Date('2026-08-20T12:30:00.000Z'), // 08:30 ET, still <24h after loss
+  });
+  assert.equal(nextTradingDate.allowed, true);
+});
+
 test('all broker close and reconciliation paths carry reservation cleanup contracts', () => {
   const tradeSource = readFileSync(new URL('./oandaTrade.js', import.meta.url), 'utf8');
   const ictSource = readFileSync(new URL('./ictExecution.js', import.meta.url), 'utf8');
