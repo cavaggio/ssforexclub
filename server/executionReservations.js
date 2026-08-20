@@ -6,6 +6,12 @@ let client;
 
 const ACTIVE_STATUSES = new Set(['reserved', 'open']);
 const BLOCKING_STATUSES = new Set(['reserved', 'open', 'loss_locked']);
+const NEW_YORK_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 function db() {
   if (client !== undefined) return client;
@@ -36,10 +42,35 @@ function dateMs(value) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function newYorkDateKey(value) {
+  const ms = typeof value === 'number' ? value : dateMs(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const parts = NEW_YORK_DATE_FORMATTER.formatToParts(new Date(ms));
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  return year && month && day ? `${year}-${month}-${day}` : '';
+}
+
+function lossLockBlocks({ lockedUntil, lockedAt }, nowMs = Date.now()) {
+  const expiryMs = Number(lockedUntil || 0);
+  if (expiryMs > 0 && expiryMs <= nowMs) return false;
+
+  // Post-loss re-entry protection is a same-trading-day control. A rolling 24h
+  // lock must never leak into the next New York trading date and block a pair
+  // that has not taken a loss today. If the lock timestamp is unavailable, stay
+  // conservative and preserve the existing block behavior.
+  const lockDate = newYorkDateKey(Number(lockedAt || 0));
+  const currentDate = newYorkDateKey(nowMs);
+  if (lockDate && currentDate && lockDate !== currentDate) return false;
+
+  return true;
+}
+
 function memoryBlocks(row, nowMs = Date.now()) {
   if (!row || !BLOCKING_STATUSES.has(row.status)) return false;
   if (row.status === 'loss_locked') {
-    return !row.lockedUntil || Number(row.lockedUntil) > nowMs;
+    return lossLockBlocks({ lockedUntil: row.lockedUntil, lockedAt: row.lockedAt }, nowMs);
   }
   return Number(row.expiresAt || 0) > nowMs;
 }
@@ -53,6 +84,7 @@ function releaseMemoryWhere(predicate, status = 'released') {
       status,
       expiresAt: 0,
       lockedUntil: null,
+      lockedAt: null,
     });
     releasedHashes.push(hash);
   }
@@ -63,10 +95,10 @@ export function fingerprintHash(fingerprint) {
   return createHash('sha256').update(String(fingerprint)).digest('hex');
 }
 
-export async function reserveExecution({ fingerprint, accountId, pair, direction, expiresMinutes = 30 }) {
+export async function reserveExecution({ fingerprint, accountId, pair, direction, expiresMinutes = 30, now = new Date() }) {
   const hash = fingerprintHash(fingerprint);
-  const now = new Date();
-  const nowMs = now.getTime();
+  const currentTime = now instanceof Date ? now : new Date(now);
+  const nowMs = currentTime.getTime();
   const expiresAt = new Date(nowMs + expiresMinutes * 60000).toISOString();
   const normalizedPair = normalizePair(pair);
   const normalizedDirection = normalizeDirection(direction);
@@ -79,7 +111,7 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
   if (supabase) {
     const { data: existing, error: readError } = await supabase
       .from('execution_reservations')
-      .select('status,expires_at,locked_until,trade_id,account_id,pair,direction')
+      .select('status,expires_at,locked_until,trade_id,account_id,pair,direction,created_at,updated_at')
       .eq('fingerprint_hash', hash)
       .maybeSingle();
 
@@ -88,9 +120,13 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
     }
 
     if (existing) {
+      const lockSetAt = dateMs(existing.updated_at || existing.created_at) || 0;
       const locked =
         existing.status === 'loss_locked' &&
-        (!existing.locked_until || dateMs(existing.locked_until) > nowMs);
+        lossLockBlocks({
+          lockedUntil: dateMs(existing.locked_until) || null,
+          lockedAt: lockSetAt || null,
+        }, nowMs);
       const active = ACTIVE_STATUSES.has(existing.status) && dateMs(existing.expires_at) > nowMs;
 
       if (locked || active) {
@@ -98,6 +134,7 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
           status: existing.status,
           expiresAt: dateMs(existing.expires_at),
           lockedUntil: dateMs(existing.locked_until) || null,
+          lockedAt: existing.status === 'loss_locked' ? lockSetAt || null : null,
           tradeId: existing.trade_id ? String(existing.trade_id) : null,
           accountId: String(existing.account_id || accountId || ''),
           pair: normalizePair(existing.pair || normalizedPair),
@@ -106,8 +143,9 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
         return { allowed: false, reason: `setup already ${existing.status}`, hash };
       }
 
-      // The database says this reservation is terminal/released. Remove any stale
-      // process-local copy so a fresh qualified setup can reserve immediately.
+      // The database says this reservation is terminal/released, expired, or a
+      // prior-New-York-day loss lock. Remove any stale process-local copy so a
+      // fresh qualified setup can reserve immediately.
       if (memoryBlocks(local, nowMs)) memory.delete(hash);
     } else if (memoryBlocks(local, nowMs)) {
       // A missing persistent row also proves the local record is not authoritative.
@@ -125,7 +163,7 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
         trade_id: null,
         locked_until: null,
         expires_at: expiresAt,
-        updated_at: now.toISOString(),
+        updated_at: currentTime.toISOString(),
       },
       { onConflict: 'fingerprint_hash' },
     );
@@ -138,6 +176,7 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
     status: 'reserved',
     expiresAt: new Date(expiresAt).getTime(),
     lockedUntil: null,
+    lockedAt: null,
     tradeId: null,
     accountId: String(accountId || ''),
     pair: normalizedPair,
@@ -148,7 +187,7 @@ export async function reserveExecution({ fingerprint, accountId, pair, direction
 
 export async function markExecutionOpen({ hash, tradeId }) {
   const row = memory.get(hash) || {};
-  memory.set(hash, { ...row, status: 'open', tradeId: tradeId == null ? null : String(tradeId) });
+  memory.set(hash, { ...row, status: 'open', lockedAt: null, tradeId: tradeId == null ? null : String(tradeId) });
   const supabase = db();
   if (supabase) {
     await supabase
@@ -160,7 +199,7 @@ export async function markExecutionOpen({ hash, tradeId }) {
 
 export async function releaseExecution(hash, status = 'released') {
   const row = memory.get(hash) || {};
-  memory.set(hash, { ...row, status, expiresAt: 0, lockedUntil: null });
+  memory.set(hash, { ...row, status, expiresAt: 0, lockedUntil: null, lockedAt: null });
   const supabase = db();
   if (supabase) {
     const now = new Date().toISOString();
@@ -233,10 +272,12 @@ export async function releaseExecutionsForPairDirection({
   return { released: hashes.length, hashes };
 }
 
-export async function lockTradeAfterLoss(tradeId, hours = 24) {
+export async function lockTradeAfterLoss(tradeId, hours = 24, now = new Date()) {
   const id = String(tradeId || '');
   if (!id) return;
-  const lockedUntil = new Date(Date.now() + hours * 3600000);
+  const currentTime = now instanceof Date ? now : new Date(now);
+  const nowMs = currentTime.getTime();
+  const lockedUntil = new Date(nowMs + hours * 3600000);
 
   for (const [hash, row] of memory.entries()) {
     if (String(row?.tradeId || '') !== id) continue;
@@ -245,6 +286,7 @@ export async function lockTradeAfterLoss(tradeId, hours = 24) {
       status: 'loss_locked',
       expiresAt: lockedUntil.getTime(),
       lockedUntil: lockedUntil.getTime(),
+      lockedAt: nowMs,
     });
   }
 
@@ -255,7 +297,7 @@ export async function lockTradeAfterLoss(tradeId, hours = 24) {
     .update({
       status: 'loss_locked',
       locked_until: lockedUntil.toISOString(),
-      updated_at: new Date().toISOString(),
+      updated_at: currentTime.toISOString(),
     })
     .eq('trade_id', id);
 }
