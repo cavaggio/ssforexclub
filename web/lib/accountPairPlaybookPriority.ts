@@ -6,6 +6,8 @@ import { buildPairPlaybookPriority } from './pairPlaybookPriorityCore.js';
 type Engine = 'ict' | 'ppr' | 'v3';
 type JsonRecord = Record<string, any>;
 
+const EDGE_PLAYBOOK_RETENTION_DAYS = 30;
+
 function migrationMissing(error: unknown) {
   const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
   const message = String(record.message || error || '');
@@ -20,17 +22,21 @@ export async function loadAccountPairPlaybookPriority(args: {
   now?: Date;
 }): Promise<JsonRecord> {
   const { userId, brokerAccountId, engine, now = new Date() } = args;
+  const cutoffIso = new Date(
+    now.getTime() - EDGE_PLAYBOOK_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
   try {
     const { data, error } = await getServerSupabase()
       .from('pair_ai_playbooks')
       .select(
         'id,pair,version,is_current,status,recommendation_stage,sample_size,win_rate,' +
-        'expectancy_r,profit_factor,preferred_scalp_windows,validator',
+        'expectancy_r,profit_factor,preferred_scalp_windows,validator,generated_at',
       )
       .eq('user_id', userId)
       .eq('broker_account_id', brokerAccountId)
       .eq('engine', engine)
-      .eq('is_current', true);
+      .eq('is_current', true)
+      .gte('generated_at', cutoffIso);
     if (error) throw error;
     return {
       ...buildPairPlaybookPriority(data || [], now),
