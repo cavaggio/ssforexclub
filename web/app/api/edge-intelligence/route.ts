@@ -4,8 +4,8 @@
  * Signal Stack V3 — persistent Edge Intelligence history endpoint.
  *
  * IMPORTANT: this is intentionally separate from the dashboard's New York
- * "Today's Trade Activity" window. Edge Intelligence reads reconciled broker
- * lifecycles and analyzes the latest 25 completed trades independently for each
+ * "Today's Trade Activity" window. Edge Intelligence reads persistent broker
+ * history and analyzes the latest 25 completed trades independently for each
  * broker account.
  */
 
@@ -17,6 +17,22 @@ import { loadEdgeHistoryByAccount } from '@/lib/edgeHistory';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const row = error as Record<string, unknown>;
+    const values = [row.message, row.details, row.hint, row.code]
+      .filter((value) => typeof value === 'string' && value.trim()) as string[];
+    if (values.length) return values.join(' · ');
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Unknown Edge Intelligence error';
+    }
+  }
+  return String(error ?? 'Unknown Edge Intelligence error');
+}
 
 export async function GET() {
   const { userId } = await auth();
@@ -45,6 +61,8 @@ export async function GET() {
       accountReports,
       source: {
         mode: 'persistent_account_history',
+        historySource: history.sourceMode,
+        historyWarning: history.sourceWarning,
         accountCount: accountReports.length,
         tradesPerAccount: history.tradesPerAccount,
         lifecycleRowsScanned: history.lifecycleRowsScanned,
@@ -54,7 +72,7 @@ export async function GET() {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorText(err);
     console.error('[EDGE_INTELLIGENCE] historical read failed:', message);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
