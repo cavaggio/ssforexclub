@@ -2,9 +2,13 @@ import 'server-only';
 
 import { getServerSupabase } from './db';
 import type { TradeLogRow } from './tradeLogs';
+import { canonicalizeTradeActivityRows } from './tradeActivityCanonical.js';
+import { lifecycleTradeRows, listVisibleTradeLogsForUser } from './visibleTradeLogs';
 
 export const EDGE_TRADES_PER_ACCOUNT = 25;
 const EDGE_HISTORY_SCAN_LIMIT = 2000;
+const TRADE_LOG_PAGE_LIMIT = 200;
+const TRADE_LOG_MAX_PAGES = 10;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -15,7 +19,7 @@ type LifecycleRow = {
   environment: string | null;
   engine: string | null;
   broker_trade_id: string;
-  candidate_signal_id: string | null;
+  candidate_signal_id?: string | null;
   pair: string | null;
   direction: string | null;
   opened_at: string | null;
@@ -28,7 +32,7 @@ type LifecycleRow = {
   stop_loss: number | null;
   take_profit: number | null;
   realized_pl: number | null;
-  entry_context: unknown;
+  entry_context?: unknown;
   opening_snapshot: unknown;
   broker_snapshot: unknown;
 };
@@ -43,6 +47,8 @@ export type EdgeHistoryLoadResult = {
   accounts: EdgeAccountHistory[];
   lifecycleRowsScanned: number;
   tradesPerAccount: number;
+  sourceMode: 'actual_trade_lifecycles' | 'trade_log_fallback';
+  sourceWarning: string | null;
 };
 
 function object(value: unknown): JsonRecord {
@@ -61,6 +67,23 @@ function numberValue(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const row = error as Record<string, unknown>;
+    const parts = [row.message, row.details, row.hint, row.code]
+      .map(stringValue)
+      .filter((value): value is string => Boolean(value));
+    if (parts.length) return parts.join(' · ');
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Unknown database error';
+    }
+  }
+  return String(error ?? 'Unknown database error');
 }
 
 function deepValue(root: unknown, keys: string[]): unknown {
@@ -122,11 +145,14 @@ function normalizeOutcome(value: unknown): string | null {
 }
 
 function makeBaseRow(lifecycle: LifecycleRow, createdAt: string): TradeLogRow {
-  const entryContext = object(lifecycle.entry_context);
   const openingSnapshot = object(lifecycle.opening_snapshot);
+  const recoveredEntryContext = deepValue(openingSnapshot, ['entryContext']);
+  const entryContext = object(lifecycle.entry_context ?? recoveredEntryContext);
   const roots = [entryContext, openingSnapshot];
   const pair = normalizePair(lifecycle.pair ?? firstString(roots, ['pair', 'instrument']));
   const direction = normalizeSide(lifecycle.direction ?? firstString(roots, ['direction', 'side']));
+  const candidateSignalId = stringValue(lifecycle.candidate_signal_id)
+    ?? firstString(roots, ['candidateSignalId', 'signalId', 'ictSignalId']);
 
   return {
     id: lifecycle.id,
@@ -167,7 +193,7 @@ function makeBaseRow(lifecycle: LifecycleRow, createdAt: string): TradeLogRow {
     market_regime: firstString(roots, ['market_regime', 'regime']),
     macro_bias: firstString(roots, ['macroBias', 'macro_bias']),
     macro_risk: firstString(roots, ['macroRisk', 'macro_risk']),
-    candidate_signal_id: lifecycle.candidate_signal_id,
+    candidate_signal_id: candidateSignalId,
     entry_context: entryContext,
   };
 }
@@ -197,32 +223,9 @@ function lifecycleToTradeRows(lifecycle: LifecycleRow): TradeLogRow[] {
   return rows;
 }
 
-/**
- * Persistent Edge Intelligence history, intentionally separate from the dashboard's
- * New York "Today's Trade Activity" window. The source is the reconciled broker
- * lifecycle table and the analysis window is capped independently at the latest
- * completed 25 trades for each OANDA account.
- */
-export async function loadEdgeHistoryByAccount(userId: string): Promise<EdgeHistoryLoadResult> {
-  if (!userId) return { accounts: [], lifecycleRowsScanned: 0, tradesPerAccount: EDGE_TRADES_PER_ACCOUNT };
-
-  const { data, error } = await getServerSupabase()
-    .from('actual_trade_lifecycles')
-    .select(
-      'id,user_id,broker_account_id,environment,engine,broker_trade_id,candidate_signal_id,' +
-      'pair,direction,opened_at,closed_at,state,result,entry_price,exit_price,units,' +
-      'stop_loss,take_profit,realized_pl,entry_context,opening_snapshot,broker_snapshot',
-    )
-    .eq('user_id', userId)
-    .eq('state', 'closed')
-    .in('result', ['win', 'loss', 'breakeven'])
-    .order('closed_at', { ascending: false, nullsFirst: false })
-    .limit(EDGE_HISTORY_SCAN_LIMIT);
-
-  if (error) throw error;
-
+function accountsFromLifecycles(rows: LifecycleRow[]): EdgeAccountHistory[] {
   const grouped = new Map<string, LifecycleRow[]>();
-  for (const raw of (data ?? []) as unknown as LifecycleRow[]) {
+  for (const raw of rows) {
     const accountId = stringValue(raw.broker_account_id);
     if (!accountId) continue;
     const accountRows = grouped.get(accountId) ?? [];
@@ -231,17 +234,121 @@ export async function loadEdgeHistoryByAccount(userId: string): Promise<EdgeHist
     grouped.set(accountId, accountRows);
   }
 
-  const accounts = [...grouped.entries()]
+  return [...grouped.entries()]
     .map(([brokerAccountId, lifecycles]) => ({
       brokerAccountId,
       tradesLoaded: lifecycles.length,
       rows: lifecycles.flatMap(lifecycleToTradeRows),
     }))
     .sort((a, b) => a.brokerAccountId.localeCompare(b.brokerAccountId));
+}
+
+async function loadPersistentTradeLogRows(userId: string): Promise<TradeLogRow[]> {
+  const output: TradeLogRow[] = [];
+  let cursor: string | undefined;
+
+  for (let pageIndex = 0; pageIndex < TRADE_LOG_MAX_PAGES; pageIndex += 1) {
+    const page = await listVisibleTradeLogsForUser(userId, {
+      limit: TRADE_LOG_PAGE_LIMIT,
+      cursor,
+    });
+    output.push(...page.rows);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+
+  return output;
+}
+
+function accountsFromTradeLogs(rows: TradeLogRow[]): EdgeAccountHistory[] {
+  const grouped = new Map<string, TradeLogRow[]>();
+  for (const row of lifecycleTradeRows(rows)) {
+    const accountId = stringValue(row.broker_account_id);
+    if (!accountId) continue;
+    const list = grouped.get(accountId) ?? [];
+    list.push(row);
+    grouped.set(accountId, list);
+  }
+
+  const accounts: EdgeAccountHistory[] = [];
+  for (const [brokerAccountId, accountRows] of grouped.entries()) {
+    const canonical = canonicalizeTradeActivityRows(accountRows) as TradeLogRow[];
+    const completedTradeIds = new Set<string>();
+
+    for (const row of canonical) {
+      if (row.event_type !== 'closed' && row.event_type !== 'manual_close_executed') continue;
+      if (!row.trade_id) continue;
+      completedTradeIds.add(row.trade_id);
+      if (completedTradeIds.size >= EDGE_TRADES_PER_ACCOUNT) break;
+    }
+
+    if (!completedTradeIds.size) continue;
+    accounts.push({
+      brokerAccountId,
+      tradesLoaded: completedTradeIds.size,
+      rows: canonical.filter((row) => Boolean(row.trade_id && completedTradeIds.has(row.trade_id))),
+    });
+  }
+
+  return accounts.sort((a, b) => a.brokerAccountId.localeCompare(b.brokerAccountId));
+}
+
+/**
+ * Persistent Edge Intelligence history, intentionally separate from the dashboard's
+ * New York "Today's Trade Activity" window. The preferred source is the reconciled
+ * broker lifecycle table. If that table or a newer optional column is unavailable
+ * in production, the loader falls back to the same persistent history backing the
+ * dashboard Trade Log, still capped at the latest 25 completed trades per account.
+ */
+export async function loadEdgeHistoryByAccount(userId: string): Promise<EdgeHistoryLoadResult> {
+  if (!userId) {
+    return {
+      accounts: [],
+      lifecycleRowsScanned: 0,
+      tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+      sourceMode: 'actual_trade_lifecycles',
+      sourceWarning: null,
+    };
+  }
+
+  const { data, error } = await getServerSupabase()
+    .from('actual_trade_lifecycles')
+    .select(
+      'id,user_id,broker_account_id,environment,engine,broker_trade_id,' +
+      'pair,direction,opened_at,closed_at,state,result,entry_price,exit_price,units,' +
+      'stop_loss,take_profit,realized_pl,opening_snapshot,broker_snapshot',
+    )
+    .eq('user_id', userId)
+    .eq('state', 'closed')
+    .in('result', ['win', 'loss', 'breakeven'])
+    .order('closed_at', { ascending: false, nullsFirst: false })
+    .limit(EDGE_HISTORY_SCAN_LIMIT);
+
+  if (!error) {
+    const lifecycleRows = (data ?? []) as unknown as LifecycleRow[];
+    const accounts = accountsFromLifecycles(lifecycleRows);
+    if (accounts.length) {
+      return {
+        accounts,
+        lifecycleRowsScanned: lifecycleRows.length,
+        tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+        sourceMode: 'actual_trade_lifecycles',
+        sourceWarning: null,
+      };
+    }
+  }
+
+  const persistentTradeLogs = await loadPersistentTradeLogRows(userId);
+  const fallbackAccounts = accountsFromTradeLogs(persistentTradeLogs);
+  const primaryReason = error
+    ? `Reconciled lifecycle history unavailable: ${errorText(error)}.`
+    : 'No completed reconciled lifecycle rows were available.';
 
   return {
-    accounts,
-    lifecycleRowsScanned: data?.length ?? 0,
+    accounts: fallbackAccounts,
+    lifecycleRowsScanned: persistentTradeLogs.length,
     tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+    sourceMode: 'trade_log_fallback',
+    sourceWarning: `${primaryReason} Using persistent Trade Log history instead.`,
   };
 }
