@@ -13,8 +13,10 @@
 
 create extension if not exists pg_cron;
 
--- Fail with one actionable prerequisite message if the richer learning schema
--- has not been applied yet.
+-- Fail with one actionable prerequisite message if the core learning tables
+-- themselves are unavailable. Column-level drift is repaired below with
+-- additive IF NOT EXISTS compatibility changes so production environments that
+-- missed a prior column migration can still apply this migration safely.
 do $$
 declare
   missing_relations text[];
@@ -39,10 +41,77 @@ begin
     raise exception using
       errcode = 'P0001',
       message = 'Edge Intelligence 30-day retention prerequisites are missing: ' || array_to_string(missing_relations, ', '),
-      hint = 'Apply the Signal Learning, Engine Trade Learning, Actual Trade Lifecycle, ICT Trade Context Learning, and Pair Playbook Priority migrations first.';
+      hint = 'Apply the Signal Learning, Engine Trade Learning, Actual Trade Lifecycle, and Pair Playbook Priority base migrations first.';
   end if;
 end
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Column-level compatibility repair
+-- ---------------------------------------------------------------------------
+-- Production can contain the learning tables while still missing columns from
+-- a later ICT context migration. Repair those omissions additively rather than
+-- making the 30-day view fail on the first missing column. Existing columns,
+-- data, constraints, and execution logic are not changed.
+
+alter table public.signal_observations
+  add column if not exists candidate_signal_id text,
+  add column if not exists broker_trade_id text,
+  add column if not exists h1_momentum jsonb,
+  add column if not exists m5_authorization jsonb,
+  add column if not exists m5_trigger_age_bars integer,
+  add column if not exists po3_stage text,
+  add column if not exists htf_liquidity_condition jsonb,
+  add column if not exists corrective_gate jsonb,
+  add column if not exists failure_reasons text[] not null default '{}'::text[];
+
+alter table public.actual_trade_lifecycles
+  add column if not exists signal_observation_id uuid
+    references public.signal_observations(id) on delete set null,
+  add column if not exists candidate_signal_id text,
+  add column if not exists entry_context jsonb not null default '{}'::jsonb,
+  add column if not exists d1_state text,
+  add column if not exists h4_state text,
+  add column if not exists h1_state text,
+  add column if not exists h1_momentum jsonb not null default '{}'::jsonb,
+  add column if not exists m5_authorization jsonb not null default '{}'::jsonb,
+  add column if not exists m5_trigger_age_bars integer,
+  add column if not exists po3_stage text,
+  add column if not exists htf_liquidity_condition jsonb not null default '{}'::jsonb,
+  add column if not exists exit_reason text,
+  add column if not exists mfe_pips numeric,
+  add column if not exists mae_pips numeric,
+  add column if not exists mfe_r numeric,
+  add column if not exists mae_r numeric,
+  add column if not exists failure_reasons text[] not null default '{}'::text[],
+  add column if not exists learning_adjustment jsonb,
+  add column if not exists learning_audit_id uuid
+    references public.engine_learning_adjustment_audit(id) on delete set null,
+  add column if not exists applied_learning_audit_id uuid
+    references public.engine_learning_adjustment_audit(id) on delete set null,
+  add column if not exists learning_applied boolean not null default false;
+
+alter table public.engine_learning_adjustment_audit
+  add column if not exists adjustment_type text not null default 'pre_trade_calibration',
+  add column if not exists applied boolean not null default false,
+  add column if not exists applied_at timestamptz;
+
+create index if not exists signal_observations_candidate_signal_idx
+  on public.signal_observations (user_id, broker_account_id, candidate_signal_id)
+  where candidate_signal_id is not null;
+
+create index if not exists signal_observations_broker_trade_idx
+  on public.signal_observations (user_id, broker_account_id, broker_trade_id)
+  where broker_trade_id is not null;
+
+create index if not exists actual_trade_lifecycles_observation_idx
+  on public.actual_trade_lifecycles (signal_observation_id)
+  where signal_observation_id is not null;
+
+create index if not exists actual_trade_lifecycles_candidate_signal_idx
+  on public.actual_trade_lifecycles
+  (user_id, broker_account_id, candidate_signal_id)
+  where candidate_signal_id is not null;
 
 -- Hot-path indexes for rolling-history reads and expiration deletes.
 create index if not exists actual_trade_lifecycles_edge_30d_idx

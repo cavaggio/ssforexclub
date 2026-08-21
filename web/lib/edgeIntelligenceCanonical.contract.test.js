@@ -36,6 +36,18 @@ test('Trade Log fallback recovers the canonical top-level broker account before 
   assert.match(visibleTradeLogsSource, /row\.trade_id,[\s\S]*payload\.trade_id/);
 });
 
+test('Edge 30-day SQL repairs missing ICT context columns before creating the knowledge view', () => {
+  assert.match(retentionSql, /alter table public\.actual_trade_lifecycles[\s\S]*add column if not exists signal_observation_id uuid/i);
+  assert.match(retentionSql, /add column if not exists candidate_signal_id text/i);
+  assert.match(retentionSql, /add column if not exists entry_context jsonb/i);
+  assert.match(retentionSql, /add column if not exists h1_momentum jsonb/i);
+  assert.match(retentionSql, /add column if not exists m5_authorization jsonb/i);
+  assert.match(retentionSql, /add column if not exists applied_learning_audit_id uuid/i);
+  assert.match(retentionSql, /alter table public\.signal_observations[\s\S]*add column if not exists corrective_gate jsonb/i);
+  assert.match(retentionSql, /alter table public\.engine_learning_adjustment_audit[\s\S]*add column if not exists adjustment_type text/i);
+  assert.match(retentionSql, /on observation\.id = lifecycle\.signal_observation_id/i);
+});
+
 test('Edge 30-day SQL enriches knowledge and expires stale learning/storage data', () => {
   assert.match(retentionSql, /create or replace view public\.edge_intelligence_trade_knowledge_30d/i);
   assert.match(retentionSql, /h1_momentum/i);
