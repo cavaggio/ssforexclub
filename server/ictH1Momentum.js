@@ -33,6 +33,28 @@ const bodyEfficiency = (candle) => {
   return Math.abs(close - open) / Math.max(1e-12, high - low);
 };
 
+// ICT_IMPULSE_LIFECYCLE_PATCH_V1: additive identity only. An opposing completed
+// H1 candle starts a new impulse; neutral candles do not. Existing momentum,
+// exhaustion, confidence, and authorization decisions remain unchanged.
+function completedImpulseAnchor(candles, wanted) {
+  if (!wanted) return null;
+  const list = Array.isArray(candles) ? candles : [];
+  let anchor = null;
+  let seenAligned = false;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const direction = directionOf(list[index]);
+    if (direction === 'neutral') continue;
+    if (direction === wanted) {
+      seenAligned = true;
+      anchor = list[index]?.time ?? anchor;
+      continue;
+    }
+    if (!seenAligned) return null;
+    break;
+  }
+  return seenAligned ? anchor : null;
+}
+
 export function classifyIctH1Momentum({
   h1Candles = [],
   bias,
@@ -71,6 +93,13 @@ export function classifyIctH1Momentum({
   const alignedBodies = wanted === 'bullish' ? bullishBodies : wanted === 'bearish' ? bearishBodies : 0;
   const opposingBodies = wanted === 'bullish' ? bearishBodies : wanted === 'bearish' ? bullishBodies : 0;
   const transitionAligned = transition?.ready === true && normalizeDirection(transition?.bias) === wanted;
+  const completedImpulseAnchorAt = completedImpulseAnchor(completed, wanted);
+  const impulseAnchorAt = transitionAligned
+    ? (transition?.currentCandleTime ?? completedImpulseAnchorAt)
+    : completedImpulseAnchorAt;
+  const impulseId = transitionAligned && transition?.transitionId
+    ? transition.transitionId
+    : wanted && impulseAnchorAt ? `${wanted}:${impulseAnchorAt}` : null;
 
   // Efficiency remains useful diagnostics, but it is not a hard directional veto.
   // If the net completed H1 move and latest completed H1 candle agree with D1/H4,
@@ -125,6 +154,8 @@ export function classifyIctH1Momentum({
     transitionAligned,
     exhausted,
     phase,
+    impulseAnchorAt,
+    impulseId,
     bias: wanted,
     activeDirection,
     latestDirection,

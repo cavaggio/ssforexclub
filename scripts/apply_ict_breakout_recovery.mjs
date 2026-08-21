@@ -135,3 +135,7 @@ for (const required of [
 }
 
 console.log('ICT breakout recovery applied: 10-minute fresh trigger retention, session-aware H1 confirmation, and pullback/retest recovery.');
+
+// Apply the additive H1 impulse lifecycle guard after all existing ICT runtime
+// transforms so it cannot change or be overwritten by the earlier strategy patches.
+await import('./apply_ict_impulse_lifecycle.mjs');
