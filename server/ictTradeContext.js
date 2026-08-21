@@ -23,6 +23,7 @@ export function buildIctTradeEntryContext({ analysis = {}, brokerTradeId = null,
     },
     h1Momentum: analysis.h1Momentum || null,
     h1Transition: analysis.h1Transition || null,
+    impulseLifecycle: analysis.impulseLifecycle || null,
     m5Authorization: {
       ready: authorization.ready === true,
       mode: authorization.mode || 'none',
