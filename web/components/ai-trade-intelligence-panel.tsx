@@ -1,7 +1,8 @@
 /**
  * Signal Stack V3 — AI Trade Intelligence Panel.
  *
- * Deterministic synthesis from the user's connected Trade Activity history.
+ * Deterministic synthesis from the selected broker account's persistent Edge
+ * Intelligence history.
  */
 
 'use client';
@@ -14,7 +15,7 @@ function verdict(report: AttributionReport): { tone: 'good' | 'warn' | 'bad' | '
   if (!report.sampleSufficient || winRate == null) {
     return {
       tone: 'neutral',
-      line: `Trade Activity is connected: ${report.overall.resolved} closed trade(s), ${report.overall.outcomes} with a known P/L outcome. More scored outcomes are needed to judge the edge.`,
+      line: `Edge history has ${report.overall.resolved} closed trade(s), ${report.overall.outcomes} with a known P/L outcome. More scored outcomes are needed to judge the edge.`,
     };
   }
   if (winRate >= 55 && (pnl ?? 0) >= 0) {
@@ -110,7 +111,7 @@ export function AITradeIntelligencePanel({ report }: { report: AttributionReport
       </div>
 
       <p style={{ marginTop: 14, marginBottom: 0, fontSize: 10.5, color: 'var(--muted)' }}>
-        Synthesised from connected Trade Activity history (minimum {report.minSamples} scored outcomes per group). Informational only — not trade advice and not wired into execution.
+        Synthesised from this account&apos;s persistent Edge history (minimum {report.minSamples} scored outcomes per group). Informational only — not trade advice and not wired into execution.
       </p>
     </section>
   );
