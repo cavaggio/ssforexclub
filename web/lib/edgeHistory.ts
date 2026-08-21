@@ -5,10 +5,13 @@ import type { TradeLogRow } from './tradeLogs';
 import { canonicalizeTradeActivityRows } from './tradeActivityCanonical.js';
 import { lifecycleTradeRows, listVisibleTradeLogsForUser } from './visibleTradeLogs';
 
-export const EDGE_TRADES_PER_ACCOUNT = 25;
-const EDGE_HISTORY_SCAN_LIMIT = 2000;
+export const EDGE_HISTORY_RETENTION_DAYS = 30;
+// Signal Stack caps autonomous entries at 10/day; 300 preserves a complete
+// 30-calendar-day account window without allowing unbounded dashboard reads.
+export const EDGE_TRADES_PER_ACCOUNT = 300;
+const EDGE_HISTORY_SCAN_LIMIT = 4000;
 const TRADE_LOG_PAGE_LIMIT = 200;
-const TRADE_LOG_MAX_PAGES = 10;
+const TRADE_LOG_MAX_PAGES = 20;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -32,7 +35,31 @@ type LifecycleRow = {
   stop_loss: number | null;
   take_profit: number | null;
   realized_pl: number | null;
+  realized_r?: number | null;
   entry_context?: unknown;
+  d1_state?: string | null;
+  h4_state?: string | null;
+  h1_state?: string | null;
+  h1_momentum?: unknown;
+  m5_authorization?: unknown;
+  m5_trigger_age_bars?: number | null;
+  po3_stage?: string | null;
+  htf_liquidity_condition?: unknown;
+  exit_reason?: string | null;
+  mfe_pips?: number | null;
+  mae_pips?: number | null;
+  mfe_r?: number | null;
+  mae_r?: number | null;
+  failure_reasons?: string[] | null;
+  learning_adjustment?: unknown;
+  learning_applied?: boolean | null;
+  impulse_lifecycle?: unknown;
+  session?: string | null;
+  market_regime?: string | null;
+  volatility?: string | null;
+  daily_direction?: string | null;
+  h4_direction?: string | null;
+  h1_direction?: string | null;
   opening_snapshot: unknown;
   broker_snapshot: unknown;
 };
@@ -47,7 +74,8 @@ export type EdgeHistoryLoadResult = {
   accounts: EdgeAccountHistory[];
   lifecycleRowsScanned: number;
   tradesPerAccount: number;
-  sourceMode: 'actual_trade_lifecycles' | 'trade_log_fallback';
+  retentionDays: number;
+  sourceMode: 'edge_knowledge_30d' | 'actual_trade_lifecycles' | 'trade_log_fallback';
   sourceWarning: string | null;
 };
 
@@ -148,7 +176,22 @@ function makeBaseRow(lifecycle: LifecycleRow, createdAt: string): TradeLogRow {
   const openingSnapshot = object(lifecycle.opening_snapshot);
   const recoveredEntryContext = deepValue(openingSnapshot, ['entryContext']);
   const entryContext = object(lifecycle.entry_context ?? recoveredEntryContext);
-  const roots = [entryContext, openingSnapshot];
+  const enrichedEntryContext: JsonRecord = {
+    ...entryContext,
+    edgeLifecycleLearning: {
+      realizedR: numberValue(lifecycle.realized_r),
+      mfePips: numberValue(lifecycle.mfe_pips),
+      maePips: numberValue(lifecycle.mae_pips),
+      mfeR: numberValue(lifecycle.mfe_r),
+      maeR: numberValue(lifecycle.mae_r),
+      exitReason: lifecycle.exit_reason ?? null,
+      failureReasons: Array.isArray(lifecycle.failure_reasons) ? lifecycle.failure_reasons : [],
+      learningAdjustment: lifecycle.learning_adjustment ?? null,
+      learningApplied: lifecycle.learning_applied === true,
+      impulseLifecycle: lifecycle.impulse_lifecycle ?? deepValue(entryContext, ['impulseLifecycle']) ?? null,
+    },
+  };
+  const roots = [enrichedEntryContext, openingSnapshot];
   const pair = normalizePair(lifecycle.pair ?? firstString(roots, ['pair', 'instrument']));
   const direction = normalizeSide(lifecycle.direction ?? firstString(roots, ['direction', 'side']));
   const candidateSignalId = stringValue(lifecycle.candidate_signal_id)
@@ -185,16 +228,16 @@ function makeBaseRow(lifecycle: LifecycleRow, createdAt: string): TradeLogRow {
     exit_time: null,
     pnl: null,
     win_loss: null,
-    session: firstString(roots, ['session', 'killzone', 'sessionName']),
+    session: lifecycle.session ?? firstString(roots, ['session', 'killzone', 'sessionName']),
     spread: firstNumber(roots, ['spreadPips', 'spread']),
     signal_score: firstNumber(roots, ['signalScore', 'signal_score', 'v3Score']),
-    trend: firstString(roots, ['trend', 'h1Trend', 'h1Structure']),
-    volatility: firstString(roots, ['volatilityState', 'volatility']),
-    market_regime: firstString(roots, ['market_regime', 'regime']),
+    trend: lifecycle.h1_state ?? lifecycle.h1_direction ?? firstString(roots, ['trend', 'h1Trend', 'h1Structure']),
+    volatility: lifecycle.volatility ?? firstString(roots, ['volatilityState', 'volatility']),
+    market_regime: lifecycle.market_regime ?? firstString(roots, ['market_regime', 'regime']),
     macro_bias: firstString(roots, ['macroBias', 'macro_bias']),
     macro_risk: firstString(roots, ['macroRisk', 'macro_risk']),
     candidate_signal_id: candidateSignalId,
-    entry_context: entryContext,
+    entry_context: enrichedEntryContext,
   };
 }
 
@@ -216,6 +259,7 @@ function lifecycleToTradeRows(lifecycle: LifecycleRow): TradeLogRow[] {
       realized_pl: numberValue(lifecycle.realized_pl),
       pnl: numberValue(lifecycle.realized_pl),
       win_loss: outcome,
+      reason: lifecycle.exit_reason ?? null,
       raw_payload: object(lifecycle.broker_snapshot),
     });
   }
@@ -243,7 +287,7 @@ function accountsFromLifecycles(rows: LifecycleRow[]): EdgeAccountHistory[] {
     .sort((a, b) => a.brokerAccountId.localeCompare(b.brokerAccountId));
 }
 
-async function loadPersistentTradeLogRows(userId: string): Promise<TradeLogRow[]> {
+async function loadPersistentTradeLogRows(userId: string, cutoffIso: string): Promise<TradeLogRow[]> {
   const output: TradeLogRow[] = [];
   let cursor: string | undefined;
 
@@ -251,6 +295,7 @@ async function loadPersistentTradeLogRows(userId: string): Promise<TradeLogRow[]
     const page = await listVisibleTradeLogsForUser(userId, {
       limit: TRADE_LOG_PAGE_LIMIT,
       cursor,
+      startDate: cutoffIso,
     });
     output.push(...page.rows);
     if (!page.nextCursor) break;
@@ -295,23 +340,55 @@ function accountsFromTradeLogs(rows: TradeLogRow[]): EdgeAccountHistory[] {
 
 /**
  * Persistent Edge Intelligence history, intentionally separate from the dashboard's
- * New York "Today's Trade Activity" window. The preferred source is the reconciled
- * broker lifecycle table. If that table or a newer optional column is unavailable
- * in production, the loader falls back to the same persistent history backing the
- * dashboard Trade Log, still capped at the latest 25 completed trades per account.
+ * New York "Today's Trade Activity" window. Edge reads a rolling 30-calendar-day
+ * broker-account knowledge window, capped at 300 completed trades per account.
+ *
+ * Preferred source: edge_intelligence_trade_knowledge_30d, which enriches exact
+ * broker outcomes with ICT entry state, M5 trigger, PO3/liquidity context, MFE/MAE,
+ * failure codes and applied learning. The loader falls back to the core lifecycle
+ * table and finally persistent Trade Log history without waiting for the 5 PM scan.
  */
 export async function loadEdgeHistoryByAccount(userId: string): Promise<EdgeHistoryLoadResult> {
+  const cutoffIso = new Date(Date.now() - EDGE_HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
   if (!userId) {
     return {
       accounts: [],
       lifecycleRowsScanned: 0,
       tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+      retentionDays: EDGE_HISTORY_RETENTION_DAYS,
       sourceMode: 'actual_trade_lifecycles',
       sourceWarning: null,
     };
   }
 
-  const { data, error } = await getServerSupabase()
+  const supabase = getServerSupabase();
+  const knowledge = await supabase
+    .from('edge_intelligence_trade_knowledge_30d')
+    .select('*')
+    .eq('user_id', userId)
+    .order('closed_at', { ascending: false, nullsFirst: false })
+    .limit(EDGE_HISTORY_SCAN_LIMIT);
+
+  if (!knowledge.error) {
+    const knowledgeRows = (knowledge.data ?? []) as unknown as LifecycleRow[];
+    const accounts = accountsFromLifecycles(knowledgeRows);
+    if (accounts.length) {
+      return {
+        accounts,
+        lifecycleRowsScanned: knowledgeRows.length,
+        tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+        retentionDays: EDGE_HISTORY_RETENTION_DAYS,
+        sourceMode: 'edge_knowledge_30d',
+        sourceWarning: null,
+      };
+    }
+  }
+
+  // Compatibility path for deployments where the 30-day knowledge view has not
+  // been applied yet. Keep this select to the original lifecycle columns so a
+  // newer optional context column can never make the whole Edge page fail.
+  const lifecycle = await supabase
     .from('actual_trade_lifecycles')
     .select(
       'id,user_id,broker_account_id,environment,engine,broker_trade_id,' +
@@ -321,34 +398,39 @@ export async function loadEdgeHistoryByAccount(userId: string): Promise<EdgeHist
     .eq('user_id', userId)
     .eq('state', 'closed')
     .in('result', ['win', 'loss', 'breakeven'])
+    .gte('closed_at', cutoffIso)
     .order('closed_at', { ascending: false, nullsFirst: false })
     .limit(EDGE_HISTORY_SCAN_LIMIT);
 
-  if (!error) {
-    const lifecycleRows = (data ?? []) as unknown as LifecycleRow[];
+  if (!lifecycle.error) {
+    const lifecycleRows = (lifecycle.data ?? []) as unknown as LifecycleRow[];
     const accounts = accountsFromLifecycles(lifecycleRows);
     if (accounts.length) {
       return {
         accounts,
         lifecycleRowsScanned: lifecycleRows.length,
         tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+        retentionDays: EDGE_HISTORY_RETENTION_DAYS,
         sourceMode: 'actual_trade_lifecycles',
-        sourceWarning: null,
+        sourceWarning: knowledge.error
+          ? `30-day enriched knowledge view unavailable: ${errorText(knowledge.error)}. Using core lifecycle history.`
+          : '30-day enriched knowledge view had no completed rows; using core lifecycle history.',
       };
     }
   }
 
-  const persistentTradeLogs = await loadPersistentTradeLogRows(userId);
+  const persistentTradeLogs = await loadPersistentTradeLogRows(userId, cutoffIso);
   const fallbackAccounts = accountsFromTradeLogs(persistentTradeLogs);
-  const primaryReason = error
-    ? `Reconciled lifecycle history unavailable: ${errorText(error)}.`
-    : 'No completed reconciled lifecycle rows were available.';
+  const primaryReason = lifecycle.error
+    ? `Reconciled lifecycle history unavailable: ${errorText(lifecycle.error)}.`
+    : 'No completed reconciled lifecycle rows were available in the rolling 30-day window.';
 
   return {
     accounts: fallbackAccounts,
     lifecycleRowsScanned: persistentTradeLogs.length,
     tradesPerAccount: EDGE_TRADES_PER_ACCOUNT,
+    retentionDays: EDGE_HISTORY_RETENTION_DAYS,
     sourceMode: 'trade_log_fallback',
-    sourceWarning: `${primaryReason} Using persistent Trade Log history instead.`,
+    sourceWarning: `${primaryReason} Using 30-day persistent Trade Log history instead.`,
   };
 }
