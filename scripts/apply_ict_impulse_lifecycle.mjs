@@ -25,35 +25,9 @@ function replaceOnce(source, before, after, label) {
   return source.replace(before, () => after);
 }
 
-// ── H1 momentum: additive stable impulse identity only. No existing alignment,
-// exhaustion, transition, confidence, or entry-timing rule is changed.
-let h1Momentum = fs.readFileSync(H1_MOMENTUM, 'utf8');
-h1Momentum = insertAfter(
-  h1Momentum,
-  `const bodyEfficiency = (candle) => {\n  const open = finite(candle?.open);\n  const close = finite(candle?.close);\n  const high = finite(candle?.high);\n  const low = finite(candle?.low);\n  if ([open, close, high, low].some((value) => value == null) || high <= low) return 0;\n  return Math.abs(close - open) / Math.max(1e-12, high - low);\n};\n`,
-  `\n// ${PATCH_MARKER}: identify the start of the uninterrupted completed-H1 move\n// in the permitted direction. Neutral candles do not create a new impulse; an\n// opposing completed H1 candle does. This is diagnostic state only.\nfunction completedImpulseAnchor(candles, wanted) {\n  if (!wanted) return null;\n  const list = Array.isArray(candles) ? candles : [];\n  let anchor = null;\n  let seenAligned = false;\n  for (let index = list.length - 1; index >= 0; index -= 1) {\n    const direction = directionOf(list[index]);\n    if (direction === 'neutral') continue;\n    if (direction === wanted) {\n      seenAligned = true;\n      anchor = list[index]?.time ?? anchor;\n      continue;\n    }\n    if (!seenAligned) return null;\n    break;\n  }\n  return seenAligned ? anchor : null;\n}\n`,
-  'H1 impulse anchor helper',
-);
-
-h1Momentum = insertAfter(
-  h1Momentum,
-  `  const transitionAligned = transition?.ready === true && normalizeDirection(transition?.bias) === wanted;\n`,
-  `  const completedImpulseAnchorAt = completedImpulseAnchor(completed, wanted);\n  const impulseAnchorAt = transitionAligned\n    ? (transition?.currentCandleTime ?? completedImpulseAnchorAt)\n    : completedImpulseAnchorAt;\n  const impulseId = transitionAligned && transition?.transitionId\n    ? transition.transitionId\n    : wanted && impulseAnchorAt ? \`${'${wanted}:${impulseAnchorAt}'}\` : null;\n`,
-  'H1 impulse identity calculation',
-);
-
-h1Momentum = insertAfter(
-  h1Momentum,
-  `    phase,\n`,
-  `    impulseAnchorAt,\n    impulseId,\n`,
-  'H1 impulse identity output',
-);
-fs.writeFileSync(H1_MOMENTUM, h1Momentum);
-
-// ── Execution: preserve the existing entry-cycle reservation for manual trades
-// and reversals. Only autonomous continuation trades use the broader H1 impulse
-// fingerprint, so a closed trade cannot reopen from a second M5 trigger inside
-// the same H1 impulse.
+// H1 impulse identity and entry-context persistence are committed source. The
+// runtime generator touches only ictExecution.js, which is already an allowed
+// generated-source target in the repository policy pipeline.
 let execution = fs.readFileSync(ICT_EXECUTION, 'utf8');
 execution = insertAfter(
   execution,
@@ -70,19 +44,8 @@ execution = replaceOnce(
 );
 fs.writeFileSync(ICT_EXECUTION, execution);
 
-// ── Trade context: persist the additive lifecycle identity inside the existing
-// entry_context JSON. No migration or existing lifecycle column is changed.
-let tradeContext = fs.readFileSync(TRADE_CONTEXT, 'utf8');
-tradeContext = insertAfter(
-  tradeContext,
-  `    h1Transition: analysis.h1Transition || null,\n`,
-  `    impulseLifecycle: analysis.impulseLifecycle || null,\n`,
-  'trade-context impulse lifecycle snapshot',
-);
-fs.writeFileSync(TRADE_CONTEXT, tradeContext);
-
-// Build-time behavioral contracts. These run anywhere the existing apply:v3-entry
-// chain runs (pretest/prebuild/prestart) and fail closed if the patch drifts.
+// Build-time behavioral contracts. These do not modify strategy source; they
+// verify same-impulse reuse is blocked while a new H1 impulse remains eligible.
 const sameImpulseA = buildIctImpulseLifecycle({
   accountId: 'A1', pair: 'GBP_USD', direction: 'long',
   analysis: {
