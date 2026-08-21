@@ -1,8 +1,8 @@
 /**
  * Signal Stack V3 — Edge Intelligence dashboard panel.
  *
- * Reads the same normalized trade activity lifecycle used by the dashboard's
- * open/close log, then renders attribution and recent trade outcomes.
+ * Edge Intelligence has its own persistent historical window. It does not use
+ * the dashboard's New York "Today's Trade Activity" date filter.
  */
 
 'use client';
@@ -12,18 +12,29 @@ import type { AttributionReport, EdgeSnapshot, GroupSummary } from '@/lib/edgeAn
 import { AITradeIntelligencePanel } from './ai-trade-intelligence-panel';
 
 type SourceMeta = {
-  eventRows: number;
+  mode: string;
+  accountCount: number;
+  tradesPerAccount: number;
+  lifecycleRowsScanned: number;
+  tradesLoaded: number;
   syncedClosed: number;
   syncWarning: string | null;
+};
+
+type AccountReport = {
+  brokerAccountId: string;
+  tradesLoaded: number;
+  report: AttributionReport;
 };
 
 type State =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; report: AttributionReport; source: SourceMeta };
+  | { kind: 'ready'; report: AttributionReport; accountReports: AccountReport[]; source: SourceMeta };
 
 export function EdgeIntelligencePanel() {
   const [state, setState] = useState<State>({ kind: 'loading' });
+  const [selectedAccountId, setSelectedAccountId] = useState('');
 
   const load = useCallback(async () => {
     setState({ kind: 'loading' });
@@ -34,11 +45,25 @@ export function EdgeIntelligencePanel() {
         setState({ kind: 'error', message: json?.error || `HTTP ${res.status}` });
         return;
       }
+
+      const accountReports = Array.isArray(json?.accountReports)
+        ? json.accountReports as AccountReport[]
+        : [];
+      const nextSelected = accountReports.some((item) => item.brokerAccountId === selectedAccountId)
+        ? selectedAccountId
+        : accountReports[0]?.brokerAccountId ?? '';
+      setSelectedAccountId(nextSelected);
+
       setState({
         kind: 'ready',
         report: json.report as AttributionReport,
+        accountReports,
         source: {
-          eventRows: Number(json?.source?.eventRows ?? 0),
+          mode: String(json?.source?.mode ?? 'persistent_account_history'),
+          accountCount: Number(json?.source?.accountCount ?? accountReports.length),
+          tradesPerAccount: Number(json?.source?.tradesPerAccount ?? 25),
+          lifecycleRowsScanned: Number(json?.source?.lifecycleRowsScanned ?? 0),
+          tradesLoaded: Number(json?.source?.tradesLoaded ?? 0),
           syncedClosed: Number(json?.source?.syncedClosed ?? 0),
           syncWarning: typeof json?.source?.syncWarning === 'string' ? json.source.syncWarning : null,
         },
@@ -46,11 +71,14 @@ export function EdgeIntelligencePanel() {
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
-  }, []);
+  }, [selectedAccountId]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+    // Initial fetch only. Account selection changes are local and should not
+    // cause a broker reconciliation/API reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (state.kind === 'loading') {
     return <Shell><p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading edge intelligence…</p></Shell>;
@@ -64,23 +92,32 @@ export function EdgeIntelligencePanel() {
     );
   }
 
-  const report = state.report;
+  const activeAccount = state.accountReports.find((item) => item.brokerAccountId === selectedAccountId)
+    ?? state.accountReports[0]
+    ?? null;
+  const report = activeAccount?.report ?? state.report;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>Edge Intelligence</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Where your strategy makes — and loses — money, attributed from the same trade opens and closes shown in Trade Activity.
+            Persistent broker-account history for learning and attribution, independent of Today&apos;s Trade Activity.
           </p>
         </div>
-        <button onClick={() => void load()} style={btn}>Refresh</button>
+        <button onClick={() => void load()} style={btn}>Refresh history</button>
       </div>
 
       <SourceCard source={state.source} generatedAt={report.generatedAt} />
+      <AccountSelector
+        reports={state.accountReports}
+        selectedAccountId={activeAccount?.brokerAccountId ?? ''}
+        onChange={setSelectedAccountId}
+      />
       <AITradeIntelligencePanel report={report} />
       <OverallCard report={report} />
-      <RecentTradesCard trades={report.recentTrades} />
+      <RecentTradesCard trades={report.recentTrades} limit={state.source.tradesPerAccount} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
         <BreakdownCard title="Instruments" best={report.edge.bestPairs} worst={report.edge.worstPairs} />
@@ -118,8 +155,10 @@ function SourceCard({ source, generatedAt }: { source: SourceMeta; generatedAt: 
       }}
     >
       <div>
-        <strong style={{ color: 'var(--accent)' }}>Connected to Trade Activity</strong>
-        <span style={{ color: 'var(--muted)' }}> · {source.eventRows} open/close event row(s) loaded</span>
+        <strong style={{ color: 'var(--accent)' }}>Edge History</strong>
+        <span style={{ color: 'var(--muted)' }}>
+          {' '}· latest {source.tradesPerAccount} completed trades per account · {source.accountCount} account(s) · {source.tradesLoaded} trade(s) loaded
+        </span>
         {source.syncedClosed > 0 && (
           <span style={{ color: 'var(--good)' }}> · {source.syncedClosed} broker closure(s) synchronized</span>
         )}
@@ -130,6 +169,54 @@ function SourceCard({ source, generatedAt }: { source: SourceMeta; generatedAt: 
           {source.syncWarning}
         </div>
       )}
+    </section>
+  );
+}
+
+function AccountSelector({
+  reports,
+  selectedAccountId,
+  onChange,
+}: {
+  reports: AccountReport[];
+  selectedAccountId: string;
+  onChange: (accountId: string) => void;
+}) {
+  if (reports.length === 0) {
+    return (
+      <section style={card}>
+        <div style={{ color: 'var(--muted)', fontSize: 12 }}>No reconciled account history is available yet.</div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ ...card, padding: '12px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Account learning scope</div>
+          <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text)' }}>Each account is analyzed independently. Results are never blended across accounts.</div>
+        </div>
+        <select
+          value={selectedAccountId}
+          onChange={(event) => onChange(event.target.value)}
+          style={{
+            background: 'var(--panel)',
+            color: 'var(--text)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            padding: '7px 10px',
+            fontSize: 12,
+            minWidth: 220,
+          }}
+        >
+          {reports.map((item) => (
+            <option key={item.brokerAccountId} value={item.brokerAccountId}>
+              {item.brokerAccountId} · {item.tradesLoaded} trades
+            </option>
+          ))}
+        </select>
+      </div>
     </section>
   );
 }
@@ -163,17 +250,17 @@ function OverallCard({ report }: { report: AttributionReport }) {
   );
 }
 
-function RecentTradesCard({ trades }: { trades: EdgeSnapshot[] }) {
+function RecentTradesCard({ trades, limit }: { trades: EdgeSnapshot[]; limit: number }) {
   return (
     <section style={card}>
       <div style={{ marginBottom: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Recent trade lifecycle</h3>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Edge history lifecycle</h3>
         <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 12 }}>
-          Entry conditions and close outcomes reconstructed from Trade Activity by broker trade ID.
+          Persistent reconciled outcomes for this account. The learning window uses its latest {limit} completed trades.
         </p>
       </div>
       {trades.length === 0 ? (
-        <div style={{ color: 'var(--muted)', fontSize: 12 }}>No documented trade opens or closes yet.</div>
+        <div style={{ color: 'var(--muted)', fontSize: 12 }}>No completed reconciled trades are available for this account yet.</div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse' }}>
