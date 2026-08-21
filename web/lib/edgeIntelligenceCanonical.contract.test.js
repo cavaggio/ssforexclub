@@ -6,12 +6,16 @@ const routeSource = readFileSync(
   new URL('../app/api/edge-intelligence/route.ts', import.meta.url),
   'utf8',
 );
+const historySource = readFileSync(new URL('./edgeHistory.ts', import.meta.url), 'utf8');
 const analyticsSource = readFileSync(new URL('./edgeAnalytics.ts', import.meta.url), 'utf8');
 
-test('Edge Intelligence consumes the same canonical lifecycle as Trade Activity', () => {
-  assert.match(routeSource, /canonicalizeTradeActivityRows/);
-  assert.match(routeSource, /canonicalizeTradeActivityRows\(lifecycleTradeRows\(rows\)\)/);
-  assert.match(routeSource, /generateAttributionReport\(lifecycleRows/);
+test('Edge Intelligence uses persistent account history instead of the Today trade window', () => {
+  assert.match(routeSource, /loadEdgeHistoryByAccount/);
+  assert.doesNotMatch(routeSource, /isSameNewYorkTradingDay|newYorkDateKey/);
+  assert.match(historySource, /EDGE_TRADES_PER_ACCOUNT\s*=\s*25/);
+  assert.match(historySource, /actual_trade_lifecycles/);
+  assert.match(historySource, /trade_log_fallback/);
+  assert.match(historySource, /listVisibleTradeLogsForUser/);
 });
 
 test('Edge Intelligence excludes unattributable phantom rows and scores net lifecycle P\/L', () => {
