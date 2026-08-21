@@ -5,8 +5,7 @@
  *
  * IMPORTANT: this is intentionally separate from the dashboard's New York
  * "Today's Trade Activity" window. Edge Intelligence reads persistent broker
- * history and analyzes the latest 25 completed trades independently for each
- * broker account.
+ * history across a rolling 30-calendar-day window independently per account.
  */
 
 import { NextResponse } from 'next/server';
@@ -41,6 +40,8 @@ export async function GET() {
   }
 
   try {
+    // Reconcile immediately on every Edge refresh. Edge never waits for the
+    // scheduled end-of-day learning/backfill run before reading closed trades.
     const reconciliation = await reconcileBrokerClosuresForUser(userId);
     const history = await loadEdgeHistoryByAccount(userId);
     const generatedAt = new Date().toISOString();
@@ -64,6 +65,7 @@ export async function GET() {
         historySource: history.sourceMode,
         historyWarning: history.sourceWarning,
         accountCount: accountReports.length,
+        retentionDays: history.retentionDays,
         tradesPerAccount: history.tradesPerAccount,
         lifecycleRowsScanned: history.lifecycleRowsScanned,
         tradesLoaded: accountReports.reduce((sum, account) => sum + account.tradesLoaded, 0),

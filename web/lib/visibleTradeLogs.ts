@@ -3,9 +3,13 @@ import 'server-only';
 import { getServerSupabase } from './db';
 import type { TradeEventType, TradeLogFilters, TradeLogRow } from './tradeLogs';
 
+// Read the canonical top-level trade columns first. payload/raw_payload remain
+// compatibility fallbacks for older rows written before the normalized schema.
 const SELECT =
-  'id, user_id, created_at, event_type, status, pair, direction, ' +
-  'entry_price, exit_price, realized_pl, unrealized_pl, payload, raw_payload';
+  'id, user_id, created_at, broker, broker_account_id, environment, event_type, status, ' +
+  'pair, instrument, direction, side, trade_id, broker_order_id, units, units_closed, ' +
+  'entry_price, exit_price, realized_pl, unrealized_pl, tp, sl, recommendation, confidence, ' +
+  'reason, payload, raw_payload';
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -115,6 +119,7 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
   const eventType = normalizeEventType(row.event_type, row.status);
 
   const tradeId = str(
+    row.trade_id,
     payload.trade_id,
     executed.tradeId,
     trade.tradeId,
@@ -124,6 +129,7 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     deepValue(rawPayload, ['brokerTradeId', 'tradeId', 'tradeID']),
   );
   const brokerOrderId = str(
+    row.broker_order_id,
     payload.broker_order_id,
     executed.brokerOrderId,
     close.brokerOrderId,
@@ -131,10 +137,10 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     tradeId,
   );
   const pair = normalizePair(
-    row.pair ?? edge.pair ?? rawEdge.pair ?? executed.pair ?? signal.pair ?? executedSignal.pair ?? request.pair ?? close.instrument,
+    row.pair ?? row.instrument ?? edge.pair ?? rawEdge.pair ?? executed.pair ?? signal.pair ?? executedSignal.pair ?? request.pair ?? close.instrument,
   );
   const side = normalizeSide(
-    row.direction ?? edge.direction ?? rawEdge.direction ?? executed.direction ?? signal.direction ?? executedSignal.direction ?? request.direction,
+    row.direction ?? row.side ?? edge.direction ?? rawEdge.direction ?? executed.direction ?? signal.direction ?? executedSignal.direction ?? request.direction,
   );
   const realizedPnl = num(row.realized_pl, edge.pnl, rawEdge.pnl, close.pnl, result.pnl, executed.realizedPL);
   const explicitWinLoss = str(edge.winLoss, edge.win_loss, rawEdge.winLoss, rawEdge.win_loss);
@@ -147,25 +153,29 @@ export function mapVisibleTradeLogRow(row: Record<string, unknown>): TradeLogRow
     created_at: createdAt,
     user_id: str(row.user_id) ?? '',
     organization_id: null,
-    broker: str(payload.broker) ?? '',
-    broker_account_id: str(payload.broker_account_id),
-    environment: str(payload.environment) ?? '',
+    broker: str(row.broker, payload.broker) ?? '',
+    broker_account_id: str(
+      row.broker_account_id,
+      payload.broker_account_id,
+      deepValue(rawPayload, ['brokerAccountId', 'broker_account_id', 'accountId', 'accountID']),
+    ),
+    environment: str(row.environment, payload.environment) ?? '',
     event_type: eventType,
     instrument: pair,
     trade_id: tradeId,
     broker_order_id: brokerOrderId,
     side,
-    units: num(payload.units, executed.units, trade.units, result.units),
-    units_closed: num(payload.units_closed, close.unitsClosed, result.unitsClosed),
+    units: num(row.units, payload.units, executed.units, trade.units, result.units),
+    units_closed: num(row.units_closed, payload.units_closed, close.unitsClosed, result.unitsClosed),
     entry_price: num(row.entry_price, executed.fillPrice, trade.fillPrice, signal.entry, executedSignal.entry, request.entry),
     exit_price: num(row.exit_price, close.exitPrice, result.exitPrice, executed.exitPrice),
     realized_pl: realizedPnl,
     unrealized_pl: num(row.unrealized_pl, executed.unrealizedPL),
-    tp: num(payload.tp, executed.takeProfit, signal.takeProfit, executedSignal.takeProfit, request.targetProfit),
-    sl: num(payload.sl, executed.stopLoss, signal.stopLoss, executedSignal.stopLoss, request.stopLoss),
-    recommendation: str(payload.recommendation),
-    confidence: num(payload.confidence, edge.signalScore, rawEdge.signalScore, executed.confidence, signal.confidence, executedSignal.confidence),
-    reason: str(payload.reason, close.message, result.message),
+    tp: num(row.tp, payload.tp, executed.takeProfit, signal.takeProfit, executedSignal.takeProfit, request.targetProfit),
+    sl: num(row.sl, payload.sl, executed.stopLoss, signal.stopLoss, executedSignal.stopLoss, request.stopLoss),
+    recommendation: str(row.recommendation, payload.recommendation),
+    confidence: num(row.confidence, payload.confidence, edge.signalScore, rawEdge.signalScore, executed.confidence, signal.confidence, executedSignal.confidence),
+    reason: str(row.reason, payload.reason, close.message, result.message),
     raw_payload: row.raw_payload ?? row.payload ?? null,
     pair,
     direction: side,
