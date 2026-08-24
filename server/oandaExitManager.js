@@ -5,8 +5,8 @@
  *
  * Monitors every open trade and applies:
  *   A. Breakeven stop move at +BREAK_EVEN_TRIGGER_PIPS
- *   B. 70% partial close at +PARTIAL_CLOSE_TRIGGER_PIPS
- *   C. Trailing stop on remaining 30% runner
+ *   B. 50% partial close at +PARTIAL_CLOSE_TRIGGER_PIPS
+ *   C. Trailing stop on remaining 50% runner
  *   D. Final-exit logging when trade disappears from open list
  */
 
@@ -15,8 +15,8 @@ import { getPricing } from './oandaMarketData.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const BREAK_EVEN_TRIGGER_PIPS       = 10;
-const PARTIAL_CLOSE_TRIGGER_PIPS    = 20;
-const PARTIAL_CLOSE_PERCENT         = 0.70;
+const PARTIAL_CLOSE_TRIGGER_PIPS    = 15.0;
+const PARTIAL_CLOSE_PERCENT         = 0.50;
 const DEFAULT_TRAILING_DISTANCE_PIPS = 10;
 const MONITOR_INTERVAL_MS           = 30_000;
 
@@ -149,15 +149,15 @@ async function applyExitRules(trade, currentPrice) {
     }
   }
 
-  // ── B. Partial close at target (70%) ─────────────────────────────────────────
+  // ── B. Partial close at +15.0 pips (50%) ─────────────────────────────────────────
   if (!state.partialTaken && profitPips >= PARTIAL_CLOSE_TRIGGER_PIPS) {
     if (totalUnits < 2) {
       // Can't split a single-unit position — mark as taken to suppress repeat attempts
       state.partialTaken   = true;
       state.trailingActive = true;
-      console.log('[OANDA_PARTIAL_CLOSE_70] Skipped — position too small to split', { tradeId, totalUnits });
+      console.log('[OANDA_PARTIAL_CLOSE_50] Skipped — position too small to split', { tradeId, totalUnits });
     } else {
-      // Close exactly 70%, leave at least 1 unit as runner
+      // Close exactly 50%, leave at least 1 unit as runner
       const unitsToClose = Math.max(1, Math.min(
         Math.round(totalUnits * PARTIAL_CLOSE_PERCENT),
         totalUnits - 1
@@ -167,7 +167,7 @@ async function applyExitRules(trade, currentPrice) {
         await partialClosePosition(tradeId, unitsToClose);
         state.partialTaken   = true;
         state.trailingActive = true;
-        console.log('[OANDA_PARTIAL_CLOSE_70]', {
+        console.log('[OANDA_PARTIAL_CLOSE_50]', {
           tradeId, instrument,
           direction:    isLong ? 'LONG' : 'SHORT',
           totalUnits,
@@ -176,12 +176,12 @@ async function applyExitRules(trade, currentPrice) {
           profitPips:   +profitPips.toFixed(1),
         });
       } catch (err) {
-        console.error('[OANDA_PARTIAL_CLOSE_70] Failed:', err.message);
+        console.error('[OANDA_PARTIAL_CLOSE_50] Failed:', err.message);
       }
     }
   }
 
-  // ── C. Trailing stop on the remaining 30% runner ──────────────────────────────
+  // ── C. Trailing stop on the remaining 50% runner ──────────────────────────────
   if (state.trailingActive) {
     const trailPips = getTrailingDistancePips(instrument);
     const trailDist = pipToPrice(trailPips, instrument);

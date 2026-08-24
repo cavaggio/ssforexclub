@@ -80,11 +80,16 @@ export function isDailyTradeCapReached(count) {
   return Number(count) >= dailyTradeCap();
 }
 const MAX_SPREAD_PIPS       = parseFloat(process.env.FOREX_MAX_SPREAD_PIPS       || '5.0');
-const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');
+const MIN_EXECUTABLE_RR     = 1.0;
 
 export function pprExecutionConfidenceFloor() {
   return HARD_SCALP_CONFIDENCE_FLOOR;
 }
+
+// Fixed forex execution geometry. Applied only after the existing strategy
+// qualification gates accept the setup. Metals keep their existing geometry.
+const FIXED_FOREX_STOP_LOSS_PIPS = 20.0;
+const FIXED_FOREX_TAKE_PROFIT_PIPS = 20.0;
 
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
 const FIXED_LOT_SIZE        = parseFloat(process.env.FOREX_FIXED_LOT_SIZE        || '0.01');
@@ -506,8 +511,8 @@ function highEdgeAutoAiGate(signal = {}, sizing = null) {
 
   if (sizing) {
     const rr = Number(sizing?.riskReward ?? 0);
-    if (!Number.isFinite(rr) || rr < 1.5) {
-      reasons.push(`R:R ${Number.isFinite(rr) ? rr : 'n/a'} < 1.5`);
+    if (!Number.isFinite(rr) || rr < MIN_EXECUTABLE_RR) {
+      reasons.push(`R:R ${Number.isFinite(rr) ? rr : 'n/a'} < ${MIN_EXECUTABLE_RR}`);
     }
   }
 
@@ -899,8 +904,8 @@ export async function executeTrade(signal, options = {}) {
     return blocked('stopLoss or takeProfit not set on signal');
   }
 
-  // Universal hard R:R gate. No scanner, V3 promotion, dashboard signal, or
-  // direct API call may execute a trade below 1.5R.
+  // Universal execution R:R gate. Fixed forex broker geometry is 1:1;
+  // strategy qualification above remains otherwise unchanged.
   const preSizingRR = computeExecutableRiskReward(signal, {
     direction,
     entry,
@@ -1146,6 +1151,48 @@ export async function executeTrade(signal, options = {}) {
   tpPips = scalpLifecycle.lifecycle.tp.takeProfitPips;
   tpPriceFromLifecycle = scalpLifecycle.lifecycle.tp.takeProfitPrice;
 
+  // Preserve all qualification above, but make broker protection deterministic
+  // for forex once a setup has been authorized.
+  if (!metals) {
+    slPips = FIXED_FOREX_STOP_LOSS_PIPS;
+    tpPips = FIXED_FOREX_TAKE_PROFIT_PIPS;
+    const fixedSlDistance = FIXED_FOREX_STOP_LOSS_PIPS * pipSize;
+    const fixedTpDistance = FIXED_FOREX_TAKE_PROFIT_PIPS * pipSize;
+    slPriceFromLifecycle = +(direction === 'long'
+      ? executableEntry - fixedSlDistance
+      : executableEntry + fixedSlDistance).toFixed(priceDecimals);
+    tpPriceFromLifecycle = +(direction === 'long'
+      ? executableEntry + fixedTpDistance
+      : executableEntry - fixedTpDistance).toFixed(priceDecimals);
+
+    signal.stopLoss = slPriceFromLifecycle;
+    signal.takeProfit = tpPriceFromLifecycle;
+    signal.targetProfit = tpPriceFromLifecycle;
+    signal.expectedRR = 1.0;
+    signal.rr = 1.0;
+    signal.riskReward = 1.0;
+    signal.lifecycle = {
+      ...(signal.lifecycle || {}),
+      sl: {
+        ...(signal.lifecycle?.sl || {}),
+        stopLossPips: FIXED_FOREX_STOP_LOSS_PIPS,
+        stopLossPrice: slPriceFromLifecycle,
+        fixedExecution: true,
+      },
+      tp: {
+        ...(signal.lifecycle?.tp || {}),
+        allowed: true,
+        takeProfitPips: FIXED_FOREX_TAKE_PROFIT_PIPS,
+        takeProfitPrice: tpPriceFromLifecycle,
+        fixedExecution: true,
+      },
+    };
+    console.log(
+      `[TRADE_FIXED_GEOMETRY] ${pair} ${direction} SL=${FIXED_FOREX_STOP_LOSS_PIPS.toFixed(1)}p ` +
+      `TP=${FIXED_FOREX_TAKE_PROFIT_PIPS.toFixed(1)}p RR=1.00`,
+    );
+  }
+
   const sizing = computeFixedDollarSizing({
     pair,
     direction,
@@ -1160,8 +1207,10 @@ export async function executeTrade(signal, options = {}) {
   });
 
   const finalRiskReward = Number(sizing?.riskReward ?? 0);
-  if (!Number.isFinite(finalRiskReward) || finalRiskReward < 1.5) {
-    return blocked(`Risk reward ${Number.isFinite(finalRiskReward) ? finalRiskReward : 'n/a'} < minimum 1.5 after execution sizing`);
+  if (!Number.isFinite(finalRiskReward) || finalRiskReward < MIN_EXECUTABLE_RR) {
+    return blocked(
+      `Risk reward ${Number.isFinite(finalRiskReward) ? finalRiskReward : 'n/a'} < minimum ${MIN_EXECUTABLE_RR} after execution sizing`
+    );
   }
 
   const finalSizingRR = Number(sizing?.riskReward ?? 0);
@@ -1173,8 +1222,8 @@ export async function executeTrade(signal, options = {}) {
 
   let units                 = sizing.signedUnits;
   let absUnits              = Math.abs(units);
-  const slPrice             = sizing.stopLoss;
-  const tpPrice             = sizing.takeProfit;
+  let slPrice               = sizing.stopLoss;
+  let tpPrice               = sizing.takeProfit;
   let estimatedMargin       = sizing.estimatedMarginRequired;
   let notionalUSD           = sizing.notionalUSD;
   const effectiveLeverage   = sizing.effectiveLeverage;
@@ -1446,6 +1495,47 @@ export async function executeTrade(signal, options = {}) {
   const tradeMarginUsed = parseFloat(
     fillInfo.initialMarginRequired || fillInfo.marginRequired || 0
   );
+
+  // Market slippage can shift on-fill protection by a fraction of a pip. Re-anchor
+  // forex SL/TP to the ACTUAL fill so both are exactly 20.0 pips when accepted.
+  if (!metals && tradeId) {
+    const fixedSlDistance = FIXED_FOREX_STOP_LOSS_PIPS * pipSize;
+    const fixedTpDistance = FIXED_FOREX_TAKE_PROFIT_PIPS * pipSize;
+    const fixedSlFromFill = +(direction === 'long'
+      ? fillPrice - fixedSlDistance
+      : fillPrice + fixedSlDistance).toFixed(priceDecimals);
+    const fixedTpFromFill = +(direction === 'long'
+      ? fillPrice + fixedTpDistance
+      : fillPrice - fixedTpDistance).toFixed(priceDecimals);
+    const dependentOrderPath = `/v3/accounts/${accountId}/trades/${tradeId}/orders`;
+    const dependentOrderBody = {
+      stopLoss: { price: fixedSlFromFill.toFixed(priceDecimals), timeInForce: 'GTC' },
+      takeProfit: { price: fixedTpFromFill.toFixed(priceDecimals), timeInForce: 'GTC' },
+    };
+    try {
+      if (client) await client.put(dependentOrderPath, dependentOrderBody);
+      else await oandaPut(dependentOrderPath, dependentOrderBody);
+      slPrice = fixedSlFromFill;
+      tpPrice = fixedTpFromFill;
+      sizing.stopLoss = slPrice;
+      sizing.takeProfit = tpPrice;
+      sizing.stopLossPips = FIXED_FOREX_STOP_LOSS_PIPS;
+      sizing.takeProfitPips = FIXED_FOREX_TAKE_PROFIT_PIPS;
+      sizing.riskReward = 1.0;
+      executionLog.push(logEntry('FIXED_20P_FILL_REANCHOR', {
+        fillPrice,
+        stopLoss: slPrice,
+        takeProfit: tpPrice,
+        stopLossPips: FIXED_FOREX_STOP_LOSS_PIPS,
+        takeProfitPips: FIXED_FOREX_TAKE_PROFIT_PIPS,
+        riskReward: 1.0,
+      }));
+    } catch (err) {
+      // Atomic on-fill protection remains active if precision re-anchor fails.
+      console.error(`[TRADE_FIXED_GEOMETRY] fill re-anchor failed for ${pair}: ${err.message}`);
+      executionLog.push(logEntry('FIXED_20P_FILL_REANCHOR_FAILED', { error: err.message }));
+    }
+  }
 
   // Count and lock every confirmed broker fill immediately. A successful emergency
   // flatten removes only the active lock; the daily fill count remains accurate.

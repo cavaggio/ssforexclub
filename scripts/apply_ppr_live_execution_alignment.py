@@ -231,8 +231,8 @@ export function pprExecutionConfidenceFloor() {
 """
 trade = replace_once(
     trade,
-    "const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');",
-    "const MIN_EXECUTABLE_RR     = parseFloat(process.env.FOREX_MIN_EXECUTABLE_RR || '1.5');\n" + floor_helper,
+    "const MIN_EXECUTABLE_RR     = 1.0;",
+    "const MIN_EXECUTABLE_RR     = 1.0;\n" + floor_helper,
     "PPR execution confidence helper",
 )
 trade = replace_once(
