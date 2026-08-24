@@ -29,7 +29,7 @@ export const RISK_MODE = 'dynamic';
 
 // SL/TP/RR are now per-trade values produced by oandaTradeLifecycle.js.
 // `MINIMUM_RISK_REWARD` is retained only as a legacy import target.
-export const MINIMUM_RISK_REWARD = 1.5;   // hard floor; lifecycle engine enforces
+export const MINIMUM_RISK_REWARD = 1.0;   // fixed forex execution floor; lifecycle qualification remains separate
 
 export const MIN_RISK_PERCENT          = parseFloat(process.env.FOREX_MIN_RISK_PERCENT          || '0.5');
 export const MAX_RISK_PERCENT          = parseFloat(process.env.FOREX_MAX_RISK_PERCENT || '1.25');
