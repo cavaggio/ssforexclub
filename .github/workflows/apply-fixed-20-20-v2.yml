@@ -1,0 +1,89 @@
+name: Validate and commit fixed 20/20 forex execution
+
+on:
+  push:
+    branches:
+      - agent/fixed-20-20-rr-partial-15
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fixed-20-20-rr-partial-15
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply requested execution geometry
+        run: python3 scripts/apply_fixed_20_20_execution.py
+
+      - name: Validate syntax and production source enforcement
+        shell: bash
+        run: |
+          node --check server/oandaTrade.js
+          node --check server/oandaExitManager.js
+          node --check server/oandaRiskSizing.js
+          python3 -m py_compile scripts/apply_ppr_live_execution_alignment.py
+
+          npm run prestart
+
+          python3 - <<'PY'
+          from pathlib import Path
+          trade = Path('server/oandaTrade.js').read_text(encoding='utf-8')
+          exitm = Path('server/oandaExitManager.js').read_text(encoding='utf-8')
+          risk = Path('server/oandaRiskSizing.js').read_text(encoding='utf-8')
+          assert 'const MIN_EXECUTABLE_RR     = 1.0;' in trade
+          assert 'const FIXED_FOREX_STOP_LOSS_PIPS = 20.0;' in trade
+          assert 'const FIXED_FOREX_TAKE_PROFIT_PIPS = 20.0;' in trade
+          assert 'finalRiskReward < MIN_EXECUTABLE_RR' in trade
+          assert "executionLog.push(logEntry('FIXED_20P_FILL_REANCHOR'" in trade
+          assert 'const PARTIAL_CLOSE_TRIGGER_PIPS    = 15.0;' in exitm
+          assert 'const PARTIAL_CLOSE_PERCENT         = 0.50;' in exitm
+          assert '[OANDA_PARTIAL_CLOSE_50]' in exitm
+          assert 'const BREAK_EVEN_TRIGGER_PIPS       = 10;' in exitm
+          assert 'const MONITOR_INTERVAL_MS           = 30_000;' in exitm
+          assert 'export const MINIMUM_RISK_REWARD = 1.0;' in risk
+          PY
+
+      - name: Run focused regression tests
+        run: |
+          node --test \
+            server/oandaTradeProtection.test.js \
+            server/pprExecutionPolicy.test.js \
+            server/ictRiskRewardFloor.test.js
+
+      - name: Revert unrelated generator drift
+        shell: bash
+        run: |
+          allowed='server/oandaTrade.js server/oandaExitManager.js server/oandaRiskSizing.js scripts/apply_ppr_live_execution_alignment.py'
+          for f in $(git diff --name-only); do
+            case " $allowed " in
+              *" $f "*) ;;
+              *) git checkout -- "$f" ;;
+            esac
+          done
+          echo 'Final intended diff:'
+          git diff --name-only
+          for f in $(git diff --name-only); do
+            case " $allowed " in
+              *" $f "*) ;;
+              *) echo "Unexpected file remains changed: $f" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Commit requested changes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/oandaTrade.js server/oandaExitManager.js server/oandaRiskSizing.js scripts/apply_ppr_live_execution_alignment.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Set fixed 20 pip SL TP and 15 pip partial'
+          git push origin HEAD:agent/fixed-20-20-rr-partial-15
