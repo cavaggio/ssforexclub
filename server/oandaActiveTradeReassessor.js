@@ -44,6 +44,7 @@ import {
   findTradeByBrokerOrderId, updateMaxFavorableExcursion,
 } from './oandaTradeHistory.js';
 import { getEnvironment, isLiveExecutionExplicitlyAllowed } from './oandaClient.js';
+import { syncImmediatePartialTrades } from './oandaImmediatePartial.js';
 import { analyzeTradeLifecycle } from './oandaTradeLifecycleEngine.js';
 import { computeLiveV3TpHitConfidence, isPureV3TradeRecord } from './v3TpConfidence.js';
 import { reassessV3OpenTrade } from './v3ActiveTradeMonitor.js';
@@ -659,6 +660,7 @@ async function buildManagementPlanForTrade(oandaTrade, session, options = {}) {
     instrument: pair,
     direction: side,
     units: Math.abs(units),                              // absolute, for partial-close math
+    initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
     assetClass: profile.assetClass,
     selectedLogicType: entryContext.entrySelectedLogicType ??
       (profile.assetClass === 'Metal' ? 'metals' :
@@ -794,6 +796,10 @@ export async function reassessActiveTrades(options = {}) {
       },
     };
   }
+  // Recovery path after a backend restart: authenticated reassessment
+  // refreshes the account's live pricing-stream registrations.
+  syncImmediatePartialTrades(openTrades, { client });
+
   if (!openTrades.length) {
     return {
       trades: [],

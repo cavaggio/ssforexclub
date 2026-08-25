@@ -131,6 +131,7 @@ export async function analyzeV3OpenTrade(oandaTrade, { client, historyRecord = n
     side,
     direction: side,
     units: Math.abs(units),
+    initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
     entryPrice,
     currentPrice,
     stopLoss,

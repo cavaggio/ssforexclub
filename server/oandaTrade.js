@@ -56,6 +56,7 @@ import {
   releaseExecutionsForPairDirection,
 } from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
+import { registerImmediatePartialTrade } from './oandaImmediatePartial.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -1692,10 +1693,23 @@ export async function executeTrade(signal, options = {}) {
   signal.actualFillRR = +actualFillRR.toFixed(2);
   signal.postFillTpAdjusted = postFillTpAdjusted;
 
+  const immediatePartialRegistration = tradeId
+    ? registerImmediatePartialTrade({
+        tradeId,
+        instrument: pair,
+        entryPrice: fillPrice,
+        currentUnits: units,
+        initialUnits: units,
+        client,
+      })
+    : { registered: false, reason: 'missing_trade_id' };
+  executionLog.push(logEntry('IMMEDIATE_PARTIAL_STREAM_REGISTER', immediatePartialRegistration));
+
   console.log(
     `[TRADE] ✓ FILLED + SL/TP attached — tradeId=${tradeId}, price=${fillPrice}, ` +
     `actualRR=${actualFillRR.toFixed(2)}, tpAdjusted=${postFillTpAdjusted}, ` +
-    `marginRequired=$${tradeMarginUsed.toFixed(2)}`
+    `marginRequired=$${tradeMarginUsed.toFixed(2)}, ` +
+    `partialStream=${immediatePartialRegistration.registered ? 'registered' : 'unavailable'}`
   );
 
   executionLog.push(logEntry('ORDER_FILL', {
