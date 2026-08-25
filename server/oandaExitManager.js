@@ -5,13 +5,19 @@
  *
  * Monitors every open trade and applies:
  *   A. Breakeven stop move at +BREAK_EVEN_TRIGGER_PIPS
- *   B. 50% partial close at +PARTIAL_CLOSE_TRIGGER_PIPS
+ *   B. Event-driven 50% partial at +PARTIAL_CLOSE_TRIGGER_PIPS (polling is disconnect fallback only)
  *   C. Trailing stop on remaining 50% runner
  *   D. Final-exit logging when trade disappears from open list
  */
 
 import { getAccountId, oandaGet, oandaPut } from './oandaClient.js';
 import { getPricing } from './oandaMarketData.js';
+import {
+  getImmediatePartialTradeState,
+  markImmediatePartialTaken,
+  syncImmediatePartialTrades,
+  getImmediatePartialStatus,
+} from './oandaImmediatePartial.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const BREAK_EVEN_TRIGGER_PIPS       = 10;
@@ -149,15 +155,33 @@ async function applyExitRules(trade, currentPrice) {
     }
   }
 
-  // ── B. Partial close at +15.0 pips (50%) ─────────────────────────────────────────
-  if (!state.partialTaken && profitPips >= PARTIAL_CLOSE_TRIGGER_PIPS) {
+  // ── B. Event-driven partial; polling is stream-disconnect fallback only ─────────────
+  const immediatePartial = getImmediatePartialTradeState({
+    accountId: getAccountId(),
+    tradeId,
+  });
+  if (!state.partialTaken && immediatePartial?.partialTaken) {
+    state.partialTaken = true;
+    state.trailingActive = true;
+    console.log('[OANDA_PARTIAL_CLOSE_50] synchronized from pricing stream', {
+      tradeId,
+      instrument,
+      maxProfitPips: immediatePartial.maxProfitPips,
+      lastPartialAt: immediatePartial.lastPartialAt,
+    });
+  }
+
+  const streamOwnsTrigger = immediatePartial?.connected === true || immediatePartial?.partialInFlight === true;
+  if (!state.partialTaken && !streamOwnsTrigger && profitPips >= PARTIAL_CLOSE_TRIGGER_PIPS) {
+    console.warn('[OANDA_PARTIAL_CLOSE_50] pricing stream unavailable — using 30s safety fallback', {
+      tradeId, instrument, profitPips: +profitPips.toFixed(1),
+    });
     if (totalUnits < 2) {
-      // Can't split a single-unit position — mark as taken to suppress repeat attempts
       state.partialTaken   = true;
       state.trailingActive = true;
+      markImmediatePartialTaken({ accountId: getAccountId(), tradeId, currentUnits });
       console.log('[OANDA_PARTIAL_CLOSE_50] Skipped — position too small to split', { tradeId, totalUnits });
     } else {
-      // Close exactly 50%, leave at least 1 unit as runner
       const unitsToClose = Math.max(1, Math.min(
         Math.round(totalUnits * PARTIAL_CLOSE_PERCENT),
         totalUnits - 1
@@ -167,6 +191,8 @@ async function applyExitRules(trade, currentPrice) {
         await partialClosePosition(tradeId, unitsToClose);
         state.partialTaken   = true;
         state.trailingActive = true;
+        const signedRemaining = (isLong ? 1 : -1) * remaining;
+        markImmediatePartialTaken({ accountId: getAccountId(), tradeId, currentUnits: signedRemaining });
         console.log('[OANDA_PARTIAL_CLOSE_50]', {
           tradeId, instrument,
           direction:    isLong ? 'LONG' : 'SHORT',
@@ -174,6 +200,7 @@ async function applyExitRules(trade, currentPrice) {
           closedUnits:  unitsToClose,
           runnerUnits:  remaining,
           profitPips:   +profitPips.toFixed(1),
+          source:       'polling_disconnect_fallback',
         });
       } catch (err) {
         console.error('[OANDA_PARTIAL_CLOSE_50] Failed:', err.message);
@@ -237,6 +264,11 @@ async function monitorOpenTrades() {
     console.error('[EXIT_MANAGER] Could not fetch open trades:', err.message);
     return;
   }
+
+  // Reconcile the event-driven +15 pip stream from the broker snapshot.
+  // This call discovers/re-discovers open trades, but PRICE events — not this
+  // 30-second loop — own the live partial trigger while the stream is connected.
+  syncImmediatePartialTrades(openTrades);
 
   if (!openTrades.length) {
     return; // Nothing to monitor
@@ -320,6 +352,8 @@ export function getExitManagerStatus() {
   return {
     running:        intervalHandle !== null,
     pollIntervalMs: MONITOR_INTERVAL_MS,
+    partialTriggerMode: 'oanda_pricing_stream_with_poll_disconnect_fallback',
+    immediatePartialStream: getImmediatePartialStatus(),
     trackedTrades:  tradeState.size,
     trades,
   };

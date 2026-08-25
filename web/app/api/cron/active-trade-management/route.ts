@@ -195,6 +195,12 @@ function runnerArmed(state: ExitState): boolean {
   return action === 'PARTIAL_RUNNER_ARMED' || action === 'RUNNER_ARMED' || action === 'TRAIL_PROFIT';
 }
 
+function brokerAlreadyPartiallyReduced(plan: Record<string, any>): boolean {
+  const initial = Math.abs(Number(plan.initialUnits));
+  const current = Math.abs(Number(plan.units));
+  return Number.isFinite(initial) && Number.isFinite(current) && initial > 0 && current > 0 && current < initial;
+}
+
 function stopAtBreakeven(plan: Record<string, any>, state: ExitState): boolean {
   const action = String(state.last_action || '').toUpperCase();
   if (
@@ -298,7 +304,60 @@ export async function POST(req: Request) {
           continue;
         }
 
-        const previousState = stateByTrade.get(tradeId) ?? {};
+        let previousState = stateByTrade.get(tradeId) ?? {};
+
+        // The OANDA pricing stream can bank the +15 pip partial between cron
+        // reviews. Reconcile broker-unit reduction before evaluating another
+        // PARTIAL_CLOSE so the scheduled path cannot double-close the runner.
+        if (Number(previousState.partial_count || 0) < 1 && brokerAlreadyPartiallyReduced(plan)) {
+          const initialUnits = Math.abs(Number(plan.initialUnits));
+          const currentUnits = Math.abs(Number(plan.units));
+          const observedPercent = Math.max(1, Math.min(99, Math.round((1 - currentUnits / initialUnits) * 100)));
+          const reconciliationDecision: ManagementDecision = {
+            action: 'HOLD_TO_TP',
+            closePercent: 0,
+            reason: `Broker units are already reduced ${observedPercent}%; treating the +15 pip stream partial as banked before scheduled management.`,
+            confidence: 99,
+            policy: ACTIVE_EXIT_POLICY,
+            automaticFullCloseAllowed: false,
+            evidence: ['broker_units_already_reduced', 'stream_partial_reconciliation', 'single_partial_limit'],
+            metrics: {
+              initialUnits,
+              currentUnits,
+              observedPartialPercent: observedPercent,
+              source: 'broker_unit_reconciliation',
+            },
+          };
+          previousState = {
+            ...previousState,
+            partial_count: 1,
+            cumulative_partial_percent: Math.max(
+              Number(previousState.cumulative_partial_percent || 0),
+              observedPercent,
+            ),
+            last_action: 'PARTIAL_STREAM_CONFIRMED',
+            // Deliberately do not set last_action_at: the route may immediately
+            // arm/protect the runner instead of waiting through the action cooldown.
+            last_action_at: previousState.last_action_at ?? null,
+          };
+          await saveExitState({
+            supabase, userId, accountId: credentials.accountId, tradeId,
+            instrument: String(plan.instrument ?? ''), engine: tradeEngine,
+            state: previousState, decision: reconciliationDecision,
+            action: 'PARTIAL_STREAM_CONFIRMED', actionAt: null,
+          });
+          stateByTrade.set(tradeId, previousState);
+          evaluations.push({
+            tradeId,
+            instrument: plan.instrument,
+            engine: tradeEngine,
+            action: 'PARTIAL_STREAM_CONFIRMED',
+            observedPartialPercent: observedPercent,
+            initialUnits,
+            currentUnits,
+          });
+        }
+
         const decision = evaluateActiveExit(plan, {
           priorPartialCount: previousState.partial_count ?? 0,
           peakProfitR: previousState.peak_profit_r ?? null,

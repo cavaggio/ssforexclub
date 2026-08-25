@@ -302,6 +302,21 @@ export function isImmediatePartialTaken({ accountId, tradeId } = {}) {
   return account?.trades.get(id)?.partialTaken === true;
 }
 
+export function getImmediatePartialTradeState({ accountId, tradeId } = {}) {
+  const id = String(tradeId || '');
+  const account = [...accounts.values()].find((item) => item.accountId === String(accountId || ''));
+  const state = account?.trades.get(id);
+  if (!account || !state) return null;
+  return {
+    registered: true,
+    connected: account.connected === true,
+    partialTaken: state.partialTaken === true,
+    partialInFlight: state.partialInFlight === true,
+    maxProfitPips: Number(state.maxProfitPips || 0),
+    lastPartialAt: state.lastPartialAt ?? null,
+  };
+}
+
 export function markImmediatePartialTaken({ accountId, tradeId, currentUnits = null } = {}) {
   const id = String(tradeId || '');
   const account = [...accounts.values()].find((item) => item.accountId === String(accountId || ''));
