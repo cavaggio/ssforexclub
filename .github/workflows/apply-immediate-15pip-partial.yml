@@ -26,7 +26,27 @@ jobs:
         run: npm ci
 
       - name: Apply event-driven partial integration
-        run: python3 scripts/apply_immediate_partial_stream.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_immediate_partial_stream.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('server/v3ActiveTradeMonitor.js')
+          text = path.read_text(encoding='utf-8')
+          old = """    units: Math.abs(units),
+            entryPrice,
+          """
+          new = """    units: Math.abs(units),
+            initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
+            entryPrice,
+          """
+          if new not in text:
+              if text.count(old) != 1:
+                  raise RuntimeError(f'V3 initial-units anchor count={text.count(old)}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
 
       - name: Validate runtime source enforcement
         shell: bash
@@ -36,6 +56,7 @@ jobs:
           node --check server/oandaExitManager.js
           node --check server/oandaTrade.js
           node --check server/oandaActiveTradeReassessor.js
+          node --check server/v3ActiveTradeMonitor.js
           python3 -m py_compile scripts/apply_immediate_partial_stream.py
 
           npm run prestart
@@ -46,6 +67,7 @@ jobs:
           exitm = Path('server/oandaExitManager.js').read_text()
           trade = Path('server/oandaTrade.js').read_text()
           reassess = Path('server/oandaActiveTradeReassessor.js').read_text()
+          v3 = Path('server/v3ActiveTradeMonitor.js').read_text()
           route = Path('web/app/api/cron/active-trade-management/route.ts').read_text()
           assert 'pricing/stream?instruments=' in immediate
           assert 'IMMEDIATE_PARTIAL_TRIGGER_PIPS = 15.0' in immediate
@@ -56,6 +78,7 @@ jobs:
           assert 'IMMEDIATE_PARTIAL_STREAM_REGISTER' in trade
           assert 'syncImmediatePartialTrades(openTrades, { client })' in reassess
           assert 'initialUnits: Math.abs(Number(oandaTrade.initialUnits' in reassess
+          assert 'initialUnits: Math.abs(Number(oandaTrade.initialUnits' in v3
           assert 'PARTIAL_STREAM_CONFIRMED' in route
           assert 'brokerAlreadyPartiallyReduced' in route
           PY
@@ -67,6 +90,7 @@ jobs:
             server/oandaTradeProtection.test.js \
             server/ictRiskRewardFloor.test.js \
             server/pprExecutionPolicy.test.js \
+            server/v3EngineIsolation.test.js \
             web/lib/activeExitPolicy.test.js
 
       - name: Typecheck web route
@@ -77,21 +101,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Validation generators are allowed to touch compatibility files, but
-          # none of that unrelated drift belongs in this narrowly-scoped PR.
-          git diff --name-only | while read -r file; do
+          # Startup generators intentionally verify/normalize many compatibility
+          # files. Drop that unrelated drift, then reapply only this feature.
+          rm -f .git/index.lock
+          mapfile -t changed < <(git diff --name-only)
+          for file in "${changed[@]}"; do
             [ -z "$file" ] && continue
+            rm -f .git/index.lock
             git checkout -- "$file"
           done
+          rm -f .git/index.lock
+
           python3 scripts/apply_immediate_partial_stream.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('server/v3ActiveTradeMonitor.js')
+          text = path.read_text(encoding='utf-8')
+          old = """    units: Math.abs(units),
+            entryPrice,
+          """
+          new = """    units: Math.abs(units),
+            initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
+            entryPrice,
+          """
+          if new not in text:
+              if text.count(old) != 1:
+                  raise RuntimeError(f'V3 initial-units anchor count={text.count(old)}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
 
           node --check server/oandaImmediatePartial.js
           node --check server/oandaExitManager.js
           node --check server/oandaTrade.js
           node --check server/oandaActiveTradeReassessor.js
-          node --test server/oandaImmediatePartial.test.js web/lib/activeExitPolicy.test.js
+          node --check server/v3ActiveTradeMonitor.js
+          node --test server/oandaImmediatePartial.test.js server/v3EngineIsolation.test.js web/lib/activeExitPolicy.test.js
 
-          allowed='server/oandaImmediatePartial.js server/oandaExitManager.js server/oandaTrade.js server/oandaActiveTradeReassessor.js web/app/api/cron/active-trade-management/route.ts'
+          allowed='server/oandaImmediatePartial.js server/oandaExitManager.js server/oandaTrade.js server/oandaActiveTradeReassessor.js server/v3ActiveTradeMonitor.js web/app/api/cron/active-trade-management/route.ts'
           echo 'Final intended diff:'
           git diff --name-only
           for file in $(git diff --name-only); do
@@ -105,6 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f .git/index.lock
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
@@ -112,6 +160,7 @@ jobs:
             server/oandaExitManager.js \
             server/oandaTrade.js \
             server/oandaActiveTradeReassessor.js \
+            server/v3ActiveTradeMonitor.js \
             web/app/api/cron/active-trade-management/route.ts
           git diff --cached --quiet && exit 0
           git commit -m 'Trigger partial profit from OANDA price stream'
