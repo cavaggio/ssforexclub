@@ -34,13 +34,8 @@ jobs:
           from pathlib import Path
           path = Path('server/v3ActiveTradeMonitor.js')
           text = path.read_text(encoding='utf-8')
-          old = """    units: Math.abs(units),
-            entryPrice,
-          """
-          new = """    units: Math.abs(units),
-            initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
-            entryPrice,
-          """
+          old = "    units: Math.abs(units),\n    entryPrice,"
+          new = "    units: Math.abs(units),\n    initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),\n    entryPrice,"
           if new not in text:
               if text.count(old) != 1:
                   raise RuntimeError(f'V3 initial-units anchor count={text.count(old)}')
@@ -117,13 +112,8 @@ jobs:
           from pathlib import Path
           path = Path('server/v3ActiveTradeMonitor.js')
           text = path.read_text(encoding='utf-8')
-          old = """    units: Math.abs(units),
-            entryPrice,
-          """
-          new = """    units: Math.abs(units),
-            initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),
-            entryPrice,
-          """
+          old = "    units: Math.abs(units),\n    entryPrice,"
+          new = "    units: Math.abs(units),\n    initialUnits: Math.abs(Number(oandaTrade.initialUnits ?? historyRecord?.units ?? units)),\n    entryPrice,"
           if new not in text:
               if text.count(old) != 1:
                   raise RuntimeError(f'V3 initial-units anchor count={text.count(old)}')
