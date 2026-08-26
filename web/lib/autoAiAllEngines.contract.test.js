@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { applyAccountEngineIsolation } from '../../scripts/apply_account_engine_isolation.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { restoreV3WatchlistCompatibility } from '../../scripts/restore_v3_watchlist_compat.mjs';
 import { prepareActualTradeLearningCompatibility } from '../../scripts/prepare_actual_trade_learning_compat.mjs';
 
@@ -17,9 +16,10 @@ const PATCHED_FILES = [
   'server/engineTradeLearning.js',
   'server/engineTradeLearningCore.js',
   'server/ictAutoScheduler.js',
+  'scripts/apply_account_engine_isolation.mjs',
 ];
 
-test('Auto AI executes only the configured engine for each account while studies remain non-executing', () => {
+test('Auto AI executes only the configured engine for each account while studies remain non-executing', async () => {
   const root = mkdtempSync(join(tmpdir(), 'auto-ai-engine-isolation-'));
   try {
     for (const relative of PATCHED_FILES) {
@@ -28,7 +28,16 @@ test('Auto AI executes only the configured engine for each account while studies
       cpSync(resolve(ROOT, relative), destination);
     }
 
+    // Production runs the compatibility prep first and launches the prepared
+    // account-isolation script in a fresh Node process. Import the prepared temp
+    // copy here so this contract test exercises that same sequence instead of
+    // retaining a stale module that was imported before compatibility prep.
     prepareActualTradeLearningCompatibility(root);
+    const preparedIsolationUrl = pathToFileURL(
+      join(root, 'scripts/apply_account_engine_isolation.mjs'),
+    );
+    preparedIsolationUrl.searchParams.set('prepared', String(Date.now()));
+    const { applyAccountEngineIsolation } = await import(preparedIsolationUrl.href);
     applyAccountEngineIsolation(root);
     restoreV3WatchlistCompatibility(root);
 

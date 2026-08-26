@@ -254,7 +254,7 @@ patchFile(
     if (!out.includes('DAILY_MARKET_STUDY_WINDOW')) {
       out = out.replace(
         "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET",
-        "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET\nexport const DAILY_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, before entries",
+        "export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 600, endMin: 1050 }; // 10:00–17:30 ET\nexport const DAILY_MARKET_STUDY_WINDOW = { startMin: 1050, endMin: 1080 }; // 17:30–18:00 ET, end-of-day market + trade review",
       );
     }
     if (!out.includes('DAILY_MARKET_STUDY_INTERVAL_MS')) {
@@ -266,6 +266,12 @@ patchFile(
     if (!out.includes('let lastDailyStudyDateKey')) {
       out = out.replace('let timers = [];', 'let timers = [];\nlet lastDailyStudyDateKey = null;');
     }
+    if (!out.includes('let lastEngineLearningBackfillDateKey')) {
+      out = out.replace(
+        'let lastDailyStudyDateKey = null;',
+        'let lastDailyStudyDateKey = null;\nlet lastEngineLearningBackfillDateKey = null;',
+      );
+    }
     if (!out.includes('inDailyMarketStudyWindow')) {
       out = out.replace(
         "export function inActiveTradeManagementWindow(date = new Date()) { return inWindow(date, ACTIVE_TRADE_MANAGEMENT_WINDOW); }",
@@ -274,15 +280,15 @@ patchFile(
     }
     out = out.replace(
       '`[AUTO_AI] scans=02:00–10:00_ET entries=02:15–10:00_ET weekdays_only ` +',
-      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
+      '`[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
     );
     out = out.replace(
       '`[AUTO_AI] scans=02:00–10:00_ET entries=V3_02:15/PPR_03:00/ICT_05:00 weekdays_only ` +',
-      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
+      '`[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
     );
     out = out.replace(
       '`[AUTO_AI] scans=02:00–10:00_ET entries=V3/PPR/ICT_02:15 weekdays_only ` +',
-      '`[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
+      '`[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +',
     );
     if (!out.includes('DAILY_MARKET_STUDY_INTERVAL_MS));')) {
       out = out.replace(
@@ -305,7 +311,7 @@ patchFile(
     if (!out.includes('export async function dailyMarketStudyTick')) {
       out = out.replace(
         "async function transactionSyncTick(nextUrl, secret) {\n  return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');\n}\n",
-        "async function transactionSyncTick(nextUrl, secret) {\n  return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');\n}\n\nfunction newYorkDateKey(date = new Date()) {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',\n  }).format(date);\n}\n\nexport async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {\n  if (!inDailyMarketStudyWindow(now)) {\n    return { ok: true, skipped: true, reason: 'outside_daily_market_study_window' };\n  }\n  const dayKey = newYorkDateKey(now);\n  if (lastDailyStudyDateKey === dayKey) {\n    return { ok: true, skipped: true, reason: 'daily_market_study_already_completed', dayKey };\n  }\n  const results = [];\n  for (const engine of ['ict', 'ppr']) {\n    const runId = makeRunId();\n    results.push(await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {\n      source: 'railway-scheduler', runId, scanMode: 'daily_study', pairs: [], engine,\n    }, `[DAILY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));\n  }\n  const ok = results.every((result) => result.ok);\n  if (ok) lastDailyStudyDateKey = dayKey;\n  return { ok, dayKey, results };\n}\n",
+        "async function transactionSyncTick(nextUrl, secret) {\n  return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');\n}\n\nexport async function engineLearningBackfillTick(nextUrl, secret, { now = new Date(), force = false, source = 'end-of-day-market-review' } = {}) {\n  const dayKey = newYorkDateKey(now);\n  if (!force && lastEngineLearningBackfillDateKey === dayKey) {\n    return { ok: true, skipped: true, reason: 'engine_learning_backfill_already_completed', dayKey };\n  }\n  const result = await post(nextUrl, secret, '/api/cron/engine-learning-backfill', {\n    source,\n    tradingDays: 7,\n    calendarLookbackDays: 14,\n  }, `[ENGINE_LEARNING_BACKFILL][dayKey=${dayKey}]`);\n  if (result.ok) lastEngineLearningBackfillDateKey = dayKey;\n  return { ...result, dayKey };\n}\n\nfunction newYorkDateKey(date = new Date()) {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',\n  }).format(date);\n}\n\nexport async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {\n  if (!inDailyMarketStudyWindow(now)) {\n    return { ok: true, skipped: true, reason: 'outside_end_of_day_market_review_window' };\n  }\n  const dayKey = newYorkDateKey(now);\n  if (lastDailyStudyDateKey === dayKey) {\n    return { ok: true, skipped: true, reason: 'end_of_day_market_review_already_completed', dayKey };\n  }\n  const transactionSync = await transactionSyncTick(nextUrl, secret);\n  const tradeReview = await engineLearningBackfillTick(nextUrl, secret, {\n    now,\n    force: true,\n    source: 'end-of-day-market-review',\n  });\n  const results = [];\n  for (const engine of ['ict', 'ppr']) {\n    const runId = makeRunId();\n    results.push(await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {\n      source: 'end-of-day-market-review', runId, scanMode: 'daily_study', pairs: [], engine,\n    }, `[END_OF_DAY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));\n  }\n  const studiesOk = results.every((result) => result.ok);\n  const learning = studiesOk && tradeReview.ok\n    ? await post(nextUrl, secret, '/api/cron/edge-learning-refresh', {\n        source: 'end-of-day-market-review', dayKey,\n      }, `[EDGE_LEARNING][dayKey=${dayKey}]`)\n    : { ok: false, skipped: true, reason: studiesOk ? 'trade_review_failed' : 'end_of_day_market_study_failed' };\n  const ok = transactionSync.ok && tradeReview.ok && studiesOk && learning.ok;\n  if (ok) lastDailyStudyDateKey = dayKey;\n  return { ok, dayKey, transactionSync, tradeReview, accountAccuracy: tradeReview, results, learning };\n}\n",
       );
     }
     if (!out.includes('lastDailyStudyDateKey = null;')) {
@@ -322,7 +328,7 @@ patchFile(
     'inDailyMarketStudyWindow',
     'export async function dailyMarketStudyTick',
     "scanMode: 'daily_study'",
-    'study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET',
+    'endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET',
   ],
 );
 
