@@ -45,7 +45,7 @@ All tables use deny-all RLS. Application access is server-side through `SUPABASE
 1. `/api/cron/auto-ai-trading-extended` sends each successful engine payload to `recordSignalLearningCycle()`.
 2. The service stores candidate observations and pair price snapshots.
 3. Pending observations are graded at 15, 30, 60, and 120 minutes when later snapshots are available.
-4. The Railway scheduler runs `/api/cron/edge-learning-refresh` after the weekday daily market study.
+4. At 17:30 ET on weekdays, the Railway scheduler reconciles completed broker trades, finalizes MFE/MAE/realized-R learning, runs the end-of-day market-movement study, then refreshes Edge Intelligence.
 5. Deterministic pair profiles are built from the 60-minute outcome views.
 6. Claude adds a bounded narrative when `ANTHROPIC_API_KEY` is configured.
 7. New `pair_ai_playbooks` versions remain display/shadow-only.

@@ -4,7 +4,7 @@ import { etParts } from './ictTime.js';
 export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
 export const AUTO_AI_EXECUTION_WINDOW = { startMin: 150, endMin: 600 }; // entries: 02:30–10:00 ET
 export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 135, endMin: 1050 }; // 02:15–17:30 ET
-export const DAILY_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, before entries
+export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1050, endMin: 1080 }; // 17:30–18:00 ET, end-of-day market + trade review
 
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
 
@@ -137,7 +137,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] study=02:00_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +
+    `[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +
     `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
     `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
     `management=02:15–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
@@ -155,7 +155,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
   void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
   // Do not run active management immediately on process startup. The first close-capable review occurs on the five-minute scheduler cadence.
   void transactionSyncTick(nextUrl, secret);
-  void engineLearningBackfillTick(nextUrl, secret, { force: true });
+  // Trade learning is intentionally finalized with the 17:30 ET end-of-day review, not on arbitrary restarts.
   void dailyMarketStudyTick(nextUrl, secret);
   return {
     started: true,
@@ -203,13 +203,13 @@ async function transactionSyncTick(nextUrl, secret) {
   return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');
 }
 
-export async function engineLearningBackfillTick(nextUrl, secret, { now = new Date(), force = false } = {}) {
+export async function engineLearningBackfillTick(nextUrl, secret, { now = new Date(), force = false, source = 'end-of-day-market-review' } = {}) {
   const dayKey = newYorkDateKey(now);
   if (!force && lastEngineLearningBackfillDateKey === dayKey) {
     return { ok: true, skipped: true, reason: 'engine_learning_backfill_already_completed', dayKey };
   }
   const result = await post(nextUrl, secret, '/api/cron/engine-learning-backfill', {
-    source: force ? 'railway-startup' : 'daily-market-study',
+    source,
     tradingDays: 7,
     calendarLookbackDays: 14,
   }, `[ENGINE_LEARNING_BACKFILL][dayKey=${dayKey}]`);
@@ -225,31 +225,51 @@ function newYorkDateKey(date = new Date()) {
 
 export async function dailyMarketStudyTick(nextUrl, secret, now = new Date()) {
   if (!inDailyMarketStudyWindow(now)) {
-    return { ok: true, skipped: true, reason: 'outside_daily_market_study_window' };
+    return { ok: true, skipped: true, reason: 'outside_end_of_day_market_review_window' };
   }
   const dayKey = newYorkDateKey(now);
   if (lastDailyStudyDateKey === dayKey) {
-    return { ok: true, skipped: true, reason: 'daily_market_study_already_completed', dayKey };
+    return { ok: true, skipped: true, reason: 'end_of_day_market_review_already_completed', dayKey };
   }
+
+  // First capture the authoritative broker close events, then reconcile every
+  // completed broker trade into actual_trade_lifecycles so realized R, MFE/MAE,
+  // failure reasons and post-trade learning are finalized before the market review.
+  const transactionSync = await transactionSyncTick(nextUrl, secret);
+  const tradeReview = await engineLearningBackfillTick(nextUrl, secret, {
+    now,
+    force: true,
+    source: 'end-of-day-market-review',
+  });
+
+  // Review the completed session's market movement after trade outcomes are known.
+  // OANDA getCandles excludes incomplete candles by default, so the D/H4/H1/M15/M5
+  // study reflects completed movement rather than the newly-opened rollover candle.
   const results = [];
   for (const engine of ['ict', 'ppr']) {
     const runId = makeRunId();
     results.push(await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {
-      source: 'railway-scheduler', runId, scanMode: 'daily_study', pairs: [], engine,
-    }, `[DAILY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));
+      source: 'end-of-day-market-review', runId, scanMode: 'daily_study', pairs: [], engine,
+    }, `[END_OF_DAY_STUDY][${engine.toUpperCase()}][runId=${runId}]`));
   }
   const studiesOk = results.every((result) => result.ok);
-  const learning = studiesOk
+  const learning = studiesOk && tradeReview.ok
     ? await post(nextUrl, secret, '/api/cron/edge-learning-refresh', {
-        source: 'railway-scheduler', dayKey,
+        source: 'end-of-day-market-review', dayKey,
       }, `[EDGE_LEARNING][dayKey=${dayKey}]`)
-    : { ok: false, skipped: true, reason: 'daily_market_study_failed' };
-  const accountAccuracy = studiesOk
-    ? await engineLearningBackfillTick(nextUrl, secret, { now, force: true })
-    : { ok: false, skipped: true, reason: 'daily_market_study_failed' };
-  const ok = studiesOk && learning.ok && accountAccuracy.ok;
+    : { ok: false, skipped: true, reason: studiesOk ? 'trade_review_failed' : 'end_of_day_market_study_failed' };
+
+  const ok = transactionSync.ok && tradeReview.ok && studiesOk && learning.ok;
   if (ok) lastDailyStudyDateKey = dayKey;
-  return { ok, dayKey, results, learning, accountAccuracy };
+  return {
+    ok,
+    dayKey,
+    transactionSync,
+    tradeReview,
+    accountAccuracy: tradeReview,
+    results,
+    learning,
+  };
 }
 
 function applyReturnedWatchState(engine, returned, scanMode, scannedPairs) {

@@ -21,9 +21,9 @@ test('ICT scan logs expose every exact rejection reason without oversized payloa
   assert.equal(patchIctRejectionDiagnostics(patched), patched);
 });
 
-test('scheduler diagnostic matches the 02:00 study and 02:30 entry windows', () => {
+test('scheduler diagnostic matches the 17:30 review and 02:30 entry windows', () => {
   const patched = patchSchedulerWindowDiagnostic(schedulerSource);
-  assert.match(patched, /study=02:00_ET/);
+  assert.match(patched, /endOfDayReview=17:30_ET/);
   assert.match(patched, /entries=02:30–10:00_ET/);
   assert.doesNotMatch(patched, /PPR_03:00\/ICT_05:00/);
   assert.equal(patchSchedulerWindowDiagnostic(patched), patched);
