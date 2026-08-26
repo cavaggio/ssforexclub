@@ -62,7 +62,7 @@ const currentFingerprint = `export function setupFingerprint(signal = {}, accoun
   const event = firstText(liquidity.liquiditySweep?.sweptSource, liquidity.liquiditySweep?.subtype, structure.choch?.direction, structure.bos?.direction, 'none');
   const fingerprint = [accountId || 'default', signal.pair || signal.instrument || 'unknown', signal.direction || 'none', signal.session?.name || signal.session || 'none', rangeHigh ?? 'na', rangeLow ?? 'na', event, triggerTime || 'na'];
   const ictCycleId = firstText(entryAuthorization.cycleId, signal.entryCycleId);
-  if (ictCycleId) fingerprint.push(\`cycle:${ictCycleId}\`);
+  if (ictCycleId) fingerprint.push(\`cycle:\${ictCycleId}\`);
   return fingerprint.join('|');
 }`;
 
