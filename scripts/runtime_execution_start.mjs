@@ -5,7 +5,6 @@ import { applyIctRrFloorRuntime } from './apply_ict_rr_floor_runtime.mjs';
 import { applyManualTargetRiskRuntime } from './apply_manual_target_risk_runtime.mjs';
 import { prepareEngineTradeLearningCompatibility } from './prepare_engine_trade_learning_compat.mjs';
 import { applyEngineTradeLearningPatch } from './apply_engine_trade_learning.mjs';
-import { applyAccountEngineIsolation } from './apply_account_engine_isolation.mjs';
 import { restoreV3WatchlistCompatibility } from './restore_v3_watchlist_compat.mjs';
 import { prepareActualTradeLearningCompatibility } from './prepare_actual_trade_learning_compat.mjs';
 import { applyActualTradeLearningView } from './apply_actual_trade_learning_view.mjs';
@@ -164,6 +163,10 @@ await ensureSignalForensicsRuntime();
 await import('./cleanup_signal_forensics_alignment.mjs');
 applyEngineTradeLearningPatch(ROOT);
 prepareActualTradeLearningCompatibility(ROOT);
+// The compatibility prep above may rewrite apply_account_engine_isolation.mjs.
+// Load it only after that rewrite so a brand-new Railway container executes the
+// prepared 17:30-compatible module on its first boot instead of a stale static import.
+const { applyAccountEngineIsolation } = await import(`./apply_account_engine_isolation.mjs?runtime-prepared=${Date.now()}`);
 applyAccountEngineIsolation(ROOT);
 restoreV3WatchlistCompatibility(ROOT);
 applyActualTradeLearningView(ROOT);
