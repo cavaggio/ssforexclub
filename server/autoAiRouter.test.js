@@ -64,6 +64,37 @@ test('routing: all engines scan from 02:00 ET without submitting early orders', 
     assert.deepEqual(calls.map((call) => call.engine), [engine]);
     assert.equal(calls[0].args.executionAllowed, false);
     assert.equal(result.executionAllowed, false);
+    assert.equal(result.qualificationAllowed, false);
+    assert.equal(result.qualified, 0);
+  }
+});
+
+test('pre-entry scans convert would-be qualified setups into watch-only candidates', async () => {
+  for (const engine of ENGINES) {
+    const injected = async (args) => ({
+      scanned: 3,
+      qualified: 2,
+      watching: 1,
+      rejectedCount: 0,
+      executed: [],
+      skipped: [{ pair: 'EUR_USD', reason: args.executionBlockedReason }],
+      hotPairs: ['EUR_USD', 'GBP_USD'],
+    });
+    const result = await runAutoForUser({
+      client: { accountId: 'A', environment: 'live' },
+      engine,
+      now: PRE_ENTRY_SCAN_WINDOW,
+      runIct: engine === 'ict' ? injected : null,
+      runV3: engine === 'v3' ? injected : null,
+      runPpr: engine === 'ppr' ? injected : null,
+    });
+    assert.equal(result.qualificationAllowed, false);
+    assert.equal(result.preOpenScanOnly, true);
+    assert.equal(result.preOpenPotentialQualified, 2);
+    assert.equal(result.qualified, 0);
+    assert.equal(result.watching, 3);
+    assert.deepEqual(result.executed, []);
+    assert.deepEqual(result.skipped, []);
   }
 });
 
@@ -77,13 +108,13 @@ test('V3, PPR, and ICT all begin execution at 02:30 ET', async () => {
   }
 });
 
-test('02:00 ET daily study can never submit an order', async () => {
+test('17:30 ET end-of-day study can never submit an order', async () => {
   for (const engine of ['ict', 'ppr']) {
     const calls = [];
     const result = await runAutoForUser({
       client: { accountId: 'A', environment: 'live' },
       engine,
-      now: new Date('2026-07-13T06:05:00Z'),
+      now: new Date('2026-07-13T21:35:00Z'),
       scanMode: 'daily_study',
       ...runners(calls),
     });
@@ -91,6 +122,7 @@ test('02:00 ET daily study can never submit an order', async () => {
     assert.equal(calls[0].args.executionAllowed, false);
     assert.equal(calls[0].args.executionBlockedReason, 'daily_market_study_never_submits_orders');
     assert.equal(result.executionAllowed, false);
+    assert.equal(result.qualificationAllowed, false);
   }
 });
 

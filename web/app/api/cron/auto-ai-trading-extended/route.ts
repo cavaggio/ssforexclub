@@ -529,7 +529,7 @@ export async function POST(req: Request) {
     lateEntryPairs: aggregateLate,
     scanWindow: '02:00-10:00 America/New_York, Monday-Friday',
     executionWindow: 'V3/PPR/ICT 02:30-10:00 America/New_York, Monday-Friday',
-    dailyStudyWindow: '02:00-02:30 America/New_York, Monday-Friday; execution remains blocked during study',
+    dailyStudyWindow: '17:30-18:00 America/New_York, Monday-Friday; end-of-day market movement + completed-trade review',
     results,
   });
 }

@@ -102,5 +102,45 @@ export async function runAutoForUser({
   const runner = await resolveRunner(selectedEngine, injectedRunner);
   const result = await runner(args);
 
-  return { engine: selectedEngine, executionAllowed, ...result };
+  if (!dailyStudy && !executionAllowed) {
+    const potentialQualified = Number.isFinite(Number(result?.qualified))
+      ? Math.max(0, Number(result.qualified))
+      : 0;
+    const existingWatching = Number.isFinite(Number(result?.watching))
+      ? Math.max(0, Number(result.watching))
+      : Number.isFinite(Number(result?.watchCount))
+        ? Math.max(0, Number(result.watchCount))
+        : Number.isFinite(Number(result?.qualityWatch))
+          ? Math.max(0, Number(result.qualityWatch))
+          : 0;
+    const scanned = Number.isFinite(Number(result?.scanned))
+      ? Math.max(0, Number(result.scanned))
+      : existingWatching + potentialQualified;
+    const blockedReason = String(args.executionBlockedReason || '');
+    const skipped = Array.isArray(result?.skipped)
+      ? result.skipped.filter((item) => String(item?.reason || '') !== blockedReason)
+      : [];
+
+    return {
+      engine: selectedEngine,
+      ...result,
+      qualified: 0,
+      watching: Math.min(scanned || existingWatching + potentialQualified, existingWatching + potentialQualified),
+      executed: [],
+      skipped,
+      executionAllowed: false,
+      qualificationAllowed: false,
+      preOpenScanOnly: true,
+      preOpenPotentialQualified: potentialQualified,
+      v3Promoted: Object.hasOwn(result || {}, 'v3Promoted') ? 0 : result?.v3Promoted,
+      independentV3Qualified: Object.hasOwn(result || {}, 'independentV3Qualified') ? 0 : result?.independentV3Qualified,
+    };
+  }
+
+  return {
+    engine: selectedEngine,
+    ...result,
+    executionAllowed,
+    qualificationAllowed: !dailyStudy && executionAllowed,
+  };
 }
