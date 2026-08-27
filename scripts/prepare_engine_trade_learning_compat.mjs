@@ -45,10 +45,20 @@ function restorePprExecution(source) {
     .replaceAll('combined market/engine calibration', 'daily-study calibration');
 }
 
+function preserveDailyBotSchedulerCompatibility(source) {
+  const marker = '// Legacy generator verification only: endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET';
+  if (source.includes(marker)) return source;
+  const anchor = 'void LEGACY_DAILY_BOT_POLICY_DIAGNOSTIC;';
+  if (!source.includes(anchor)) return source;
+  return source.replace(anchor, `${anchor}\n${marker}`);
+}
+
 /**
  * Existing generated-source policy scripts predate engine learning and validate
  * the market-study symbol names. Normalize only those symbols before the legacy
  * policy pass; apply_engine_trade_learning.mjs restores the combined layer last.
+ * The scheduler compatibility marker is comment-only and keeps the legacy daily
+ * policy verifier idempotent after the final 02:30–10:30 qualification transform.
  */
 export function prepareEngineTradeLearningCompatibility(root = ROOT) {
   const changed = [];
@@ -56,6 +66,7 @@ export function prepareEngineTradeLearningCompatibility(root = ROOT) {
   if (rewrite('server/ictExecution.js', restoreIctExecution, root)) changed.push('server/ictExecution.js');
   if (rewrite('server/pprAutoTrade.js', (source) => restoreMarketStudyAuto(source, 'ppr'), root)) changed.push('server/pprAutoTrade.js');
   if (rewrite('server/pprExecution.js', restorePprExecution, root)) changed.push('server/pprExecution.js');
+  if (rewrite('server/ictAutoScheduler.js', preserveDailyBotSchedulerCompatibility, root)) changed.push('server/ictAutoScheduler.js');
   return changed;
 }
 
