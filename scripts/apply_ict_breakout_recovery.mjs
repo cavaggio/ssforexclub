@@ -144,3 +144,6 @@ await import('./apply_ict_impulse_lifecycle.mjs');
 // legacy source generators cannot reintroduce universal PO3/D1-H4 bottlenecks or
 // the retired 02:00-10:00 live window during Railway/Vercel prestart.
 await import('./apply_ict_qualification_contract.mjs');
+
+// Keep otherwise valid, waitable ICT candidates on the faster watch cadence.
+await import('./apply_ict_watch_state_qualification.mjs');
