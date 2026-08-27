@@ -21,6 +21,7 @@ test('each active OANDA account reconciles actual trades before forward studies'
   assert.match(route, /reconcileActualTradesForAccount\(\{/);
   assert.match(route, /connectionId: account\.id/);
   assert.match(route, /brokerAccountId: account\.accountId/);
+  assert.match(route, /tradingDays,/);
   assert.match(route, /for \(const engine of ENGINES as readonly Engine\[\]\)/);
   assert.ok(route.indexOf('reconcileActualTradesForAccount') < route.indexOf('backfillEngineLearningWindow({'));
 });
@@ -44,6 +45,16 @@ test('nightly reconciliation is lifecycle-backed and legacy trade logs are repai
     queueMigration.match(/create or replace view public\.reconcilable_oanda_trade_openings as[\s\S]*?comment on view public\.reconcilable_oanda_trade_openings/)?.[0] || '',
     /to_jsonb\(/,
   );
+});
+
+test('actual broker reconciliation uses seven New York trading days with protected exceptions', () => {
+  assert.match(service, /lastNewYorkTradingDayKeys/);
+  assert.match(service, /tradingDays = 7/);
+  assert.match(service, /tradingDaySet\.has\(key\)/);
+  assert.match(service, /state\.eq\.open/);
+  assert.match(service, /trade_log_close_pending_oanda_reconciliation/);
+  assert.doesNotMatch(service, /calendarLookbackDays = 14/);
+  assert.match(route, /calendar lookback is only a discovery buffer used to locate seven executed days/);
 });
 
 test('actual outcomes are primary while forward path evidence remains supplemental', () => {
