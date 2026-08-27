@@ -248,13 +248,14 @@ export function advanceIctMarketMakerCycle({
       },
     };
   }
-  if (!direction || observation?.htfAligned !== true) {
+  const studiedReversalDirection = observation?.studiedReversalDirection === true;
+  if (!direction || (observation?.htfAligned !== true && !studiedReversalDirection)) {
     return {
       cycle: context?.cycle ?? null,
       changed: false,
       entryAuthorization: {
         ...baseAuthorization,
-        reason: 'Daily and H4 do not provide an aligned market-maker direction.',
+        reason: 'No valid continuation alignment or current-day studied reversal direction is available.',
       },
     };
   }

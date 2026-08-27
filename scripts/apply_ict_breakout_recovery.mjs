@@ -139,3 +139,11 @@ console.log('ICT breakout recovery applied: 10-minute fresh trigger retention, s
 // Apply the additive H1 impulse lifecycle guard after all existing ICT runtime
 // transforms so it cannot change or be overwritten by the earlier strategy patches.
 await import('./apply_ict_impulse_lifecycle.mjs');
+
+// Final fail-loud timing/qualification contract. This intentionally runs last so
+// legacy source generators cannot reintroduce universal PO3/D1-H4 bottlenecks or
+// the retired 02:00-10:00 live window during Railway/Vercel prestart.
+await import('./apply_ict_qualification_contract.mjs');
+
+// Keep otherwise valid, waitable ICT candidates on the faster watch cadence.
+await import('./apply_ict_watch_state_qualification.mjs');

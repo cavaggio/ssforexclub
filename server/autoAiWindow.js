@@ -1,13 +1,12 @@
 /**
  * Engine-aware Auto AI scan and execution windows.
  *
- * All engines begin scanning at 02:00 ET so they can build watch state before
- * entries are allowed. The 02:00–02:29 ET period is study/scan-only; new orders
- * may be submitted from 02:30 ET through 09:59 ET.
+ * The current-day market study runs at 02:00 ET. Live scanning and new-order
+ * execution use one shared 02:30–10:30 ET weekday window for every engine.
  */
 export const AUTO_AI_SCAN_WINDOW = Object.freeze({
-  startMin: 120,
-  endMin: 600,
+  startMin: 150,
+  endMin: 630,
   timeZone: 'America/New_York',
   weekdaysOnly: true,
 });
@@ -15,19 +14,19 @@ export const AUTO_AI_SCAN_WINDOW = Object.freeze({
 export const AUTO_AI_EXECUTION_WINDOWS = Object.freeze({
   v3: Object.freeze({
     startMin: 150,
-    endMin: 600,
+    endMin: 630,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
   }),
   ppr: Object.freeze({
     startMin: 150,
-    endMin: 600,
+    endMin: 630,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
   }),
   ict: Object.freeze({
     startMin: 150,
-    endMin: 600,
+    endMin: 630,
     timeZone: 'America/New_York',
     weekdaysOnly: true,
   }),
@@ -87,7 +86,7 @@ export function inAutoAiWindow(date = new Date()) {
 }
 
 export function autoAiWindowReason() {
-  return 'outside_auto_ai_scan_window_02:00-10:00_ET_weekdays';
+  return 'outside_auto_ai_scan_window_02:30-10:30_ET_weekdays';
 }
 
 export function autoAiExecutionWindowReason(engine = 'v3') {

@@ -51,9 +51,6 @@ export function evaluateIctCorrectiveGate({
   const failures = [];
   const fail = (code, reason) => failures.push({ code, reason });
 
-  if (!wanted || d1 !== wanted || h4 !== wanted || timeframeBias?.d1H4Aligned === false) {
-    fail(ICT_FAILURE_CODES.HTF_DIRECTION_NOT_ALIGNED, 'D1 and H4 must agree with the intended trade direction.');
-  }
   if (authorization?.ready !== true || !authorization?.cycleId) {
     fail(ICT_FAILURE_CODES.MISSING_M5_AUTHORIZATION, 'A concrete ICT authorization mode and stable cycle ID are required.');
   }
@@ -62,6 +59,9 @@ export function evaluateIctCorrectiveGate({
   }
 
   if (family === 'continuation') {
+    if (!wanted || d1 !== wanted || h4 !== wanted || timeframeBias?.d1H4Aligned === false) {
+      fail(ICT_FAILURE_CODES.HTF_DIRECTION_NOT_ALIGNED, 'Continuation requires D1 and H4 to agree with the intended trade direction.');
+    }
     const transitionAligned = h1Transition?.ready === true && normalizeDirection(h1Transition?.bias) === wanted;
     const momentumAligned = h1Momentum?.currentAligned === true ||
       h1Momentum?.activeAligned === true || h1Momentum?.aligned === true;

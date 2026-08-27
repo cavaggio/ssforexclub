@@ -12,18 +12,21 @@ import {
   inAutoAiExecutionWindow,
   inAutoAiWindow,
   inDailyMarketStudyWindow,
+  inMorningMarketStudyWindow,
   stopAutoAiScheduler,
   updateWatchStateFromCronResponse,
 } from './ictAutoScheduler.js';
 
-test('auto-AI scan window: NY weekday 02:00–10:00 ET is open', () => {
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:00:00Z')), true); // 02:00 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET Tue
+test('auto-AI live scan window: NY weekday 02:30–10:30 ET is open', () => {
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:29:00Z')), false); // 02:29 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:30:00Z')), true); // 02:30 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:29:00Z')), true); // 10:29 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:30:00Z')), false); // 10:30 ET Tue
 });
 
-test('auto-AI scan window: before 02:00 / at-or-after 10:00 ET is closed', () => {
+test('auto-AI live scan window remains closed outside 02:30–10:30 ET', () => {
   assert.equal(inAutoAiWindow(new Date('2026-06-09T05:59:00Z')), false); // 01:59 ET Tue
-  assert.equal(inAutoAiWindow(new Date('2026-06-09T14:00:00Z')), false); // 10:00 ET Tue
+  assert.equal(inAutoAiWindow(new Date('2026-06-09T06:15:00Z')), false); // morning-study period
   assert.equal(inAutoAiWindow(new Date('2026-06-09T18:00:00Z')), false); // 14:00 ET Tue
 });
 
@@ -35,20 +38,28 @@ test('auto-AI scan window: weekends are closed even mid-window', () => {
 test('active exit management runs 02:15–17:30 ET on weekdays', () => {
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T06:14:00Z')), false); // 02:14 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T06:15:00Z')), true); // 02:15 ET Tue
-  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET Tue
+  assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T14:29:00Z')), true); // 10:29 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:29:00Z')), true); // 17:29 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-09T21:30:00Z')), false); // 17:30 ET Tue
   assert.equal(inActiveTradeManagementWindow(new Date('2026-06-06T16:00:00Z')), false); // Saturday
 });
 
-test('new entries begin at 02:30 ET and end at 10:00 ET', () => {
+test('new entries begin at 02:30 ET and end at 10:30 ET', () => {
   assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T06:29:00Z')), false); // 02:29 ET
   assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T06:30:00Z')), true); // 02:30 ET
-  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T13:59:00Z')), true); // 09:59 ET
-  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T14:00:00Z')), false); // 10:00 ET
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T14:29:00Z')), true); // 10:29 ET
+  assert.equal(inAutoAiExecutionWindow(new Date('2026-06-09T14:30:00Z')), false); // 10:30 ET
 });
 
-test('end-of-day market and trade review runs at 17:30–18:00 ET on weekdays', () => {
+test('current-day market study runs at 02:00–02:30 ET on weekdays', () => {
+  assert.equal(inMorningMarketStudyWindow(new Date('2026-06-09T05:59:00Z')), false); // 01:59 ET
+  assert.equal(inMorningMarketStudyWindow(new Date('2026-06-09T06:00:00Z')), true); // 02:00 ET
+  assert.equal(inMorningMarketStudyWindow(new Date('2026-06-09T06:29:00Z')), true); // 02:29 ET
+  assert.equal(inMorningMarketStudyWindow(new Date('2026-06-09T06:30:00Z')), false); // 02:30 ET
+  assert.equal(inMorningMarketStudyWindow(new Date('2026-06-06T06:15:00Z')), false); // Saturday
+});
+
+test('end-of-day market and trade review remains separate at 17:30–18:00 ET', () => {
   assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:29:00Z')), false); // 17:29 ET
   assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:30:00Z')), true); // 17:30 ET
   assert.equal(inDailyMarketStudyWindow(new Date('2026-06-09T21:59:00Z')), true); // 17:59 ET
@@ -56,7 +67,7 @@ test('end-of-day market and trade review runs at 17:30–18:00 ET on weekdays', 
   assert.equal(inDailyMarketStudyWindow(new Date('2026-06-06T21:35:00Z')), false); // Saturday
 });
 
-test('auto-AI scheduler intervals include five-minute active exits and daily study checks', () => {
+test('auto-AI scheduler intervals include five-minute active exits and study checks', () => {
   assert.equal(AUTO_AI_FULL_SCAN_INTERVAL_MS, 120000);
   assert.equal(AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS, 60000);
   assert.equal(AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS, 30000);

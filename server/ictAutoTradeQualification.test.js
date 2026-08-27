@@ -16,13 +16,16 @@ const qualified = (over = {}) => ({
     ready: true,
     mode: 'initial_reversal_mss',
     cycleId: '2026-06-04:EUR_USD:bullish:h4_fvg:initial',
+    family: 'reversal',
+    strategy: 'reversal',
+    requiresMarketMakerActive: true,
   },
   marketMakerModel: { studyReady: true, stage: 'DISTRIBUTION_ACTIVE' },
   correctiveGate: { passed: true, decision: 'authorize', failureCodes: [] },
   ...over,
 });
 
-test('ICT Auto AI only attempts executable directional signals that satisfy the 93% confidence and R:R floors', () => {
+test('ICT Auto AI only attempts executable directional signals that satisfy confidence and R:R floors', () => {
   assert.equal(isIctAutoQualified(qualified({ confidence: 92, rr: 2.5 }), cfg), false);
   assert.equal(isIctAutoQualified(qualified(), cfg), true);
   assert.equal(isIctAutoQualified(qualified({ pair: 'GBP_USD', signal: 'sell', confidence: 96, rr: 2.52 }), cfg), true);
@@ -30,7 +33,7 @@ test('ICT Auto AI only attempts executable directional signals that satisfy the 
   assert.equal(isIctAutoQualified(qualified({ signal: 'none', confidence: 99, rr: 5.0 }), cfg), false);
 });
 
-test('confidence cannot bypass the central market-maker authorization or stale lower-timeframe impulse', () => {
+test('confidence cannot bypass strategy authorization, current-day study, or stale lower-timeframe impulse', () => {
   assert.equal(isIctAutoQualified(qualified({
     confidence: 99,
     entryAuthorization: { ready: false, cycleId: null },
@@ -45,6 +48,27 @@ test('confidence cannot bypass the central market-maker authorization or stale l
   assert.equal(isIctAutoQualified(qualified({ confidence: 99, correctiveGate: { passed: false, decision: 'reject' } }), cfg), false);
 });
 
+test('direct continuation qualifies without forcing the reversal PO3 cycle to DISTRIBUTION_ACTIVE', () => {
+  assert.equal(isIctAutoQualified(qualified({
+    marketMakerModel: { studyReady: true, stage: 'HTF_KEY_TAPPED' },
+    entryAuthorization: {
+      ready: true,
+      mode: 'm5_continuation_breakout',
+      cycleId: 'direct:bullish:m5_continuation_breakout:1.1:2026-06-04T15:00:00Z',
+      family: 'continuation',
+      strategy: 'continuation_breakout',
+      requiresMarketMakerActive: false,
+    },
+    correctiveGate: { passed: true, decision: 'authorize', family: 'continuation', failureCodes: [] },
+  }), cfg), true);
+});
+
+test('PO3-dependent reversal remains blocked until DISTRIBUTION_ACTIVE', () => {
+  assert.equal(isIctAutoQualified(qualified({
+    marketMakerModel: { studyReady: true, stage: 'HTF_KEY_TAPPED' },
+  }), cfg), false);
+});
+
 test('an activated parent cycle can authorize a fresh M5 continuation entry', () => {
   assert.equal(isIctAutoQualified(qualified({
     continuationBreakout: {
@@ -56,6 +80,9 @@ test('an activated parent cycle can authorize a fresh M5 continuation entry', ()
       ready: true,
       mode: 'm5_continuation_breakout',
       cycleId: '2026-06-04:EUR_USD:bullish:activated:m5-breakout',
+      family: 'continuation',
+      strategy: 'market_maker_continuation',
+      requiresMarketMakerActive: true,
     },
   }), cfg), true);
 });
