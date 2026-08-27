@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,7 +66,10 @@ export function prepareEngineTradeLearningCompatibility(root = ROOT) {
   if (rewrite('server/ictExecution.js', restoreIctExecution, root)) changed.push('server/ictExecution.js');
   if (rewrite('server/pprAutoTrade.js', (source) => restoreMarketStudyAuto(source, 'ppr'), root)) changed.push('server/pprAutoTrade.js');
   if (rewrite('server/pprExecution.js', restorePprExecution, root)) changed.push('server/pprExecution.js');
-  if (rewrite('server/ictAutoScheduler.js', restoreDailyBotSchedulerCompatibility, root)) changed.push('server/ictAutoScheduler.js');
+  const schedulerPath = resolve(root, 'server/ictAutoScheduler.js');
+  if (existsSync(schedulerPath) && rewrite('server/ictAutoScheduler.js', restoreDailyBotSchedulerCompatibility, root)) {
+    changed.push('server/ictAutoScheduler.js');
+  }
   return changed;
 }
 
