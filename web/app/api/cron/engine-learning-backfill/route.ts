@@ -85,13 +85,13 @@ export async function POST(req: Request) {
         accountsProcessed += 1;
 
         // Actual OANDA lifecycle reconciliation owns win/loss/P&L attribution.
-        // It intentionally studies every recoverable historical opening for this
-        // exact account/engine, including legacy pairs no longer on a watchlist.
+        // It uses the requested New York trading-day window (normally seven),
+        // while always retaining genuinely open and close-pending broker trades.
         const actual = await reconcileActualTradesForAccount({
           userId: row.user_id,
           connectionId: account.id,
           brokerAccountId: account.accountId,
-          calendarLookbackDays,
+          tradingDays,
           now: startedAt,
         });
         actualOpeningsConsidered += actual.openingsConsidered;
@@ -110,7 +110,8 @@ export async function POST(req: Request) {
         });
 
         // Keep the existing 15/30/60/120-minute forward market-path study as a
-        // separate execution-quality layer for each engine/account.
+        // separate execution-quality layer for each engine/account. Its calendar
+        // lookback is only a discovery buffer used to locate seven executed days.
         for (const engine of ENGINES as readonly Engine[]) {
           const result = await backfillEngineLearningWindow({
             userId: row.user_id,
