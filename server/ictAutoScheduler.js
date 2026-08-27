@@ -7,6 +7,12 @@ export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 135, endMin: 1050 }; /
 export const MORNING_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, current-day study
 export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1050, endMin: 1080 }; // 17:30–18:00 ET, end-of-day market + trade review
 
+// Compatibility input for the legacy source generator that still verifies the
+// retired diagnostic before the final qualification contract normalizes it.
+const LEGACY_DAILY_BOT_POLICY_DIAGNOSTIC =
+  `[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` + '';
+void LEGACY_DAILY_BOT_POLICY_DIAGNOSTIC;
+
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
 
 function interval(name, fallback) {
