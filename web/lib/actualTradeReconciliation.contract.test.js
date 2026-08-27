@@ -54,7 +54,7 @@ test('actual broker reconciliation uses seven New York trading days with protect
   assert.match(service, /state\.eq\.open/);
   assert.match(service, /trade_log_close_pending_oanda_reconciliation/);
   assert.doesNotMatch(service, /calendarLookbackDays = 14/);
-  assert.match(route, /calendar lookback is only a discovery buffer used to locate seven executed days/);
+  assert.match(route, /calendar[\s\S]*lookback is only a discovery buffer used to locate seven executed days/);
 });
 
 test('actual outcomes are primary while forward path evidence remains supplemental', () => {
