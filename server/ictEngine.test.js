@@ -190,7 +190,7 @@ function mismatchedCandles() {
 test('timeframe: Daily and 4H must agree directionally', () => {
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: mismatchedCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
   assert.equal(r.signal, 'none');
-  assert.ok(r.rejectionReasons.some((x) => /Daily and 4H directional bias are not aligned/.test(x)));
+  assert.ok(r.rejectionReasons.some((x) => /Daily and 4H are not aligned for continuation and no current-day studied reversal direction is available/.test(x)));
 });
 
 test('timeframe: 5M cannot override a Daily/4H mismatch', () => {
