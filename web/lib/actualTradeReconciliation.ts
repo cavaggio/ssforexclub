@@ -14,6 +14,8 @@ export type ActualTradeReconciliationResult = {
   ok: boolean;
   userId: string;
   brokerAccountId: string;
+  tradingDaysRequested: number;
+  tradingDayKeys: string[];
   openingsConsidered: number;
   tradesFetched: number;
   tradesUpserted: number;
@@ -31,6 +33,49 @@ export type ActualTradeReconciliationResult = {
 };
 
 const MISSING_CODES = new Set(['42P01', '42703', 'PGRST205', 'PGRST204']);
+const NY_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const NY_WEEKDAY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short',
+});
+
+function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.floor(parsed)));
+}
+
+function newYorkDateKey(value: unknown): string | null {
+  const date = value instanceof Date ? value : new Date(String(value || ''));
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = NY_DATE_FORMATTER.formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return values.year && values.month && values.day
+    ? `${values.year}-${values.month}-${values.day}`
+    : null;
+}
+
+export function lastNewYorkTradingDayKeys(now = new Date(), tradingDays = 7): string[] {
+  const requested = boundedInteger(tradingDays, 7, 1, 30);
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const maxCalendarDays = requested * 4 + 14;
+  for (let offset = 0; offset <= maxCalendarDays && keys.length < requested; offset += 1) {
+    const candidate = new Date(now.getTime() - offset * 86_400_000);
+    const key = newYorkDateKey(candidate);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const weekday = NY_WEEKDAY_FORMATTER.format(candidate);
+    if (weekday === 'Sat' || weekday === 'Sun') continue;
+    keys.push(key);
+  }
+  return keys;
+}
 
 function messageOf(error: unknown): string {
   if (!error) return '';
@@ -139,19 +184,24 @@ export async function reconcileActualTradesForAccount({
   userId,
   connectionId,
   brokerAccountId,
-  calendarLookbackDays = 14,
+  tradingDays = 7,
   now = new Date(),
 }: {
   userId: string;
   connectionId: string;
   brokerAccountId: string;
-  calendarLookbackDays?: number;
+  tradingDays?: number;
   now?: Date;
 }): Promise<ActualTradeReconciliationResult> {
+  const requestedTradingDays = boundedInteger(tradingDays, 7, 1, 30);
+  const tradingDayKeys = lastNewYorkTradingDayKeys(now, requestedTradingDays);
+  const tradingDaySet = new Set(tradingDayKeys);
   const baseResult: ActualTradeReconciliationResult = {
     ok: false,
     userId,
     brokerAccountId,
+    tradingDaysRequested: requestedTradingDays,
+    tradingDayKeys,
     openingsConsidered: 0,
     tradesFetched: 0,
     tradesUpserted: 0,
@@ -172,25 +222,43 @@ export async function reconcileActualTradesForAccount({
       return { ...baseResult, error: 'Active OANDA credentials were unavailable for this exact account connection.' };
     }
     const baseUrl = resolveBrokerBaseUrl(credentials.broker, credentials.environment);
-    const cutoff = new Date(now.getTime() - Math.max(1, Math.min(60, calendarLookbackDays)) * 86_400_000).toISOString();
     const supabase = getServerSupabase();
 
     // Deliberately no current-watchlist filter: historical trades remain attributed
     // to the engine/account that actually opened them, including legacy ICT pairs.
-    const { data: openingRows, error: openingError } = await supabase
-      .from('reconcilable_oanda_trade_openings')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('broker_account_id', brokerAccountId)
-      .gte('opened_at', cutoff)
-      .lte('opened_at', now.toISOString())
-      .order('opened_at', { ascending: true })
-      .limit(5000);
+    // The normal nightly window is the last N New York trading days. Genuine open
+    // trades and trade-log closes awaiting OANDA confirmation bypass the age limit.
+    const [{ data: openingRows, error: openingError }, { data: protectedRows, error: protectedError }] = await Promise.all([
+      supabase
+        .from('reconcilable_oanda_trade_openings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('broker_account_id', brokerAccountId)
+        .order('opened_at', { ascending: true })
+        .limit(5000),
+      supabase
+        .from('actual_trade_lifecycles')
+        .select('broker_trade_id,state,actual_outcome_source')
+        .eq('user_id', userId)
+        .eq('broker_account_id', brokerAccountId)
+        .or('state.eq.open,actual_outcome_source.eq.trade_log_close_pending_oanda_reconciliation')
+        .limit(5000),
+    ]);
     if (openingError) throw openingError;
+    if (protectedError) throw protectedError;
 
+    const protectedTradeIds = new Set(
+      (protectedRows || []).map((row) => String(row.broker_trade_id || '')).filter(Boolean),
+    );
     const openings = [...new Map(
       (openingRows || [])
         .filter((row) => row.broker_trade_id && row.engine)
+        .filter((row) => {
+          const brokerTradeId = String(row.broker_trade_id);
+          if (protectedTradeIds.has(brokerTradeId)) return true;
+          const key = newYorkDateKey(row.opened_at);
+          return Boolean(key && tradingDaySet.has(key));
+        })
         .map((row) => [String(row.broker_trade_id), row as JsonRecord]),
     ).values()];
     baseResult.openingsConsidered = openings.length;
