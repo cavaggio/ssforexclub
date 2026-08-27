@@ -97,7 +97,6 @@ export function enforceMinimumRRTarget({ pair, direction, entry, stopLoss, targe
 
   const risk = Math.abs(entryPrice - stopPrice);
   if (risk <= 0) return { ok: false, reason: 'Degenerate stop distance.' };
-
   const minimumTarget = bull
     ? entryPrice + (risk * floor)
     : entryPrice - (risk * floor);
@@ -261,8 +260,8 @@ function computeSetup({ dir, pair, currentPrice, atrPrice, fvgs, orderBlock, ote
 // bonuses for every confluence factor. Nothing here rejects — the hard gates do
 // that. Display and auto-execution qualify only at >=85.
 export function computeIctConfidence(p = {}) {
-  if (!p.htfAligned) return 0;
-  let c = 40;                                          // Daily+4H aligned (hard-gated base)
+  if (!p.htfAligned && !p.reversalContext) return 0;
+  let c = p.htfAligned ? 40 : 28;
   c += Math.round((p.killzoneQuality || 0) * 0.15);    // active killzone quality (~8–14)
   c += p.sweepAligned ? 12 : (p.drawPresent ? 6 : 0);  // liquidity sweep / draw on liquidity
   c += p.entryTrigger ? 8 : 0;                         // 5M entry-timing confirmation
@@ -318,8 +317,14 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
   const completedH1 = h1.filter((candle) => candle?.complete !== false);
   const h1TfBias = htfBias(completedH1.length ? completedH1 : h1);
   const htfAligned = dailyTfBias !== 'neutral' && dailyTfBias === h4TfBias;
-  const dir = htfAligned ? toLS(dailyTfBias) : null;
-  const want = sign(dir); // null when Daily/H4 not aligned
+  const studiedDirection = marketMakerContext?.studyReady === true
+    ? sign(marketMakerContext?.cycle?.direction)
+    : null;
+  // Continuation direction comes only from D1/H4 agreement. When they are split,
+  // the current-day study may supply direction only for the stricter reversal path.
+  const want = htfAligned ? dailyTfBias : studiedDirection;
+  const dir = toLS(want);
+  const reversalStudyDirection = !htfAligned && Boolean(want) && marketMakerContext?.studyReady === true;
   const analysisDirection = dir === 'long' ? 'buy' : dir === 'short' ? 'sell' : 'none';
   const h1Transition = classifyIctHourlyEntryTransition({
     h1Candles: h1,
@@ -459,6 +464,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
     pair,
     direction: want,
     htfAligned,
+    studiedReversalDirection: reversalStudyDirection,
     h1Aligned,
     h1MomentumAligned: h1Momentum.aligned === true,
     h1Momentum,
@@ -507,17 +513,19 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
 
   // ── HARD GATES — the ONLY rejecters ──────────────────────────────────────────
   const hardFails = [];
-  if (!htfAligned) hardFails.push('Hard gate: Daily and 4H directional bias are not aligned.');
-  if (htfAligned && !kz.inKillzone) hardFails.push('Hard gate: no active killzone/session.');
-  if (htfAligned && marketMakerContext?.studyReady !== true) {
+  if (!htfAligned && !reversalStudyDirection) {
+    hardFails.push('Hard gate: Daily and 4H are not aligned for continuation and no current-day studied reversal direction is available.');
+  }
+  if (want && !kz.inKillzone) hardFails.push('Hard gate: no active ICT killzone/session.');
+  if (want && marketMakerContext?.studyReady !== true) {
     hardFails.push('Hard gate: the required 02:00 ET ICT market study is not complete for the current New York trading day.');
   }
-  if (htfAligned && !entryAuthorization.ready) {
+  if (want && !entryAuthorization.ready) {
     hardFails.push(`Hard gate: central market-maker execution is not authorized — ${entryAuthorization.reason}`);
   }
-  if (htfAligned && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
+  if (want && !entryTrigger) hardFails.push('Hard gate: no 5M entry-timing trigger.');
   if (news.blocked) hardFails.push(`Hard gate: ${news.blockReason}`);
-  if (htfAligned && want && (!setup || !setup.ok)) hardFails.push(`Hard gate: ${setup?.reason || 'no executable 5M entry/target.'}`);
+  if (want && (!setup || !setup.ok)) hardFails.push(`Hard gate: ${setup?.reason || 'no executable 5M entry/target.'}`);
 
   // ── SOFT CONFLUENCE — scoring only; never rejects ────────────────────────────
   const confluence = [];
@@ -549,6 +557,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
   ].filter(Boolean).length;
   const confluenceScore = computeIctConfidence({
     htfAligned,
+    reversalContext: reversalStudyDirection,
     killzoneQuality: kz.inKillzone ? kz.killzoneQuality : 0,
     sweepAligned, drawPresent, entryTrigger, hourlyTransition: h1Transition.ready,
     continuationBreakout: continuationBreakout.ready,
@@ -598,10 +607,10 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
 
   // The persisted market-maker model opens the scalp window, while the order
   // still requires a current M5 impulse.
-  if (htfAligned && entryAuthorization.ready && !freshImpulse) {
+  if (want && entryAuthorization.ready && !freshImpulse) {
     hardFails.push('Hard gate: ICT entry cycle is authorized, but no fresh 5M execution trigger is present.');
   }
-  if (htfAligned && entryAuthorization.ready && !correctiveGate.passed) {
+  if (want && entryAuthorization.ready && !correctiveGate.passed) {
     for (const [index, reason] of correctiveGate.failureReasons.entries()) {
       hardFails.push(`Hard gate [${correctiveGate.failureCodes[index]}]: ${reason}`);
     }
@@ -690,7 +699,7 @@ export function analyzeICTPair({ pair, candles, peers = {}, now = new Date(), ma
 
   // Timing was calculated before qualification so stale/late entries cannot be promoted.
 
-  const ictBias = htfAligned ? dailyTfBias : 'neutral';
+  const ictBias = want || 'neutral';
   const ictNarrative = buildNarrative({ pair: instrumentMeta.displaySymbol, dir, bias, sweep, displacement, mss, choch, premiumDiscount, ote, kz, irlErl, signal, setupType });
 
   // ICT is fully independent — V3 is never consulted here. Any V3-vs-ICT
