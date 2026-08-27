@@ -1,9 +1,10 @@
 import { getRetraceWatchPairs } from './retraceWatchMode.js';
 import { etParts } from './ictTime.js';
 
-export const AUTO_AI_WINDOW = { startMin: 120, endMin: 600 }; // scan: 02:00–10:00 ET, Monday–Friday
-export const AUTO_AI_EXECUTION_WINDOW = { startMin: 150, endMin: 600 }; // entries: 02:30–10:00 ET
+export const AUTO_AI_WINDOW = { startMin: 150, endMin: 630 }; // live scan: 02:30–10:30 ET, Monday–Friday
+export const AUTO_AI_EXECUTION_WINDOW = { startMin: 150, endMin: 630 }; // entries: 02:30–10:30 ET
 export const ACTIVE_TRADE_MANAGEMENT_WINDOW = { startMin: 135, endMin: 1050 }; // 02:15–17:30 ET
+export const MORNING_MARKET_STUDY_WINDOW = { startMin: 120, endMin: 150 }; // 02:00–02:30 ET, current-day study
 export const DAILY_MARKET_STUDY_WINDOW = { startMin: 1050, endMin: 1080 }; // 17:30–18:00 ET, end-of-day market + trade review
 
 const AUTO_ENGINES = Object.freeze(['ict', 'v3', 'ppr']);
@@ -24,6 +25,7 @@ const engineWatchStates = Object.fromEntries(
   AUTO_ENGINES.map((engine) => [engine, { nearQualifiedPairs: new Set(), hotPairs: new Set() }]),
 );
 let timers = [];
+let lastMorningStudyDateKey = null;
 let lastDailyStudyDateKey = null;
 let lastEngineLearningBackfillDateKey = null;
 
@@ -35,6 +37,7 @@ function inWindow(date, window) {
 export function inAutoAiWindow(date = new Date()) { return inWindow(date, AUTO_AI_WINDOW); }
 export function inAutoAiExecutionWindow(date = new Date()) { return inWindow(date, AUTO_AI_EXECUTION_WINDOW); }
 export function inActiveTradeManagementWindow(date = new Date()) { return inWindow(date, ACTIVE_TRADE_MANAGEMENT_WINDOW); }
+export function inMorningMarketStudyWindow(date = new Date()) { return inWindow(date, MORNING_MARKET_STUDY_WINDOW); }
 export function inDailyMarketStudyWindow(date = new Date()) { return inWindow(date, DAILY_MARKET_STUDY_WINDOW); }
 export function makeRunId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
@@ -137,7 +140,7 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
 
   const full = Number(intervalMs) > 0 ? Number(intervalMs) : AUTO_AI_FULL_SCAN_INTERVAL_MS;
   console.log(
-    `[AUTO_AI] endOfDayReview=17:30_ET scans=02:00–10:00_ET entries=02:30–10:00_ET weekdays_only ` +
+    `[AUTO_AI] morningStudy=02:00_ET endOfDayReview=17:30_ET scans=02:30–10:30_ET entries=02:30–10:30_ET weekdays_only ` +
     `full=${full}ms near=${AUTO_AI_NEAR_QUALIFIED_RECHECK_INTERVAL_MS}ms ` +
     `hot=${AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS}ms engineWatchIsolation=true ` +
     `management=02:15–17:30_ET/${ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS}ms`,
@@ -150,11 +153,14 @@ export function startAutoAiScheduler({ intervalMs = AUTO_AI_FULL_SCAN_INTERVAL_M
   addTimer(setInterval(() => void tickAllEngineWatches(nextUrl, secret, 'hot_watch'), AUTO_AI_HOT_TRIGGER_WATCH_INTERVAL_MS));
   addTimer(setInterval(() => void activeTradeManagementTick(nextUrl, secret), ACTIVE_TRADE_MANAGEMENT_INTERVAL_MS));
   addTimer(setInterval(() => void transactionSyncTick(nextUrl, secret), OANDA_TRANSACTION_SYNC_INTERVAL_MS));
+  addTimer(setInterval(() => void morningMarketStudyTick(nextUrl, secret), DAILY_MARKET_STUDY_INTERVAL_MS));
   addTimer(setInterval(() => void dailyMarketStudyTick(nextUrl, secret), DAILY_MARKET_STUDY_INTERVAL_MS));
 
   void tick(nextUrl, secret, { scanMode: 'full', pairs: [], engine: null, logTag: '[AUTO_AI][STARTUP]' });
   // Do not run active management immediately on process startup. The first close-capable review occurs on the five-minute scheduler cadence.
   void transactionSyncTick(nextUrl, secret);
+  // Initialize the current-day ICT/PPR study at 02:00 ET. The 17:30 job remains a separate review.
+  void morningMarketStudyTick(nextUrl, secret);
   // Trade learning is intentionally finalized with the 17:30 ET end-of-day review, not on arbitrary restarts.
   void dailyMarketStudyTick(nextUrl, secret);
   return {
@@ -201,6 +207,26 @@ async function activeTradeManagementTick(nextUrl, secret) {
 
 async function transactionSyncTick(nextUrl, secret) {
   return post(nextUrl, secret, '/api/cron/oanda-transaction-sync', { source: 'railway-scheduler' }, '[OANDA_TX_SYNC]');
+}
+
+export async function morningMarketStudyTick(nextUrl, secret, now = new Date()) {
+  if (!inMorningMarketStudyWindow(now)) {
+    return { ok: true, skipped: true, reason: 'outside_morning_market_study_window' };
+  }
+  const dayKey = newYorkDateKey(now);
+  if (lastMorningStudyDateKey === dayKey) {
+    return { ok: true, skipped: true, reason: 'morning_market_study_already_completed', dayKey };
+  }
+  const results = [];
+  for (const engine of ['ict', 'ppr']) {
+    const runId = makeRunId();
+    results.push(await post(nextUrl, secret, '/api/cron/auto-ai-trading-extended', {
+      source: 'morning-market-study', runId, scanMode: 'daily_study', pairs: [], engine,
+    }, `[MORNING_STUDY][${engine.toUpperCase()}][runId=${runId}]`));
+  }
+  const ok = results.every((result) => result.ok);
+  if (ok) lastMorningStudyDateKey = dayKey;
+  return { ok, dayKey, results, executionAllowed: false };
 }
 
 export async function engineLearningBackfillTick(nextUrl, secret, { now = new Date(), force = false, source = 'end-of-day-market-review' } = {}) {
@@ -319,6 +345,9 @@ export function stopAutoAiScheduler() {
   const stopped = timers.length > 0;
   for (const timer of timers) clearInterval(timer);
   timers = [];
+  lastMorningStudyDateKey = null;
+  lastDailyStudyDateKey = null;
+  lastEngineLearningBackfillDateKey = null;
   for (const engine of AUTO_ENGINES) clearEngineWatchState(engine);
   return stopped ? { stopped: true } : { stopped: false, reason: 'not_running' };
 }
