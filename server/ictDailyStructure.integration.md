@@ -1,0 +1,1 @@
+The Daily ICT hierarchy is integrated through ictConcepts/ictEngine.
