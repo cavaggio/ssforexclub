@@ -1,1 +1,0 @@
-Daily ICT hierarchy constants: active=5-7, context=20, recency=1-3.
