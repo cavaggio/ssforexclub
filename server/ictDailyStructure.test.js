@@ -55,23 +55,26 @@ test('bearish active 5-7 candle majority overrides bullish 20-candle context', (
 });
 
 test('neutral active window cannot be promoted by bullish recency', () => {
-  const candles = [
-    candle(1.0100, 1.0110, 13),
-    candle(1.0110, 1.0100, 14),
-    candle(1.0100, 1.0110, 15),
-    candle(1.0110, 1.0100, 16),
-    candle(1.0100, 1.0110, 17),
-    candle(1.0110, 1.0100, 18),
-    candle(1.0100, 1.0110, 19),
+  const context = Array.from({ length: 13 }, (_, i) => candle(1 + i * 0.001, 1.0008 + i * 0.001, i));
+  const activeNeutral = [
+    candle(1.0130, 1.0140, 13),
+    candle(1.0140, 1.0130, 14),
+    candle(1.0130, 1.0140, 15),
+    candle(1.0140, 1.0130, 16),
+    candle(1.0130, 1.0140, 17),
+    candle(1.0140, 1.0130, 18),
+    candle(1.0140, 1.0140, 19),
   ];
-  const read = computeDailyStructure({ dailyCandles: candles });
+  const read = computeDailyStructure({ dailyCandles: [...context, ...activeNeutral] });
 
-  assert.equal(read.activeBias, 'bullish');
-  assert.notEqual(read.dailyBias, 'neutral');
+  assert.equal(read.activeBias, 'neutral');
+  assert.equal(read.recencyBias, 'bullish');
+  assert.equal(read.dailyBias, 'neutral');
 });
 
 test('tied active window remains neutral even when recent candles are bullish', () => {
-  const candles = [
+  const context = Array.from({ length: 13 }, (_, i) => candle(1 + i * 0.001, 1.0008 + i * 0.001, i));
+  const active = [
     candle(1.0100, 1.0090, 13),
     candle(1.0090, 1.0100, 14),
     candle(1.0100, 1.0090, 15),
@@ -80,7 +83,7 @@ test('tied active window remains neutral even when recent candles are bullish', 
     candle(1.0090, 1.0100, 18),
     candle(1.0100, 1.0100, 19),
   ];
-  const read = computeDailyStructure({ dailyCandles: candles });
+  const read = computeDailyStructure({ dailyCandles: [...context, ...active] });
 
   assert.equal(read.activeBias, 'neutral');
   assert.equal(read.dailyBias, 'neutral');
