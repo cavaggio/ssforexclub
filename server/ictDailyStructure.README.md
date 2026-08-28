@@ -1,0 +1,1 @@
+Daily ICT hierarchy implementation is in server/ictDailyStructure.js and is consumed by server/ictConcepts.js.
