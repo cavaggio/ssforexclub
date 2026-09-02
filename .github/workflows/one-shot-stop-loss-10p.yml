@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   patch-stop-loss:
-    if: ${{ !contains(github.event.head_commit.message, 'enforce 10 pip stop loss') }}
+    if: ${{ github.event.head_commit.message != 'chore: apply 10 pip stop loss hardening' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +33,8 @@ jobs:
               if old not in s:
                   raise SystemExit(f'Missing expected execution source text: {old}')
               s = s.replace(old, new, 1)
-          old = '      sizing.riskReward = 1.0;\n      executionLog.push(logEntry(\'FIXED_10P_FILL_REANCHOR\', {'
-          new = '      sizing.riskReward = 1.5;\n      executionLog.push(logEntry(\'FIXED_10P_FILL_REANCHOR\', {'
+          old = "      sizing.riskReward = 1.0;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {"
+          new = "      sizing.riskReward = 1.5;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {"
           if old not in s:
               raise SystemExit('Missing expected fill re-anchor RR block')
           s = s.replace(old, new, 1)
@@ -54,7 +54,7 @@ jobs:
               p.write_text(s)
           PY
 
-      - name: Verify no stale authoritative 20 pip execution geometry remains
+      - name: Verify authoritative 10 pip geometry
         shell: bash
         run: |
           grep -n "FIXED_FOREX_STOP_LOSS_PIPS = 10.0" server/oandaTrade.js
@@ -76,7 +76,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add server/oandaTrade.js .env.example src/components/ForexSignalStackTab.tsx .github/workflows/one-shot-stop-loss-10p.yml
-          git commit -m 'chore: enforce 10 pip stop loss across live execution'
+          git commit -m 'chore: apply 10 pip stop loss hardening'
           git rm .github/workflows/one-shot-stop-loss-10p.yml
           git commit --amend --no-edit
           git push
