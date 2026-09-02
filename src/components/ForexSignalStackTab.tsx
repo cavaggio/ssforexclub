@@ -691,7 +691,7 @@ function SignalCard({ signal, onTrade, tradeResult }: {
         )}
       </div>
 
-      {/* ── Price levels (fixed 20p / 60p / 1:3) ───────────────────────── */}
+      {/* ── Price levels (fixed 10p / 15p / 1.5R) ───────────────────────── */}
       <div style={s.priceGrid}>
         <PriceCell
           label="Entry"
