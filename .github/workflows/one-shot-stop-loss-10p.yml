@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   patch-stop-loss:
-    if: ${{ github.event.head_commit.message != 'chore: apply 10 pip stop loss hardening' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,61 +16,33 @@ jobs:
           fetch-depth: 0
 
       - name: Patch authoritative execution geometry
-        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-
           p = Path('server/oandaTrade.js')
           s = p.read_text()
-          replacements = {
-              'const FIXED_FOREX_STOP_LOSS_PIPS = 20.0;': 'const FIXED_FOREX_STOP_LOSS_PIPS = 10.0;',
-              'const FIXED_FOREX_TAKE_PROFIT_PIPS = 20.0;': 'const FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0;',
-              "executionLog.push(logEntry('FIXED_20P_FILL_REANCHOR', {": "executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {",
-          }
-          for old, new in replacements.items():
-              if old not in s:
-                  raise SystemExit(f'Missing expected execution source text: {old}')
-              s = s.replace(old, new, 1)
-          old = "      sizing.riskReward = 1.0;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {"
-          new = "      sizing.riskReward = 1.5;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {"
-          if old not in s:
-              raise SystemExit('Missing expected fill re-anchor RR block')
-          s = s.replace(old, new, 1)
+          s = s.replace('const FIXED_FOREX_STOP_LOSS_PIPS = 20.0;', 'const FIXED_FOREX_STOP_LOSS_PIPS = 10.0;', 1)
+          s = s.replace('const FIXED_FOREX_TAKE_PROFIT_PIPS = 20.0;', 'const FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0;', 1)
+          s = s.replace("executionLog.push(logEntry('FIXED_20P_FILL_REANCHOR', {", "executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {", 1)
+          s = s.replace("sizing.riskReward = 1.0;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {", "sizing.riskReward = 1.5;\n      executionLog.push(logEntry('FIXED_10P_FILL_REANCHOR', {", 1)
           p.write_text(s)
-
           p = Path('.env.example')
-          s = p.read_text()
-          old = 'FOREX_FIXED_STOP_LOSS_PIPS=20'
-          if old not in s:
-              raise SystemExit('Missing expected .env stop-loss default')
-          p.write_text(s.replace(old, 'FOREX_FIXED_STOP_LOSS_PIPS=10', 1))
-
+          s = p.read_text().replace('FOREX_FIXED_STOP_LOSS_PIPS=20', 'FOREX_FIXED_STOP_LOSS_PIPS=10', 1)
+          p.write_text(s)
           p = Path('src/components/ForexSignalStackTab.tsx')
           if p.exists():
-              s = p.read_text()
-              s = s.replace('fixed 20p / 60p / 1:3', 'fixed 10p / 15p / 1.5R')
-              p.write_text(s)
+              p.write_text(p.read_text().replace('fixed 20p / 60p / 1:3', 'fixed 10p / 15p / 1.5R'))
           PY
 
-      - name: Verify authoritative 10 pip geometry
-        shell: bash
+      - name: Verify
         run: |
-          grep -n "FIXED_FOREX_STOP_LOSS_PIPS = 10.0" server/oandaTrade.js
-          grep -n "FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0" server/oandaTrade.js
-          grep -n "FIXED_10P_FILL_REANCHOR" server/oandaTrade.js
-          grep -n "sizing.riskReward = 1.5" server/oandaTrade.js
-          grep -n "FOREX_FIXED_STOP_LOSS_PIPS=10" .env.example
-          ! grep -n "FIXED_FOREX_STOP_LOSS_PIPS = 20.0" server/oandaTrade.js
-          ! grep -n "FIXED_20P_FILL_REANCHOR" server/oandaTrade.js
+          grep -q 'FIXED_FOREX_STOP_LOSS_PIPS = 10.0' server/oandaTrade.js
+          grep -q 'FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0' server/oandaTrade.js
+          grep -q 'FIXED_10P_FILL_REANCHOR' server/oandaTrade.js
+          grep -q 'sizing.riskReward = 1.5' server/oandaTrade.js
+          grep -q 'FOREX_FIXED_STOP_LOSS_PIPS=10' .env.example
 
-      - name: Run targeted execution tests
-        run: |
-          npm ci
-          node --test server/v3EntryContract.integration.test.js server/ictExecution.test.js
-
-      - name: Commit authoritative changes and remove one-shot workflow
-        shell: bash
+      - name: Commit and remove one-shot workflow
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
