@@ -3,6 +3,7 @@ import { evaluatePprExecutionPolicy } from './pprExecutionPolicy.js';
 import { executeTrade } from './oandaTrade.js';
 import { pprRuntimeConfig } from './pprEnv.js';
 import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
+import { getForexNewsRisk } from './oandaNewsRisk.js';
 
 /**
  * PPR owns its final refresh and confirmation. The shared OANDA executor is used
@@ -28,6 +29,20 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
     return { allowed: false, reason: `PPR direction changed from ${originalDirection} to ${calibratedSignal.direction}`, fresh, runtime };
   }
 
+  // Forex Factory RED/HIGH news is a hard execution veto. Re-check after the
+  // fresh PPR analysis so a scheduled release cannot be missed by stale scan data.
+  const newsRisk = await getForexNewsRisk(candidate.pair, now);
+  if (newsRisk?.blocked) {
+    return {
+      allowed: false,
+      reason: newsRisk.reason || 'Forex Factory red/high-impact news blackout active',
+      newsRisk,
+      fresh,
+      calibratedSignal,
+      runtime,
+    };
+  }
+
   const config = pprConfig();
   if (!(Number(calibratedSignal.confidence) >= config.minConfidence)) {
     return {
@@ -50,7 +65,7 @@ export async function refreshPprCandidateForExecution({ candidate, client, now =
     `manipulations=${policy.manipulationTypes.join('+')} distance=${policy.distancePips}p rr=${policy.rr} ` +
     `engineMode=${runtime.engineMode} autoExecution=${runtime.aiAutoExecutionEnabled} autoManage=${runtime.aiAutoManageEnabled}`,
   );
-  return { allowed: true, signal: calibratedSignal, policy, runtime };
+  return { allowed: true, signal: calibratedSignal, policy, runtime, newsRisk };
 }
 
 export async function executePprTrade(candidate, {
