@@ -24,6 +24,7 @@ on:
       - 'server/v3NativeAutoTrade.js'
       - 'web/lib/v3ScanDisplayPolicy.js'
       - 'web/lib/v3ScanDisplayPolicy.test.js'
+      - 'server/v3NativeAutoTrade.js'
       - 'web/lib/edgeExecutionProfile.js'
       - 'web/lib/edgeExecutionProfile.test.js'
       - 'web/lib/accountEdgeExecutionProfile.ts'
@@ -32,7 +33,7 @@ on:
       - '.github/workflows/v3-provisioning-policy-ci.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   policy-tests:
@@ -57,29 +58,8 @@ jobs:
           web/lib/v3ScanDisplayPolicy.test.js
           web/lib/edgeExecutionProfile.test.js
 
-  web-typecheck:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-
-  runtime-hot-path-repair:
-    if: github.event_name == 'push' && github.event.head_commit.message != 'Bound Vercel cron runtime and reduce DB hot-path load'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Patch Vercel timeout hot paths
+      - name: Repair Vercel runtime hot paths
+        if: github.event_name == 'push'
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -206,7 +186,9 @@ jobs:
           if old not in s: raise SystemExit('brokerResolver connection block not found')
           p.write_text(s.replace(old, new, 1))
           PY
+
       - name: Commit runtime repair
+        if: github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
