@@ -1,0 +1,123 @@
+name: Repair Vercel runtime timeout paths
+on:
+  push:
+    branches: [main]
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch timeout-prone runtime paths
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # 1) Active-trade management must not reconstruct strategy ownership
+          # from a large trade_logs history on every cron invocation. The
+          # lifecycle table already records engine + broker trade id and has
+          # open/unresolved hot-path indexes.
+          p = Path('web/app/api/cron/active-trade-management/route.ts')
+          s = p.read_text()
+          pattern = re.compile(r"async function openTradeStrategies\(userId: string\): Promise<Map<string, AutoAiEngine>> \{.*?\n\}\n\nasync function loadExitStates", re.S)
+          replacement = '''async function openTradeStrategies(userId: string): Promise<Map<string, AutoAiEngine>> {
+            const supabase = getServerSupabase();
+            try {
+              const { data, error } = await supabase
+                .from('actual_trade_lifecycles')
+                .select('broker_trade_id, engine')
+                .eq('user_id', userId)
+                .in('state', ['open', 'unresolved']);
+              if (error) throw error;
+              return new Map(
+                (data ?? [])
+                  .map((row: Record<string, unknown>) => [String(row.broker_trade_id ?? ''), normalizeEngine(row.engine)] as const)
+                  .filter(([tradeId]) => Boolean(tradeId)),
+              );
+            } catch (error) {
+              // Schema-safe fallback: a small, targeted trade-log read. This
+              // avoids the old 200-row history scan as the normal hot path.
+              console.warn(`[ACTIVE_TRADE_MANAGEMENT] lifecycle lookup failed; using bounded trade-log fallback: ${error instanceof Error ? error.message : String(error)}`);
+              const fallback = { rows: [] as unknown[] };
+              const { rows } = await listTradeLogsForUser(userId, { limit: 25 }).catch(() => fallback);
+              const strategies = new Map<string, AutoAiEngine>();
+              for (const rawRow of rows as Array<Record<string, unknown>>) {
+                const tradeId = eventTradeId(rawRow);
+                const strategy = eventStrategy(rawRow);
+                if (tradeId && rawRow.event_type === 'opened' && (strategy === 'ict' || strategy === 'v3' || strategy === 'ppr')) {
+                  strategies.set(tradeId, strategy);
+                }
+              }
+              return strategies;
+            }
+          }
+
+          async function loadExitStates'''
+          ns, n = pattern.subn(replacement, s)
+          if n != 1:
+              raise SystemExit(f'active-trade replacement count={n}')
+          p.write_text(ns)
+
+          # 2) Never let a Railway scanner request pin a Vercel function until
+          # Vercel's 300s hard timeout. Return a bounded 504 instead.
+          p = Path('web/lib/scannerProxy.ts')
+          s = p.read_text()
+          old = """  let res: Response;\n  try {\n    res = await fetch(`${SCANNER_BASE_URL}${path}`, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', 'X-Internal-Auth': secret },\n      body: JSON.stringify(body),\n      cache: 'no-store',\n    });\n  } catch (err) {"""
+          new = """  let res: Response;\n  const controller = new AbortController();\n  const timeout = setTimeout(() => controller.abort(), 25_000);\n  try {\n    res = await fetch(`${SCANNER_BASE_URL}${path}`, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', 'X-Internal-Auth': secret },\n      body: JSON.stringify(body),\n      cache: 'no-store',\n      signal: controller.signal,\n    });\n  } catch (err) {"""
+          if old not in s:
+              raise SystemExit('scannerProxy fetch block not found')
+          s = s.replace(old, new, 1)
+          old2 = """  const text = await res.text();"""
+          new2 = """  clearTimeout(timeout);\n  const text = await res.text();"""
+          if old2 not in s:
+              raise SystemExit('scannerProxy response block not found')
+          s = s.replace(old2, new2, 1)
+          # Ensure aborted requests clear their timer too.
+          s = s.replace("""  } catch (err) {\n    return {\n      ok: false,\n      status: 502,\n      error: `Scanner unreachable: ${err instanceof Error ? err.message : String(err)}`,\n    };\n  }\n  clearTimeout(timeout);""", """  } catch (err) {\n    clearTimeout(timeout);\n    const aborted = err instanceof Error && err.name === 'AbortError';\n    return {\n      ok: false,\n      status: aborted ? 504 : 502,\n      error: aborted\n        ? `Scanner request timed out after 25 seconds: ${path}`\n        : `Scanner unreachable: ${err instanceof Error ? err.message : String(err)}`,\n    };\n  }\n  clearTimeout(timeout);""", 1)
+          p.write_text(s)
+
+          # 3) Avoid querying every broker connection before the selected mode
+          # is even known. Filter the connection query to the selected broker
+          # + environment and avoid the old Promise.all fan-out.
+          p = Path('web/lib/brokerConnections.ts')
+          s = p.read_text()
+          old_sig = """export async function listBrokerConnectionsForUser(\n  clerkUserId: string\n): Promise<BrokerConnection[]> {\n  if (!clerkUserId) throw new Error('listBrokerConnectionsForUser: missing clerkUserId');\n  const supabase = getServerSupabase();\n  const run = (cols: string) =>\n    supabase.from('broker_connections').select(cols).eq('user_id', clerkUserId).order('created_at', { ascending: false });"""
+          new_sig = """export async function listBrokerConnectionsForUser(\n  clerkUserId: string,\n  filters: { broker?: BrokerKind; environment?: BrokerEnvironment } = {},\n): Promise<BrokerConnection[]> {\n  if (!clerkUserId) throw new Error('listBrokerConnectionsForUser: missing clerkUserId');\n  const supabase = getServerSupabase();\n  const run = (cols: string) => {\n    let q = supabase.from('broker_connections').select(cols).eq('user_id', clerkUserId);\n    if (filters.broker) q = q.eq('broker', filters.broker);\n    if (filters.environment) q = q.eq('environment', filters.environment);\n    return q.order('created_at', { ascending: false });\n  };"""
+          if old_sig not in s:
+              raise SystemExit('brokerConnections signature block not found')
+          p.write_text(s.replace(old_sig, new_sig, 1))
+
+          p = Path('web/lib/brokerResolver.ts')
+          s = p.read_text()
+          old = """  const [settings, connections] = await Promise.all([\n    getUserTradingSettings(clerkUserId),\n    listBrokerConnectionsForUser(clerkUserId),\n  ]);\n\n  const broker = settings.activeBroker;\n  const env = settings.activeEnvironment;\n  const platformLive = platformLiveEnabled();"""
+          new = """  const settings = await getUserTradingSettings(clerkUserId);\n\n  const broker = settings.activeBroker;\n  const env = settings.activeEnvironment;\n  const platformLive = platformLiveEnabled();"""
+          if old not in s:
+              raise SystemExit('brokerResolver Promise.all block not found')
+          s = s.replace(old, new, 1)
+          old2 = """  // Pick the active connection.\n  const conn = pickConnection(connections, broker, env, settings.activeBrokerConnectionId);"""
+          new2 = """  // Pick only from the selected broker + environment. This keeps the hot\n  // path bounded even when a user has accumulated many historical connections.\n  const connections = await listBrokerConnectionsForUser(clerkUserId, { broker, environment: env });\n  const conn = pickConnection(connections, broker, env, settings.activeBrokerConnectionId);"""
+          if old2 not in s:
+              raise SystemExit('brokerResolver connection block not found')
+          s = s.replace(old2, new2, 1)
+          p.write_text(s)
+          PY
+
+      - name: Typecheck changed TS files
+        run: |
+          cd web
+          npx tsc --noEmit --pretty false
+
+      - name: Commit and self-remove
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add web/app/api/cron/active-trade-management/route.ts web/lib/scannerProxy.ts web/lib/brokerConnections.ts web/lib/brokerResolver.ts
+          git diff --cached --quiet || git commit -m 'Bound Vercel cron scanner calls and reduce DB hot-path load'
+          git push
+          rm -f .github/workflows/repair-vercel-runtime-timeouts.yml
+          git add .github/workflows/repair-vercel-runtime-timeouts.yml
+          git commit -m 'Remove one-shot runtime repair workflow'
+          git push
