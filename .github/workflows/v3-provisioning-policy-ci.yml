@@ -24,7 +24,6 @@ on:
       - 'server/v3NativeAutoTrade.js'
       - 'web/lib/v3ScanDisplayPolicy.js'
       - 'web/lib/v3ScanDisplayPolicy.test.js'
-      - 'server/v3NativeAutoTrade.js'
       - 'web/lib/edgeExecutionProfile.js'
       - 'web/lib/edgeExecutionProfile.test.js'
       - 'web/lib/accountEdgeExecutionProfile.ts'
@@ -33,7 +32,7 @@ on:
       - '.github/workflows/v3-provisioning-policy-ci.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   policy-tests:
@@ -58,140 +57,17 @@ jobs:
           web/lib/v3ScanDisplayPolicy.test.js
           web/lib/edgeExecutionProfile.test.js
 
-      - name: Repair Vercel runtime hot paths
-        if: github.event_name == 'push'
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path('web/app/api/cron/active-trade-management/route.ts')
-          s = p.read_text()
-          pattern = re.compile(r"async function openTradeStrategies\(userId: string\): Promise<Map<string, AutoAiEngine>> \{.*?\n\}\n\nasync function loadExitStates", re.S)
-          replacement = '''async function openTradeStrategies(userId: string): Promise<Map<string, AutoAiEngine>> {
-            const supabase = getServerSupabase();
-            try {
-              const { data, error } = await supabase
-                .from('actual_trade_lifecycles')
-                .select('broker_trade_id, engine')
-                .eq('user_id', userId)
-                .in('state', ['open', 'unresolved']);
-              if (error) throw error;
-              const strategies = new Map<string, AutoAiEngine>();
-              for (const row of (data ?? []) as Array<Record<string, unknown>>) {
-                const tradeId = String(row.broker_trade_id ?? '');
-                if (tradeId) strategies.set(tradeId, normalizeEngine(row.engine));
-              }
-              return strategies;
-            } catch (error) {
-              console.warn(`[ACTIVE_TRADE_MANAGEMENT] lifecycle lookup failed; using bounded trade-log fallback: ${error instanceof Error ? error.message : String(error)}`);
-              const fallback = { rows: [] as unknown[] };
-              const { rows } = await listTradeLogsForUser(userId, { limit: 25 }).catch(() => fallback);
-              const strategies = new Map<string, AutoAiEngine>();
-              for (const row of rows as Array<Record<string, unknown>>) {
-                const tradeId = eventTradeId(row);
-                const strategy = eventStrategy(row);
-                if (tradeId && row.event_type === 'opened' && (strategy === 'ict' || strategy === 'v3' || strategy === 'ppr')) strategies.set(tradeId, strategy);
-              }
-              return strategies;
-            }
-          }
-
-          async function loadExitStates'''
-          s, n = pattern.subn(replacement, s)
-          if n != 1: raise SystemExit(f'active-trade patch count={n}')
-          p.write_text(s)
-
-          p = Path('web/lib/scannerProxy.ts')
-          s = p.read_text()
-          old = """  let res: Response;
-  try {
-    res = await fetch(`${SCANNER_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Auth': secret },
-      body: JSON.stringify(body),
-      cache: 'no-store',
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      status: 502,
-      error: `Scanner unreachable: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  const text = await res.text();"""
-          new = """  let res: Response;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
-  try {
-    res = await fetch(`${SCANNER_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Auth': secret },
-      body: JSON.stringify(body),
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timeout);
-    const aborted = err instanceof Error && err.name === 'AbortError';
-    return {
-      ok: false,
-      status: aborted ? 504 : 502,
-      error: aborted ? `Scanner request timed out after 25 seconds: ${path}` : `Scanner unreachable: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  clearTimeout(timeout);
-  const text = await res.text();"""
-          if old not in s: raise SystemExit('scannerProxy patch block not found')
-          p.write_text(s.replace(old, new, 1))
-
-          p = Path('web/lib/brokerConnections.ts')
-          s = p.read_text()
-          old = """export async function listBrokerConnectionsForUser(
-  clerkUserId: string
-): Promise<BrokerConnection[]> {
-  if (!clerkUserId) throw new Error('listBrokerConnectionsForUser: missing clerkUserId');
-  const supabase = getServerSupabase();
-  const run = (cols: string) =>
-    supabase.from('broker_connections').select(cols).eq('user_id', clerkUserId).order('created_at', { ascending: false });"""
-          new = """export async function listBrokerConnectionsForUser(
-  clerkUserId: string,
-  filters: { broker?: BrokerKind; environment?: BrokerEnvironment } = {},
-): Promise<BrokerConnection[]> {
-  if (!clerkUserId) throw new Error('listBrokerConnectionsForUser: missing clerkUserId');
-  const supabase = getServerSupabase();
-  const run = (cols: string) => {
-    let q = supabase.from('broker_connections').select(cols).eq('user_id', clerkUserId);
-    if (filters.broker) q = q.eq('broker', filters.broker);
-    if (filters.environment) q = q.eq('environment', filters.environment);
-    return q.order('created_at', { ascending: false });
-  };"""
-          if old not in s: raise SystemExit('brokerConnections patch block not found')
-          p.write_text(s.replace(old, new, 1))
-
-          p = Path('web/lib/brokerResolver.ts')
-          s = p.read_text()
-          old = """  const [settings, connections] = await Promise.all([
-    getUserTradingSettings(clerkUserId),
-    listBrokerConnectionsForUser(clerkUserId),
-  ]);"""
-          new = """  const settings = await getUserTradingSettings(clerkUserId);"""
-          if old not in s: raise SystemExit('brokerResolver settings block not found')
-          s = s.replace(old, new, 1)
-          old = """  // Pick the active connection.
-  const conn = pickConnection(connections, broker, env, settings.activeBrokerConnectionId);"""
-          new = """  // Query only the selected broker/environment on the hot path.
-  const connections = await listBrokerConnectionsForUser(clerkUserId, { broker, environment: env });
-  const conn = pickConnection(connections, broker, env, settings.activeBrokerConnectionId);"""
-          if old not in s: raise SystemExit('brokerResolver connection block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
-
-      - name: Commit runtime repair
-        if: github.event_name == 'push'
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add web/app/api/cron/active-trade-management/route.ts web/lib/scannerProxy.ts web/lib/brokerConnections.ts web/lib/brokerResolver.ts
-          git diff --cached --quiet || git commit -m 'Bound Vercel cron runtime and reduce DB hot-path load'
-          git push
+  web-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
