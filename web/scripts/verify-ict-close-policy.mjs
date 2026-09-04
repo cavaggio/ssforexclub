@@ -17,7 +17,7 @@ for (const marker of [
   'outside_management_window_02:15-17:30_ET',
 ]) {
   if (!route.includes(marker)) {
-    throw new Error(`Profit Protection v2 route verification failed: missing ${marker}`);
+    throw new Error(`Profit Protection v3 route verification failed: missing ${marker}`);
   }
 }
 
@@ -27,30 +27,32 @@ for (const forbidden of [
   "decision.action === 'FULL_CLOSE'",
 ]) {
   if (route.includes(forbidden)) {
-    throw new Error(`Profit Protection v2 route verification failed: forbidden ${forbidden}`);
+    throw new Error(`Profit Protection v3 route verification failed: forbidden ${forbidden}`);
   }
 }
 
 for (const marker of [
-  "ACTIVE_EXIT_POLICY = 'profit_protection_v2'",
-  'FIRST_PARTIAL_PROFIT_PIPS = 15',
+  "ACTIVE_EXIT_POLICY = 'profit_protection_v3'",
+  'FIXED_STOP_LOSS_PIPS = 10',
+  'FIRST_TAKE_PROFIT_PIPS = 15',
+  'FIRST_PARTIAL_PERCENT = 80',
+  'FINAL_TAKE_PROFIT_PIPS = 18',
+  'FINAL_PARTIAL_PERCENT = 20',
+  'FIXED_RR = 1.5',
   "action: 'MOVE_STOP_TO_BREAKEVEN'",
   "action: 'PARTIAL_CLOSE'",
-  'const percent = 50',
-  "action: 'ARM_RUNNER'",
-  "action: 'TRAIL_PROFIT'",
   'automaticFullCloseAllowed: false',
   "decision?.action !== 'PARTIAL_CLOSE'",
 ]) {
   if (!policy.includes(marker)) {
-    throw new Error(`Profit Protection v2 policy verification failed: missing ${marker}`);
+    throw new Error(`Profit Protection v3 policy verification failed: missing ${marker}`);
   }
 }
 
 for (const forbidden of ["action: 'FULL_CLOSE'", "return 'ALL'"]) {
   if (policy.includes(forbidden)) {
-    throw new Error(`Profit Protection v2 policy verification failed: forbidden ${forbidden}`);
+    throw new Error(`Profit Protection v3 policy verification failed: forbidden ${forbidden}`);
   }
 }
 
-console.log('Profit Protection v2 verified: no automatic full close; 50% partial at +15 pips, breakeven runner, and post-TP trailing only.');
+console.log('Profit Protection v3 verified: fixed 10 pip SL, 80% partial at +15 pips, breakeven remaining 20%, and final 20% close at +18 pips; no automatic full close.');
