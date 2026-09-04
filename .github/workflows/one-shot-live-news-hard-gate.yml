@@ -1,0 +1,41 @@
+name: One-shot live Forex Factory hard news gate
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/one-shot-live-news-hard-gate.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor == 'cavaggio'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch final OANDA news gate
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/oandaTrade.js')
+          s = p.read_text()
+          imp = "import { registerImmediatePartialTrade } from './oandaImmediatePartial.js';"
+          if "from './oandaNewsRisk.js'" not in s:
+              if imp not in s: raise SystemExit('missing import anchor')
+              s = s.replace(imp, imp + "\nimport { getForexNewsRisk } from './oandaNewsRisk.js';", 1)
+          anchor = "  const orderPayload = buildOandaMarketOrderPayload({"
+          gate = """  // FINAL LIVE NEWS SAFETY GATE: block red/high Forex Factory news ±30m before broker submission.\n  const finalNewsRisk = await getForexNewsRisk(pair, new Date());\n  if (finalNewsRisk?.blocked) {\n    return blocked(finalNewsRisk.reason || 'Forex Factory red/high-impact news blackout active; new trade blocked.', { newsRisk: finalNewsRisk, newsBlockSource: 'live_forex_factory' });\n  }\n\n"""
+          if 'FINAL LIVE NEWS SAFETY GATE' not in s:
+              if anchor not in s: raise SystemExit('missing order payload anchor')
+              s = s.replace(anchor, gate + anchor, 1)
+          p.write_text(s)
+      - name: Syntax check
+        run: node --check server/oandaTrade.js
+      - name: Commit patch and self-remove
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/one-shot-live-news-hard-gate.yml
+          git add server/oandaTrade.js .github/workflows/one-shot-live-news-hard-gate.yml
+          git diff --cached --check
+          git commit -m 'fix: enforce Forex Factory red-news blackout at final execution gate'
+          git push
