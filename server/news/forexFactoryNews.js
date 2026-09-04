@@ -1,89 +1,331 @@
 /**
  * server/news/forexFactoryNews.js
  *
- * Pluggable ForexFactory-style economic-calendar news risk for the ICT engine.
- * Independent of V3. Safe-by-default: reads a LOCAL JSON cache/fallback
- * (server/data/forex-factory-calendar.json) so it works without live
- * scraping/API access. A live fetcher can be plugged in later behind the same
- * `getNewsRisk` contract.
+ * Live Forex Factory high-impact-news risk layer for the ICT engine.
  *
+ * HARD RULE:
+ *   - "High" / red-impact Forex Factory events affecting either currency
+ *     block NEW trades from 30 minutes before the scheduled release through
+ *     30 minutes after the release.
+ *   - The live Forex Factory weekly JSON export is the production source of
+ *     truth. The local JSON file remains an explicit test/offline fallback.
+ *   - If the live feed cannot be refreshed and no still-valid cache exists,
+ *     the risk result FAILS CLOSED and blocks new trades.
+ *
+ * Public contracts:
  *   getNewsRisk({ pair, now, calendar?, cfg? })
- *     → { enabled, blocked, blockReason, caution, cautionReason, events[] }
- *
- * Rules:
- *   - High-impact event affecting EITHER currency of the pair, within
- *     [event - BEFORE, event + AFTER] → blocked, with reason
- *     "High-impact news window active for {currency}: {eventName}".
- *   - Medium-impact within window → caution only (never auto-blocks).
- *   - Disabled (FOREX_NEWS_FILTER_ENABLED=false) → never blocks.
- *
- * Calendar event shape: { currency, impact:'high'|'medium'|'low', event, time(ISO) }.
+ *     -> synchronous evaluation (used by tests/legacy callers when a calendar
+ *        is supplied; otherwise evaluates the currently cached feed).
+ *   getForexFactoryNewsRisk({ pair, now })
+ *     -> async production evaluation with live-feed refresh.
+ *   refreshForexFactoryCalendar({ force?, now? })
+ *     -> async live-feed refresh.
  */
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const CALENDAR_PATH = process.env.FOREX_FACTORY_CALENDAR_PATH
+const LOCAL_CALENDAR_PATH = process.env.FOREX_FACTORY_CALENDAR_PATH
   || resolve(process.cwd(), 'server', 'data', 'forex-factory-calendar.json');
+
+const DEFAULT_FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+const FEED_URL = process.env.FOREX_FACTORY_FEED_URL || DEFAULT_FEED_URL;
+
+const DEFAULT_BLOCK_BEFORE_MIN = 30;
+const DEFAULT_BLOCK_AFTER_MIN = 30;
+const FEED_REFRESH_MS = Math.max(
+  15_000,
+  Number(process.env.FOREX_NEWS_FEED_REFRESH_SECONDS || 60) * 1000,
+);
+const FETCH_TIMEOUT_MS = Math.max(
+  3_000,
+  Number(process.env.FOREX_NEWS_FEED_TIMEOUT_MS || 10_000),
+);
 
 export function newsConfig() {
   return {
+    // Keep the historical switch for compatibility, but high-impact blocking
+    // remains enabled by default and production feed failures fail closed.
     enabled: String(process.env.FOREX_NEWS_FILTER_ENABLED ?? 'true').toLowerCase() === 'true',
-    blockBeforeMin: parseFloat(process.env.FOREX_NEWS_HIGH_IMPACT_BLOCK_MINUTES_BEFORE || '30'),
-    blockAfterMin: parseFloat(process.env.FOREX_NEWS_HIGH_IMPACT_BLOCK_MINUTES_AFTER || '30'),
+    blockBeforeMin: DEFAULT_BLOCK_BEFORE_MIN,
+    blockAfterMin: DEFAULT_BLOCK_AFTER_MIN,
+    feedUrl: FEED_URL,
+    localCalendarPath: LOCAL_CALENDAR_PATH,
+    feedRefreshSeconds: FEED_REFRESH_MS / 1000,
   };
 }
 
-let _cache = null;
-function loadCalendar() {
-  if (_cache) return _cache;
+let _cache = {
+  events: [],
+  loadedAt: 0,
+  source: null,
+  warning: 'not_loaded',
+  healthy: false,
+};
+
+function nowMsOf(now = new Date()) {
+  const ms = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+function normalizeImpact(value) {
+  const impact = String(value || '').trim().toLowerCase();
+  if (impact === 'high' || impact === 'red') return 'high';
+  if (impact === 'medium' || impact === 'orange') return 'medium';
+  if (impact === 'low' || impact === 'yellow') return 'low';
+  return impact;
+}
+
+function normalizeEvent(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const timeValue = raw.time ?? raw.date ?? raw.datetime ?? raw.timestamp;
+  const epoch = timeValue ? Date.parse(String(timeValue)) : NaN;
+  const currency = String(raw.currency ?? raw.country ?? raw.ccy ?? '').trim().toUpperCase();
+  const impact = normalizeImpact(raw.impact ?? raw.importance);
+
+  if (!Number.isFinite(epoch) || !currency || !impact) return null;
+
+  return {
+    time: new Date(epoch).toISOString(),
+    epoch,
+    currency,
+    impact,
+    event: String(raw.event ?? raw.title ?? raw.name ?? 'Unknown event'),
+    title: String(raw.title ?? raw.event ?? raw.name ?? 'Unknown event'),
+    actual: raw.actual ?? null,
+    forecast: raw.forecast ?? null,
+    previous: raw.previous ?? null,
+  };
+}
+
+function parseCalendarPayload(payload) {
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.events)
+      ? payload.events
+      : [];
+  return list.map(normalizeEvent).filter(Boolean);
+}
+
+function parseCurrencyPair(pair) {
+  const normalized = String(pair || '').replace('/', '_').toUpperCase();
+  const parts = normalized.split('_').filter(Boolean);
+  if (parts.length !== 2) return [];
+  if (parts[0] === 'XAU' || parts[0] === 'XAG') return ['USD'];
+  return parts;
+}
+
+function loadLocalCalendar() {
   try {
-    const txt = readFileSync(CALENDAR_PATH, 'utf8');
-    const parsed = JSON.parse(txt);
-    _cache = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.events) ? parsed.events : [];
-  } catch {
-    _cache = []; // missing/unreadable calendar → no news data, never throws
+    const text = readFileSync(LOCAL_CALENDAR_PATH, 'utf8').trim();
+    if (!text) return { events: [], source: LOCAL_CALENDAR_PATH, warning: 'empty_local_calendar' };
+    const events = parseCalendarPayload(JSON.parse(text));
+    return {
+      events,
+      source: LOCAL_CALENDAR_PATH,
+      warning: events.length ? null : 'no_parseable_local_events',
+    };
+  } catch (error) {
+    return {
+      events: [],
+      source: LOCAL_CALENDAR_PATH,
+      warning: `local_calendar_unavailable:${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-  return _cache;
 }
 
-/** Currencies impacted by a pair (e.g. EUR_USD → ['EUR','USD'], XAU_USD → ['XAU','USD']). */
-export function pairCurrencies(pair) {
-  return String(pair || '').split('_').filter(Boolean);
+async function fetchLiveCalendar() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(FEED_URL, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'ssforexclub/forex-factory-news-risk',
+        'cache-control': 'no-cache',
+      },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Forex Factory feed HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const events = parseCalendarPayload(payload);
+    if (!events.length) throw new Error('Forex Factory feed returned no parseable events');
+
+    return { events, source: FEED_URL, warning: null, healthy: true };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-const norm = (s) => String(s || '').toLowerCase();
+export async function refreshForexFactoryCalendar({ force = false, now = new Date() } = {}) {
+  const evalMs = nowMsOf(now);
+  const cacheAge = evalMs - Number(_cache.loadedAt || 0);
 
-export function getNewsRisk({ pair, now = new Date(), calendar = null, cfg = null } = {}) {
+  if (!force && _cache.loadedAt > 0 && cacheAge >= 0 && cacheAge < FEED_REFRESH_MS) {
+    return _cache;
+  }
+
+  try {
+    const fresh = await fetchLiveCalendar();
+    _cache = {
+      ...fresh,
+      loadedAt: evalMs,
+    };
+    return _cache;
+  } catch (error) {
+    const warning = error instanceof Error ? error.message : String(error);
+    const cacheStillUsable = _cache.loadedAt > 0 && _cache.events.length > 0 && cacheAge >= 0 && cacheAge <= 15 * 60 * 1000;
+
+    if (cacheStillUsable) {
+      _cache = {
+        ..._cache,
+        warning,
+        healthy: false,
+      };
+      console.warn(`[NEWS_RISK] Forex Factory refresh failed; using cached calendar: ${warning}`);
+      return _cache;
+    }
+
+    const local = loadLocalCalendar();
+    if (local.events.length > 0 && process.env.NODE_ENV === 'test') {
+      _cache = {
+        events: local.events,
+        loadedAt: evalMs,
+        source: local.source,
+        warning: `live_feed_failed_in_test:${warning}`,
+        healthy: false,
+      };
+      return _cache;
+    }
+
+    _cache = {
+      events: [],
+      loadedAt: evalMs,
+      source: FEED_URL,
+      warning,
+      healthy: false,
+    };
+    console.error(`[NEWS_RISK] Forex Factory feed unavailable — FAIL-CLOSED news protection: ${warning}`);
+    return _cache;
+  }
+}
+
+function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = null, feedHealthy = true } = {}) {
   const config = cfg || newsConfig();
-  const result = { enabled: config.enabled, blocked: false, blockReason: null, caution: false, cautionReason: null, events: [] };
-  if (!config.enabled) return result;
+  const currencies = parseCurrencyPair(pair);
+  const evalMs = nowMsOf(now);
+  const events = Array.isArray(calendar) ? calendar.map(normalizeEvent).filter(Boolean) : [];
+  const beforeMs = Number(config.blockBeforeMin ?? DEFAULT_BLOCK_BEFORE_MIN) * 60_000;
+  const afterMs = Number(config.blockAfterMin ?? DEFAULT_BLOCK_AFTER_MIN) * 60_000;
 
-  const events = Array.isArray(calendar) ? calendar : loadCalendar();
-  const ccys = new Set(pairCurrencies(pair));
-  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
-  const beforeMs = config.blockBeforeMin * 60_000;
-  const afterMs = config.blockAfterMin * 60_000;
+  const result = {
+    enabled: config.enabled !== false,
+    blocked: false,
+    feedUnavailable: false,
+    blockReason: null,
+    caution: false,
+    cautionReason: null,
+    events: [],
+    matchingCurrencies: currencies,
+  };
+
+  if (config.enabled === false) return result;
+
+  if (!currencies.length) {
+    result.blocked = true;
+    result.feedUnavailable = true;
+    result.blockReason = `Cannot evaluate Forex Factory news for invalid pair "${pair}" — blocking new trade.`;
+    return result;
+  }
 
   for (const ev of events) {
-    if (!ev || !ccys.has(String(ev.currency))) continue;
-    const evMs = Date.parse(ev.time);
-    if (!Number.isFinite(evMs)) continue;
-    const inWindow = nowMs >= evMs - beforeMs && nowMs <= evMs + afterMs;
+    if (!currencies.includes(ev.currency)) continue;
+    const deltaMs = ev.epoch - evalMs;
+    const inWindow = evalMs >= ev.epoch - beforeMs && evalMs <= ev.epoch + afterMs;
     if (!inWindow) continue;
-    const impact = norm(ev.impact);
-    const tagged = { currency: ev.currency, impact, event: ev.event, time: ev.time, inWindow: true };
+
+    const tagged = {
+      ...ev,
+      inWindow: true,
+      minutesUntil: Math.round(deltaMs / 60_000),
+      minutesAgo: Math.round((-deltaMs) / 60_000),
+    };
     result.events.push(tagged);
-    if (impact === 'high') {
+
+    if (ev.impact === 'high') {
       result.blocked = true;
-      if (!result.blockReason) result.blockReason = `High-impact news window active for ${ev.currency}: ${ev.event}`;
-    } else if (impact === 'medium') {
+      if (!result.blockReason) {
+        const when = deltaMs >= 0
+          ? `in ${Math.round(deltaMs / 60_000)} minutes`
+          : `${Math.round((-deltaMs) / 60_000)} minutes ago`;
+        result.blockReason = `Forex Factory RED/HIGH news blackout active for ${ev.currency}: ${ev.event} — ${when}. New entries blocked.`;
+      }
+    } else if (ev.impact === 'medium') {
       result.caution = true;
       if (!result.cautionReason) result.cautionReason = `Medium-impact news near for ${ev.currency}: ${ev.event}`;
     }
   }
+
+  if (!feedHealthy && !events.length) {
+    result.blocked = true;
+    result.feedUnavailable = true;
+    result.blockReason = 'Forex Factory news feed unavailable or stale — blocking new trades until the calendar is available.';
+  }
+
   return result;
 }
 
-// Test/maintenance hook — drop the in-memory calendar cache.
-export function __resetCalendarCache() { _cache = null; }
+/**
+ * Synchronous/backward-compatible contract. Passing calendar explicitly is
+ * recommended for deterministic tests. Production callers should use
+ * getForexFactoryNewsRisk() so the live feed is refreshed first.
+ */
+export function getNewsRisk({ pair, now = new Date(), calendar = null, cfg = null } = {}) {
+  const cached = calendar ? null : _cache;
+  const cal = Array.isArray(calendar)
+    ? calendar
+    : cached?.events || [];
+  return evaluateCalendarRisk({
+    pair,
+    now,
+    calendar: cal,
+    cfg,
+    feedHealthy: calendar ? true : cached?.healthy === true,
+  });
+}
+
+/**
+ * Production async contract. Live Forex Factory JSON is refreshed before the
+ * risk decision whenever the refresh interval has expired.
+ */
+export async function getForexFactoryNewsRisk({ pair, now = new Date() } = {}) {
+  const config = newsConfig();
+  if (config.enabled === false) {
+    return evaluateCalendarRisk({ pair, now, calendar: [], cfg: config, feedHealthy: true });
+  }
+
+  const cal = await refreshForexFactoryCalendar({ now });
+  return evaluateCalendarRisk({
+    pair,
+    now,
+    calendar: cal.events,
+    cfg: config,
+    feedHealthy: cal.healthy === true,
+  });
+}
+
+export function pairCurrencies(pair) {
+  return parseCurrencyPair(pair);
+}
+
+export function __resetCalendarCache() {
+  _cache = { events: [], loadedAt: 0, source: null, warning: 'reset', healthy: false };
+}
