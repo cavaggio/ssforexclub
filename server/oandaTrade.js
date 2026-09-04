@@ -57,6 +57,7 @@ import {
 } from './executionReservations.js';
 import { buildOandaMarketOrderPayload, repriceExecutableGeometry, validateDirectionLock } from './v3EntryContract.js';
 import { registerImmediatePartialTrade } from './oandaImmediatePartial.js';
+import { getForexNewsRisk } from './oandaNewsRisk.js';
 
 import { HARD_SCALP_CONFIDENCE_FLOOR, isExplicitSwingSignal, normalizeScalpLifecycle } from './scalpOnlyPolicy.js';
 // ─── Config from env ──────────────────────────────────────────────────────────
@@ -1395,6 +1396,12 @@ export async function executeTrade(signal, options = {}) {
   const executionReservation = await reserveExecution({ fingerprint: setupKey, accountId, pair, direction });
   if (!executionReservation.allowed) return blocked(`Atomic setup reservation rejected: ${executionReservation.reason}`);
   const executionReservationHash = executionReservation.hash;
+
+  // FINAL LIVE NEWS SAFETY GATE: block red/high Forex Factory news ±30m before broker submission.
+  const finalNewsRisk = await getForexNewsRisk(pair, new Date());
+  if (finalNewsRisk?.blocked) {
+    return blocked(finalNewsRisk.reason || 'Forex Factory red/high-impact news blackout active; new trade blocked.', { newsRisk: finalNewsRisk, newsBlockSource: 'live_forex_factory' });
+  }
 
   const orderPayload = buildOandaMarketOrderPayload({
     pair,
