@@ -14,8 +14,7 @@
  *
  * Public contracts:
  *   getNewsRisk({ pair, now, calendar?, cfg? })
- *     -> synchronous evaluation (used by tests/legacy callers when a calendar
- *        is supplied; otherwise evaluates the currently cached feed).
+ *     -> synchronous deterministic evaluation for tests/legacy callers.
  *   getForexFactoryNewsRisk({ pair, now })
  *     -> async production evaluation with live-feed refresh.
  *   refreshForexFactoryCalendar({ force?, now? })
@@ -44,9 +43,11 @@ const FETCH_TIMEOUT_MS = Math.max(
 
 export function newsConfig() {
   return {
-    // Keep the historical switch for compatibility, but high-impact blocking
-    // remains enabled by default and production feed failures fail closed.
-    enabled: String(process.env.FOREX_NEWS_FILTER_ENABLED ?? 'true').toLowerCase() === 'true',
+    // The production red/high-impact blackout is intentionally non-optional.
+    // Keep this field for compatibility and diagnostics; it cannot disable the
+    // high-impact production safety rule.
+    enabled: true,
+    requestedEnabled: String(process.env.FOREX_NEWS_FILTER_ENABLED ?? 'true').toLowerCase() === 'true',
     blockBeforeMin: DEFAULT_BLOCK_BEFORE_MIN,
     blockAfterMin: DEFAULT_BLOCK_AFTER_MIN,
     feedUrl: FEED_URL,
@@ -151,9 +152,7 @@ async function fetchLiveCalendar() {
       signal: controller.signal,
     });
 
-    if (!response.ok) {
-      throw new Error(`Forex Factory feed HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Forex Factory feed HTTP ${response.status}`);
 
     const payload = await response.json();
     const events = parseCalendarPayload(payload);
@@ -169,31 +168,28 @@ export async function refreshForexFactoryCalendar({ force = false, now = new Dat
   const evalMs = nowMsOf(now);
   const cacheAge = evalMs - Number(_cache.loadedAt || 0);
 
-  if (!force && _cache.loadedAt > 0 && cacheAge >= 0 && cacheAge < FEED_REFRESH_MS) {
-    return _cache;
-  }
+  if (!force && _cache.loadedAt > 0 && cacheAge >= 0 && cacheAge < FEED_REFRESH_MS) return _cache;
 
   try {
     const fresh = await fetchLiveCalendar();
-    _cache = {
-      ...fresh,
-      loadedAt: evalMs,
-    };
+    _cache = { ...fresh, loadedAt: evalMs };
     return _cache;
   } catch (error) {
     const warning = error instanceof Error ? error.message : String(error);
-    const cacheStillUsable = _cache.loadedAt > 0 && _cache.events.length > 0 && cacheAge >= 0 && cacheAge <= 15 * 60 * 1000;
+    const cacheStillUsable =
+      _cache.loadedAt > 0 &&
+      _cache.events.length > 0 &&
+      cacheAge >= 0 &&
+      cacheAge <= 15 * 60 * 1000;
 
     if (cacheStillUsable) {
-      _cache = {
-        ..._cache,
-        warning,
-        healthy: false,
-      };
+      _cache = { ..._cache, warning, healthy: false };
       console.warn(`[NEWS_RISK] Forex Factory refresh failed; using cached calendar: ${warning}`);
       return _cache;
     }
 
+    // Explicit local-calendar fallback is allowed only in tests. Production
+    // execution fails closed rather than silently trading without the feed.
     const local = loadLocalCalendar();
     if (local.events.length > 0 && process.env.NODE_ENV === 'test') {
       _cache = {
@@ -213,7 +209,7 @@ export async function refreshForexFactoryCalendar({ force = false, now = new Dat
       warning,
       healthy: false,
     };
-    console.error(`[NEWS_RISK] Forex Factory feed unavailable — FAIL-CLOSED news protection: ${warning}`);
+    console.error(`[NEWS_RISK] Forex Factory feed unavailable — FAIL-CLOSED: ${warning}`);
     return _cache;
   }
 }
@@ -227,7 +223,7 @@ function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = n
   const afterMs = Number(config.blockAfterMin ?? DEFAULT_BLOCK_AFTER_MIN) * 60_000;
 
   const result = {
-    enabled: config.enabled !== false,
+    enabled: true,
     blocked: false,
     feedUnavailable: false,
     blockReason: null,
@@ -237,7 +233,12 @@ function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = n
     matchingCurrencies: currencies,
   };
 
-  if (config.enabled === false) return result;
+  // Preserve test/offline configurability when an explicit config object is
+  // supplied. Production getForexFactoryNewsRisk() always uses enabled=true.
+  if (config.enabled === false) {
+    result.enabled = false;
+    return result;
+  }
 
   if (!currencies.length) {
     result.blocked = true;
@@ -266,7 +267,8 @@ function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = n
         const when = deltaMs >= 0
           ? `in ${Math.round(deltaMs / 60_000)} minutes`
           : `${Math.round((-deltaMs) / 60_000)} minutes ago`;
-        result.blockReason = `Forex Factory RED/HIGH news blackout active for ${ev.currency}: ${ev.event} — ${when}. New entries blocked.`;
+        result.blockReason =
+          `Forex Factory RED/HIGH news blackout active for ${ev.currency}: ${ev.event} — ${when}. New entries blocked.`;
       }
     } else if (ev.impact === 'medium') {
       result.caution = true;
@@ -285,14 +287,12 @@ function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = n
 
 /**
  * Synchronous/backward-compatible contract. Passing calendar explicitly is
- * recommended for deterministic tests. Production callers should use
- * getForexFactoryNewsRisk() so the live feed is refreshed first.
+ * recommended for deterministic tests. Otherwise it evaluates the current
+ * cached feed; production callers should use getForexFactoryNewsRisk().
  */
 export function getNewsRisk({ pair, now = new Date(), calendar = null, cfg = null } = {}) {
   const cached = calendar ? null : _cache;
-  const cal = Array.isArray(calendar)
-    ? calendar
-    : cached?.events || [];
+  const cal = Array.isArray(calendar) ? calendar : cached?.events || [];
   return evaluateCalendarRisk({
     pair,
     now,
@@ -302,16 +302,9 @@ export function getNewsRisk({ pair, now = new Date(), calendar = null, cfg = nul
   });
 }
 
-/**
- * Production async contract. Live Forex Factory JSON is refreshed before the
- * risk decision whenever the refresh interval has expired.
- */
+/** Production async contract: refresh live Forex Factory data, then evaluate. */
 export async function getForexFactoryNewsRisk({ pair, now = new Date() } = {}) {
   const config = newsConfig();
-  if (config.enabled === false) {
-    return evaluateCalendarRisk({ pair, now, calendar: [], cfg: config, feedHealthy: true });
-  }
-
   const cal = await refreshForexFactoryCalendar({ now });
   return evaluateCalendarRisk({
     pair,
