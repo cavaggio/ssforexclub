@@ -9,8 +9,10 @@
  *     30 minutes after the release.
  *   - The live Forex Factory weekly JSON export is the production source of
  *     truth. The local JSON file remains an explicit test/offline fallback.
- *   - If the live feed cannot be refreshed and no still-valid cache exists,
- *     the risk result FAILS CLOSED and blocks new trades.
+ *   - A missing/stale Forex Factory feed is NOT itself a trade blocker. The
+ *     news layer only blocks when an actual high/red-impact event is present
+ *     in the blackout window. This keeps normal trading active on days with
+ *     no red-folder news.
  *
  * Public contracts:
  *   getNewsRisk({ pair, now, calendar?, cfg? })
@@ -189,7 +191,8 @@ export async function refreshForexFactoryCalendar({ force = false, now = new Dat
     }
 
     // Explicit local-calendar fallback is allowed only in tests. Production
-    // execution fails closed rather than silently trading without the feed.
+    // no longer hard-blocks on feed failure; it simply reports the feed as
+    // unavailable so the caller can diagnose the news data condition.
     const local = loadLocalCalendar();
     if (local.events.length > 0 && process.env.NODE_ENV === 'test') {
       _cache = {
@@ -209,7 +212,7 @@ export async function refreshForexFactoryCalendar({ force = false, now = new Dat
       warning,
       healthy: false,
     };
-    console.error(`[NEWS_RISK] Forex Factory feed unavailable — FAIL-CLOSED: ${warning}`);
+    console.error(`[NEWS_RISK] Forex Factory feed unavailable — news blackout inactive until calendar data is available: ${warning}`);
     return _cache;
   }
 }
@@ -276,10 +279,10 @@ function evaluateCalendarRisk({ pair, now = new Date(), calendar = null, cfg = n
     }
   }
 
-  if (!feedHealthy && !events.length) {
-    result.blocked = true;
+  // Feed health is diagnostic only. A feed outage/stale cache must not become
+  // a blanket trade blocker. Only a matching high/red event can set blocked.
+  if (!feedHealthy) {
     result.feedUnavailable = true;
-    result.blockReason = 'Forex Factory news feed unavailable or stale — blocking new trades until the calendar is available.';
   }
 
   return result;
