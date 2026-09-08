@@ -2,12 +2,17 @@
  * Central scalp-only strategy policy.
  *
  * All scanners may still use higher timeframes as directional context, but every
- * qualified/executable order uses the fixed 10-pip SL / 15-pip TP geometry.
+ * qualified/executable order uses the fixed 10-pip SL with an 80/20 profit plan:
+ * 80% at +15 pips, remaining 20% at +18 pips after breakeven protection.
  */
 
 export const HARD_SCALP_CONFIDENCE_FLOOR = 75;
 export const FIXED_STOP_LOSS_PIPS = 10;
 export const FIXED_TAKE_PROFIT_PIPS = 15;
+export const FIRST_PARTIAL_PROFIT_PIPS = 15;
+export const FIRST_PARTIAL_PERCENT = 80;
+export const FINAL_TAKE_PROFIT_PIPS = 18;
+export const FINAL_PARTIAL_PERCENT = 20;
 export const FIXED_SCALP_RR = 1.5;
 
 function envNumber(name, fallback) {
@@ -57,7 +62,8 @@ export function applyScalpMetadata(signal = {}) {
 }
 
 /**
- * Authoritative fixed scalp lifecycle: 10-pip SL, 15-pip TP, 1.50R.
+ * Authoritative fixed scalp lifecycle: 10-pip SL, 15-pip first milestone,
+ * 80% first partial, 20% runner to the 18-pip final milestone, 1.50R minimum.
  * Structure-derived levels cannot override executable risk geometry.
  */
 export function normalizeScalpLifecycle({ pair, direction, entryPrice, lifecycle = null } = {}) {
@@ -69,13 +75,16 @@ export function normalizeScalpLifecycle({ pair, direction, entryPrice, lifecycle
   const pipSize = pipSizeFor(pair);
   const precision = pricePrecisionFor(pair);
   const stopLossPips = FIXED_STOP_LOSS_PIPS;
-  const takeProfitPips = FIXED_TAKE_PROFIT_PIPS;
+  const takeProfitPips = FIRST_PARTIAL_PROFIT_PIPS;
   const stopLossPrice = direction === 'long'
     ? Number((entry - stopLossPips * pipSize).toFixed(precision))
     : Number((entry + stopLossPips * pipSize).toFixed(precision));
   const takeProfitPrice = direction === 'long'
     ? Number((entry + takeProfitPips * pipSize).toFixed(precision))
     : Number((entry - takeProfitPips * pipSize).toFixed(precision));
+  const finalTakeProfitPrice = direction === 'long'
+    ? Number((entry + FINAL_TAKE_PROFIT_PIPS * pipSize).toFixed(precision))
+    : Number((entry - FINAL_TAKE_PROFIT_PIPS * pipSize).toFixed(precision));
 
   const maxHold = scalpMaxHoldMinutes();
   const existingMin = Number(lifecycle?.hold?.minMinutes);
@@ -102,19 +111,36 @@ export function normalizeScalpLifecycle({ pair, direction, entryPrice, lifecycle
       allowed: true,
       takeProfitPips,
       takeProfitPrice,
+      finalTakeProfitPips: FINAL_TAKE_PROFIT_PIPS,
+      finalTakeProfitPrice,
+      firstPartialPercent: FIRST_PARTIAL_PERCENT,
+      finalPartialPercent: FINAL_PARTIAL_PERCENT,
       riskReward: FIXED_SCALP_RR,
-      targetReason: 'fixed 15-pip first profit milestone',
+      targetReason: 'fixed 15-pip first profit milestone; 80% partial, 20% runner to 18 pips',
     },
     hold: {
       ...(lifecycle.hold || {}),
       minMinutes,
       maxMinutes,
       strategy: 'SCALP',
-      timeToTPReason: `${lifecycle?.hold?.timeToTPReason || 'fixed scalp lifecycle'} [fixed 15p TP]`,
+      timeToTPReason: `${lifecycle?.hold?.timeToTPReason || 'fixed scalp lifecycle'} [15p first milestone / 18p final milestone]`,
     },
     riskRewardRatio: FIXED_SCALP_RR,
     expectedHoldTimeMinutes: Math.round((minMinutes + maxMinutes) / 2),
   };
 
-  return { allowed: true, lifecycle: normalized, stopLossPips, stopLossPrice, takeProfitPips, takeProfitPrice, riskReward: FIXED_SCALP_RR, scalpTpCap: FIXED_TAKE_PROFIT_PIPS };
+  return {
+    allowed: true,
+    lifecycle: normalized,
+    stopLossPips,
+    stopLossPrice,
+    takeProfitPips,
+    takeProfitPrice,
+    finalTakeProfitPips: FINAL_TAKE_PROFIT_PIPS,
+    finalTakeProfitPrice,
+    firstPartialPercent: FIRST_PARTIAL_PERCENT,
+    finalPartialPercent: FINAL_PARTIAL_PERCENT,
+    riskReward: FIXED_SCALP_RR,
+    scalpTpCap: FINAL_TAKE_PROFIT_PIPS,
+  };
 }
