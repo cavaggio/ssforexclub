@@ -8,9 +8,14 @@
  *   High/red-impact events affecting either currency block new trades from
  *   30 minutes before through 30 minutes after the scheduled release.
  *
+ * IMPORTANT:
+ *   A missing, stale, empty, or temporarily unavailable Forex Factory feed is
+ *   diagnostic only. It MUST NOT create a blanket trade blocker. When there
+ *   are no red/high-impact events for the pair, trading continues normally.
+ *
  * The underlying live provider lives in server/news/forexFactoryNews.js.
- * Feed refreshes are cached briefly and fail closed when no usable calendar is
- * available, so a broken news feed cannot silently permit a new trade.
+ * Feed refreshes are cached briefly, but only an actual matching high/red
+ * event can set `blocked=true` in production.
  */
 
 import {
@@ -20,7 +25,9 @@ import {
   pairCurrencies as forexFactoryPairCurrencies,
 } from './news/forexFactoryNews.js';
 
-const FILTER_ENABLED = String(process.env.FOREX_NEWS_FILTER_ENABLED ?? 'true').toLowerCase() === 'true';
+// The red/high-impact blackout is part of the execution safety rule, not an
+// environment-toggleable filter. There is deliberately no env bypass here.
+const FILTER_ENABLED = true;
 const HIGH_BLOCK_MIN = 30;
 const MED_CAUTION_MIN = 15;
 
@@ -57,33 +64,13 @@ function eventForDisplay(event, evalMs) {
  *
  * This adapter always consults the live Forex Factory risk layer. The live
  * layer uses the 30-minute red/high-impact blackout on both sides of release.
+ * Feed health is reported for diagnostics but never converted into a blanket
+ * trade block.
  */
 export async function getForexNewsRisk(pair, now = new Date()) {
   const evalDate = now instanceof Date ? now : new Date(now);
   const evalMs = evalDate.getTime();
   const currencies = parsePair(pair);
-
-  if (!FILTER_ENABLED) {
-    return {
-      pair,
-      enabled: false,
-      blocked: false,
-      feedUnavailable: false,
-      riskLevel: 'low',
-      matchingCurrencies: currencies,
-      upcomingEvents: [],
-      recentEvents: [],
-      postNewsConfirmationRequired: false,
-      reason: 'News filter disabled (FOREX_NEWS_FILTER_ENABLED=false)',
-      provider: { source: null, warning: 'disabled' },
-      config: {
-        highImpactBlockMinutes: HIGH_BLOCK_MIN,
-        highImpactBlockMinutesBefore: HIGH_BLOCK_MIN,
-        highImpactBlockMinutesAfter: HIGH_BLOCK_MIN,
-        mediumImpactCautionMinutes: MED_CAUTION_MIN,
-      },
-    };
-  }
 
   const risk = await getForexFactoryNewsRisk({ pair, now: evalDate });
   const allEvents = Array.isArray(risk?.events) ? risk.events : [];
@@ -98,7 +85,7 @@ export async function getForexNewsRisk(pair, now = new Date()) {
 
   return {
     pair,
-    enabled: true,
+    enabled: FILTER_ENABLED,
     blocked: risk.blocked === true,
     feedUnavailable: risk.feedUnavailable === true,
     riskLevel: riskLevelFromRisk(risk),
@@ -109,7 +96,7 @@ export async function getForexNewsRisk(pair, now = new Date()) {
     reason: risk.blockReason || risk.cautionReason || 'No Forex Factory red-impact blackout active',
     provider: {
       source: forexFactoryNewsConfig().feedUrl,
-      warning: risk.feedUnavailable ? risk.blockReason : null,
+      warning: risk.feedUnavailable ? 'Forex Factory feed unavailable/stale; news blocking remains inactive until a matching red/high-impact event is confirmed.' : null,
     },
     config: {
       highImpactBlockMinutes: HIGH_BLOCK_MIN,
