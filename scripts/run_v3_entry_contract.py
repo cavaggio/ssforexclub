@@ -38,7 +38,8 @@ required = {
         "Pure V3 execution requires a successful Stage 2 confirmation",
         "Repriced V3 geometry from",
         "const FIXED_FOREX_STOP_LOSS_PIPS = 10.0;",
-        "const FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0;",
+        "const FIXED_FOREX_TAKE_PROFIT_PIPS = 18.0;",
+        "FIRST 80%@15p / FINAL 20%@18p",
     ],
 }
 
