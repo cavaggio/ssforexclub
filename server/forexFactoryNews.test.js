@@ -15,6 +15,35 @@ test('high-impact news within window blocks the pair (either currency)', () => {
   assert.match(r.blockReason, /RED\/HIGH news blackout active for USD: Non-Farm Payrolls/);
 });
 
+test('high-impact event blocks exactly at the 30-minute pre-release boundary', () => {
+  const now = new Date('2026-06-05T12:00:00Z');
+  const r = getNewsRisk({ pair: 'EUR_USD', now, calendar, cfg });
+  assert.equal(r.blocked, true);
+});
+
+test('high-impact event blocks exactly at the 30-minute post-release boundary', () => {
+  const now = new Date('2026-06-05T13:00:00Z');
+  const r = getNewsRisk({ pair: 'EUR_USD', now, calendar, cfg });
+  assert.equal(r.blocked, true);
+});
+
+test('outside the blackout window there is no high-impact block', () => {
+  const before = getNewsRisk({
+    pair: 'EUR_USD',
+    now: new Date('2026-06-05T11:59:59Z'),
+    calendar,
+    cfg,
+  });
+  const after = getNewsRisk({
+    pair: 'EUR_USD',
+    now: new Date('2026-06-05T13:00:01Z'),
+    calendar,
+    cfg,
+  });
+  assert.equal(before.blocked, false);
+  assert.equal(after.blocked, false);
+});
+
 test('medium-impact news adds caution only (no block)', () => {
   const now = new Date('2026-06-05T12:40:00Z');
   const r = getNewsRisk({ pair: 'EUR_GBP', now, calendar, cfg }); // only EUR medium applies
@@ -23,7 +52,7 @@ test('medium-impact news adds caution only (no block)', () => {
   assert.match(r.cautionReason, /Medium-impact/);
 });
 
-test('outside the window there is no block or caution', () => {
+test('outside the event window there is no block or caution', () => {
   const now = new Date('2026-06-05T18:00:00Z'); // hours after the events
   const r = getNewsRisk({ pair: 'EUR_USD', now, calendar, cfg });
   assert.equal(r.blocked, false);
