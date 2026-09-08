@@ -91,7 +91,7 @@ export function pprExecutionConfidenceFloor() {
 // Fixed forex execution geometry. Applied only after the existing strategy
 // qualification gates accept the setup. Metals keep their existing geometry.
 const FIXED_FOREX_STOP_LOSS_PIPS = 10.0;
-const FIXED_FOREX_TAKE_PROFIT_PIPS = 15.0;
+const FIXED_FOREX_TAKE_PROFIT_PIPS = 18.0;
 
 const METALS_MAX_SPREAD_PIPS= parseFloat(process.env.METALS_MAX_SPREAD_PIPS      || '50');
 const FIXED_LOT_SIZE        = parseFloat(process.env.FOREX_FIXED_LOT_SIZE        || '0.01');
@@ -1170,9 +1170,9 @@ export async function executeTrade(signal, options = {}) {
     signal.stopLoss = slPriceFromLifecycle;
     signal.takeProfit = tpPriceFromLifecycle;
     signal.targetProfit = tpPriceFromLifecycle;
-    signal.expectedRR = 1.0;
-    signal.rr = 1.0;
-    signal.riskReward = 1.0;
+    signal.expectedRR = 1.5;
+    signal.rr = 1.5;
+    signal.riskReward = 1.5;
     signal.lifecycle = {
       ...(signal.lifecycle || {}),
       sl: {
@@ -1191,7 +1191,7 @@ export async function executeTrade(signal, options = {}) {
     };
     console.log(
       `[TRADE_FIXED_GEOMETRY] ${pair} ${direction} SL=${FIXED_FOREX_STOP_LOSS_PIPS.toFixed(1)}p ` +
-      `TP=${FIXED_FOREX_TAKE_PROFIT_PIPS.toFixed(1)}p RR=1.00`,
+      `TP=${FIXED_FOREX_TAKE_PROFIT_PIPS.toFixed(1)}p FINAL | FIRST 80%@15p / FINAL 20%@18p`,
     );
   }
 
