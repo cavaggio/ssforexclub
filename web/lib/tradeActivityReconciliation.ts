@@ -8,6 +8,24 @@ export type TradeClosureReconciliation = {
   warning: string | null;
 };
 
+function friendlyErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const normalized = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+
+  if (
+    lower.includes('522') ||
+    lower.includes('connection timed out') ||
+    lower.includes('cloudflare') ||
+    lower.includes('gateway time-out') ||
+    lower.includes('gateway timeout')
+  ) {
+    return 'Supabase is temporarily unreachable (Cloudflare 522 timeout). Trade reconciliation was skipped; no order settings were changed.';
+  }
+
+  return (normalized || 'temporary reconciliation error').slice(0, 300);
+}
+
 /**
  * Reconcile broker lifecycle events from OANDA's authoritative transaction
  * stream. The previous implementation inferred a close whenever an opened trade
@@ -61,7 +79,7 @@ export async function reconcileBrokerClosuresForUser(userId: string): Promise<Tr
 
     return { synced: sync.logged, warning: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = friendlyErrorMessage(error);
     console.warn('[TRADE_ACTIVITY] reconciliation unavailable:', message);
     return {
       synced: 0,
