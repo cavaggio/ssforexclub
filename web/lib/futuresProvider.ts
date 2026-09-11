@@ -2,9 +2,9 @@
  * web/lib/futuresProvider.ts
  *
  * Server-only credential + feature-flag layer for NinjaTrader, Topstep, and
- * the FTMO MT5 bridge. These reuse broker_connections + AES-256-GCM encryption,
- * but carry a multi-field credential object rather than a single token.
- * Credentials are never returned to the browser.
+ * the FTMO MT5 EA connector. These reuse broker_connections + AES-256-GCM
+ * encryption, but carry a multi-field credential object rather than a single
+ * token. Credentials are never returned to the browser.
  */
 
 import 'server-only';
@@ -20,7 +20,7 @@ export type FuturesProvider = 'ninjatrader' | 'topstep' | 'ftmo';
 
 export const NINJATRADER_REQUIRED_FIELDS = ['name', 'password', 'appId', 'appVersion', 'cid', 'sec'] as const;
 export const TOPSTEP_REQUIRED_FIELDS = ['userName', 'apiKey'] as const;
-export const FTMO_REQUIRED_FIELDS = ['accountLogin', 'server', 'bridgeUrl', 'bridgeApiKey', 'bridgeSecret'] as const;
+export const FTMO_REQUIRED_FIELDS = ['accountLogin', 'server', 'terminalId', 'terminalToken'] as const;
 
 export type FuturesValidation = { ok: boolean; missing: string[]; error?: string };
 
@@ -57,8 +57,8 @@ export function validateFuturesCredentials(provider: FuturesProvider, creds: Rec
   if (!/^\d+$/.test(String(creds.accountLogin).trim())) {
     return { ok: false, missing: [], error: 'FTMO MT5 login must contain digits only' };
   }
-  if (String(creds.bridgeSecret).trim().length < 16) {
-    return { ok: false, missing: [], error: 'FTMO bridge secret must be at least 16 characters' };
+  if (String(creds.terminalToken).trim().length < 32) {
+    return { ok: false, missing: [], error: 'MT5 EA terminal token is invalid' };
   }
   return { ok: true, missing: [] };
 }
@@ -90,8 +90,6 @@ export async function saveFuturesConnection(args: {
   if (!check.ok) throw new Error(check.error);
 
   const accountId = deriveAccountId(provider, credentials) || provider;
-  // createBrokerConnection performs an atomic upsert for this exact logical
-  // account, reactivating a previously disabled row without a duplicate insert.
   return createBrokerConnection({
     clerkUserId,
     broker: provider,
