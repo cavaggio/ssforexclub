@@ -20,7 +20,14 @@ const isPublicRoute = createRouteMatcher([
   '/',
   '/api/health',          // unauthenticated health-check (for Vercel/Render probes)
   '/sso-callback(.*)',    // Clerk OAuth handshake
-  '/api/cron(.*)',        // system cron endpoints (no Clerk session) — gated by their own X-Cron-Secret
+  // Only these system endpoints bypass Clerk. Each verifies X-Cron-Secret.
+  // New routes (including /api/cron-* or /api/cron/new-job) stay protected.
+  '/api/cron/edge-learning-refresh',
+  '/api/cron/oanda-transaction-sync',
+  '/api/cron/auto-ai-trading',
+  '/api/cron/active-trade-management',
+  '/api/cron/auto-ai-trading-extended',
+  '/api/cron/engine-learning-backfill',
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

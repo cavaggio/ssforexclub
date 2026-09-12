@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { createSingleFlight, learningRead } from './supabaseLearningRead.js';
 import { applyStoredStudyCalibration } from './dailyMarketStudy.js';
 import {
   ENGINE_TRADE_LEARNING_HARD_GATES,
@@ -11,6 +12,7 @@ import {
 } from './signalExecutionQuality.js';
 
 const profileCache = new Map();
+const profileRead = createSingleFlight();
 let supabaseClient;
 let warnedMissingSchema = false;
 
@@ -78,7 +80,7 @@ function schemaMissing(error) {
     /engine_signal_learning_stats|engine_learning_adjustment_effectiveness_stats|ict_trade_failure_stats/i.test(message);
 }
 
-async function loadRows(view, userId, accountId, engine, pair) {
+async function loadRows(view, userId, accountId, engine, pair, signal) {
   const supabase = db();
   if (!supabase) return [];
   let query = supabase
@@ -89,12 +91,12 @@ async function loadRows(view, userId, accountId, engine, pair) {
     .eq('pair', pair)
     .eq('horizon_minutes', 60);
   if (userId) query = query.eq('user_id', userId);
-  const { data, error } = await query;
+  const { data, error } = await learningRead(query, signal);
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }
 
-async function loadAccountRows(view, userId, accountId, engine) {
+async function loadAccountRows(view, userId, accountId, engine, signal) {
   const supabase = db();
   if (!supabase) return [];
   let query = supabase
@@ -103,7 +105,7 @@ async function loadAccountRows(view, userId, accountId, engine) {
     .eq('broker_account_id', accountId)
     .eq('engine', engine);
   if (userId) query = query.eq('user_id', userId);
-  const { data, error } = await query;
+  const { data, error } = await learningRead(query, signal);
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }
@@ -118,19 +120,27 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
   const cached = profileCache.get(key);
   if (!force && cached && Date.now() - cached.loadedAt < cacheTtlMs()) return cached.profile;
 
+  return profileRead(key, () => readEngineTradeProfile({
+    key, userId, accountId, normalizedEngine, normalizedPair,
+  }));
+}
+
+async function readEngineTradeProfile({ key, userId, accountId, normalizedEngine, normalizedPair }) {
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
   try {
     const [pairRows, recentPairRows, accountRows7d, contextStats, confirmationStats, qualityRows] = await Promise.all([
-      loadRows('engine_combined_pair_stats', userId, accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_actual_account_pair_accuracy_7d', userId, accountId, normalizedEngine, normalizedPair),
-      loadAccountRows('engine_actual_account_accuracy_7d', userId, accountId, normalizedEngine),
-      loadRows('engine_executed_context_stats', userId, accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_executed_confirmation_stats', userId, accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_execution_quality_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_combined_pair_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadRows('engine_actual_account_pair_accuracy_7d', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadAccountRows('engine_actual_account_accuracy_7d', userId, accountId, normalizedEngine, signal),
+      loadRows('engine_executed_context_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadRows('engine_executed_confirmation_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadRows('engine_execution_quality_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
     ]);
     const [signalQualityRows, adjustmentEffectivenessRows, failureRows] = await Promise.all([
-      loadRows('engine_signal_learning_stats', userId, accountId, normalizedEngine, normalizedPair),
-      loadRows('engine_learning_adjustment_effectiveness_stats', userId, accountId, normalizedEngine, normalizedPair),
-      loadRows('ict_trade_failure_stats', userId, accountId, normalizedEngine, normalizedPair),
+      loadRows('engine_signal_learning_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadRows('engine_learning_adjustment_effectiveness_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
+      loadRows('ict_trade_failure_stats', userId, accountId, normalizedEngine, normalizedPair, signal),
     ]);
     const profile = {
       accountId,
@@ -158,8 +168,12 @@ export async function loadEngineTradeProfile({ client, engine, pair, force = fal
       }
       return null;
     }
-    console.warn(`[ENGINE_LEARNING] profile read failed ${normalizedEngine}/${normalizedPair}: ${error?.message || String(error)}`);
+    console.warn(`[ENGINE_LEARNING] profile read failed ${normalizedEngine}/${normalizedPair} code=${error?.code || 'unknown'}: ${error?.message || String(error)}`);
     return null;
+  } finally {
+    // One failed view must not leave sibling reads running after the shared
+    // profile request has finished and the next scan is eligible to retry.
+    controller.abort();
   }
 }
 
