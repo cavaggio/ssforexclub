@@ -1,26 +1,25 @@
 /**
  * web/lib/scannerProxy.ts
  *
- * Shared helper for the authenticated /api/scanner/* routes. Each route:
- *   1. Authenticates the request via Clerk.
- *   2. Resolves the current user's active broker connection (decrypted
- *      credentials, environment, baseUrl).
- *   3. Hard-fails (409) if no usable credentials exist for the chosen mode —
- *      no silent fallback to platform defaults.
- *   4. Forwards a server-to-server request to the Railway scanner's internal
- *      endpoint with the credentials in the body and a shared secret in the
- *      X-Internal-Auth header.
- *   5. Wraps the scanner payload with active-mode metadata for the dashboard.
+ * Shared helper for the authenticated /api/scanner/* routes.
  *
- * The token never leaves the server. The browser never sees Railway's URL.
- *
- * Structured logs are emitted on every call (clerkUserId, broker, env, masked
- * accountId, usingDefaultClient: false). Tokens are never logged.
+ * Analysis and execution are intentionally separated:
+ *   - OANDA/Alpaca active modes may use their active broker credentials.
+ *   - FTMO uses MT5 EA for execution, but the scanner may use a separately
+ *     saved/validated OANDA connection strictly as a market-data source.
+ *   - FTMO analysis never falls through to OANDA execution. `analysisOnly`
+ *     forces autoExecute=false and preserves FTMO as the active broker in the
+ *     response envelope.
  */
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
+import {
+  getDecryptedBrokerCredentials,
+  listBrokerConnectionsForUser,
+  resolveBrokerBaseUrl,
+} from '@/lib/brokerConnections';
 
 const SCANNER_BASE_URL = process.env.SCANNER_BASE_URL || 'http://localhost:3001';
 
@@ -34,8 +33,6 @@ type InternalCallResult =
   | { ok: true; data: unknown }
   | { ok: false; status: number; error: string };
 
-// Exported (additive) so the system cron route — which has no Clerk session —
-// can call the Railway internal endpoints with explicitly-resolved per-user creds.
 export async function callInternalEndpoint(
   path: string,
   body: Record<string, unknown>,
@@ -48,11 +45,15 @@ export async function callInternalEndpoint(
       error: 'SCANNER_INTERNAL_SECRET not configured on the Next.js side',
     };
   }
+
   let res: Response;
   try {
     res = await fetch(`${SCANNER_BASE_URL}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Auth': secret },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Auth': secret,
+      },
       body: JSON.stringify(body),
       cache: 'no-store',
     });
@@ -63,6 +64,7 @@ export async function callInternalEndpoint(
       error: `Scanner unreachable: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
   const text = await res.text();
   let data: unknown = null;
   try {
@@ -70,6 +72,7 @@ export async function callInternalEndpoint(
   } catch {
     /* keep null */
   }
+
   if (!res.ok) {
     const detail =
       data && typeof data === 'object' && 'error' in (data as Record<string, unknown>)
@@ -77,29 +80,64 @@ export async function callInternalEndpoint(
         : text || '<empty>';
     return { ok: false, status: res.status, error: detail };
   }
+
   return { ok: true, data };
 }
 
-/**
- * Resolve the current user's broker credentials, forward a server-to-server
- * request to the given internal scanner path, and return a normalized response
- * envelope keyed by `payloadKey` (e.g. 'scan', 'analysis', 'reassessment').
- *
- * `requireLive: true` adds the extra gate "activeEnvironment must be live"
- * before forwarding — used by /api/scanner/trade. Hard-failing here keeps the
- * trade button from accidentally executing a live order from a practice
- * session.
- *
- * Always hard-fails when no per-user credentials are available. Logs every
- * call with masked identifiers — never tokens.
- */
 export type AfterCallContext = {
   userId: string;
-  broker: 'oanda' | 'alpaca';
-  environment: 'practice' | 'live' | 'paper';
+  broker: 'oanda' | 'alpaca' | 'ftmo';
+  environment: 'practice' | 'live' | 'paper' | 'challenge' | 'verification' | 'funded';
   brokerAccountId: string | null;
   isLiveTrading: boolean;
 };
+
+type MarketDataCredentials = {
+  token: string;
+  accountId: string;
+  baseUrl: string;
+  environment: 'practice' | 'live';
+  connectionId: string;
+};
+
+/**
+ * Resolve a dedicated FX market-data connection for FTMO analysis.
+ *
+ * This does NOT change the user's active execution broker and is never used by
+ * trade/close routes. Practice is preferred because the scanner only needs
+ * candles/pricing and there is no reason to route analysis through a live
+ * OANDA account when a validated practice connection exists.
+ */
+async function resolveFtmoMarketDataCredentials(userId: string): Promise<MarketDataCredentials | null> {
+  const connections = await listBrokerConnectionsForUser(userId);
+  const candidates = connections
+    .filter((connection) =>
+      connection.broker === 'oanda' &&
+      connection.isActive &&
+      connection.validationStatus === 'validated' &&
+      (connection.environment === 'practice' || connection.environment === 'live'),
+    )
+    .sort((a, b) => {
+      if (a.environment === b.environment) return 0;
+      return a.environment === 'practice' ? -1 : 1;
+    });
+
+  for (const connection of candidates) {
+    const credentials = await getDecryptedBrokerCredentials(userId, connection.id);
+    if (!credentials || credentials.broker !== 'oanda') continue;
+    if (credentials.environment !== 'practice' && credentials.environment !== 'live') continue;
+
+    return {
+      token: credentials.token,
+      accountId: credentials.accountId,
+      environment: credentials.environment,
+      baseUrl: resolveBrokerBaseUrl('oanda', credentials.environment),
+      connectionId: connection.id,
+    };
+  }
+
+  return null;
+}
 
 export async function callScannerForCurrentUser(args: {
   internalPath: string;
@@ -109,16 +147,31 @@ export async function callScannerForCurrentUser(args: {
   requireLive?: boolean;
   skipCredentials?: boolean;
   /**
-   * Optional hook fired after the internal call returns (whether or not it
-   * succeeded) and before the NextResponse is built. Use this to write trade
-   * logs / audit records from inside the user's authenticated request.
-   * Never throws to the upstream — the proxy wraps it in try/catch.
+   * Read-only market analysis. When FTMO is active this permits the scanner to
+   * use a separately validated OANDA connection as market-data transport while
+   * keeping MT5 EA as the only execution transport.
    */
-  afterCall?: (ctx: AfterCallContext, result: { ok: boolean; data: unknown; error?: string }) => Promise<void> | void;
+  analysisOnly?: boolean;
+  afterCall?: (
+    ctx: AfterCallContext,
+    result: { ok: boolean; data: unknown; error?: string },
+  ) => Promise<void> | void;
 }): Promise<NextResponse> {
-  const { internalPath, logTag, payloadKey, extraBody = {}, requireLive = false, skipCredentials = false, afterCall } = args;
+  const {
+    internalPath,
+    logTag,
+    payloadKey,
+    extraBody = {},
+    requireLive = false,
+    skipCredentials = false,
+    analysisOnly = false,
+    afterCall,
+  } = args;
 
-  const runAfterCall = async (ctx: AfterCallContext, result: { ok: boolean; data: unknown; error?: string }) => {
+  const runAfterCall = async (
+    ctx: AfterCallContext,
+    result: { ok: boolean; data: unknown; error?: string },
+  ) => {
     if (!afterCall) return;
     try {
       await afterCall(ctx, result);
@@ -132,8 +185,6 @@ export async function callScannerForCurrentUser(args: {
     return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
   }
 
-  // For broker-free routes (e.g. calibration), we still require Clerk auth
-  // but skip the broker-credential gate and don't forward apiKey/accountId.
   if (skipCredentials) {
     console.log(`[${logTag}] clerkUserId=${userId} skipCredentials=true`);
     const result = await callInternalEndpoint(internalPath, { ...extraBody });
@@ -147,6 +198,90 @@ export async function callScannerForCurrentUser(args: {
   }
 
   const resolved = await resolveActiveBrokerForUser(userId);
+
+  // FTMO analysis path: execution remains MT5-only, while OANDA is explicitly
+  // used as market-data transport for candles/pricing. This is not an execution
+  // fallback. autoExecute is hard-disabled here regardless of caller input.
+  if (
+    analysisOnly &&
+    resolved.activeBroker === 'ftmo' &&
+    resolved.executionTransport === 'mt5_ea' &&
+    resolved.brokerCredentialStatus === 'ready'
+  ) {
+    const marketData = await resolveFtmoMarketDataCredentials(userId);
+    if (!marketData) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'FTMO is connected, but no validated OANDA market-data connection is available for scanner candles/pricing.',
+          brokerCredentialStatus: 'market_data_unavailable',
+          activeBroker: 'ftmo',
+          activeEnvironment: resolved.activeEnvironment,
+          executionTransport: 'mt5_ea',
+        },
+        { status: 409 },
+      );
+    }
+
+    console.log(
+      `[${logTag}] clerkUserId=${userId} executionBroker=ftmo executionTransport=mt5_ea ` +
+      `marketDataBroker=oanda marketDataEnv=${marketData.environment} ` +
+      `marketDataAccount=${maskAccountId(marketData.accountId)} analysisOnly=true`,
+    );
+
+    const result = await callInternalEndpoint(internalPath, {
+      apiKey: marketData.token,
+      accountId: marketData.accountId,
+      baseUrl: marketData.baseUrl,
+      environment: marketData.environment,
+      ...extraBody,
+      // Never allow a scanner endpoint to place an OANDA order while FTMO is
+      // the selected execution broker.
+      autoExecute: false,
+      analysisOnly: true,
+      executionBroker: 'ftmo',
+      executionTransport: 'mt5_ea',
+      userId,
+    });
+
+    const afterCtx: AfterCallContext = {
+      userId,
+      broker: 'ftmo',
+      environment: resolved.activeEnvironment as AfterCallContext['environment'],
+      brokerAccountId: resolved.activeConnectionId,
+      isLiveTrading: resolved.isLiveTrading,
+    };
+
+    if (!result.ok) {
+      await runAfterCall(afterCtx, { ok: false, data: null, error: result.error });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: result.error,
+          activeBroker: 'ftmo',
+          activeEnvironment: resolved.activeEnvironment,
+          executionTransport: 'mt5_ea',
+          marketDataBroker: 'oanda',
+          marketDataEnvironment: marketData.environment,
+        },
+        { status: result.status },
+      );
+    }
+
+    await runAfterCall(afterCtx, { ok: true, data: result.data });
+    return NextResponse.json({
+      ok: true,
+      activeBroker: 'ftmo',
+      activeEnvironment: resolved.activeEnvironment,
+      isLiveTrading: resolved.isLiveTrading,
+      isPaperTrading: resolved.isPaperTrading,
+      executionTransport: 'mt5_ea',
+      marketDataBroker: 'oanda',
+      marketDataEnvironment: marketData.environment,
+      [payloadKey]: result.data,
+    });
+  }
+
   if (
     resolved.brokerCredentialStatus !== 'ready' ||
     !resolved.getCredentials ||
@@ -177,8 +312,7 @@ export async function callScannerForCurrentUser(args: {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          'Trade execution requires live mode. Switch to OANDA Live in Settings before executing trades.',
+        error: 'Trade execution requires live mode. Switch to OANDA Live in Settings before executing trades.',
         brokerCredentialStatus: 'not_live',
         activeEnvironment: resolved.activeEnvironment,
         activeBroker: resolved.activeBroker,
@@ -215,8 +349,8 @@ export async function callScannerForCurrentUser(args: {
 
   const afterCtx: AfterCallContext = {
     userId,
-    broker: (resolved.activeBroker ?? 'oanda') as 'oanda' | 'alpaca',
-    environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
+    broker: (resolved.activeBroker ?? 'oanda') as AfterCallContext['broker'],
+    environment: resolved.activeEnvironment as AfterCallContext['environment'],
     brokerAccountId: creds.accountId,
     isLiveTrading: resolved.isLiveTrading,
   };
