@@ -91,7 +91,7 @@ export default async function FtmoPage() {
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12 }}>
-          Safe activation sequence: connected EA → v1.21 risk heartbeat → one 0.01-lot order test → verify broker result → enable autonomous FTMO execution.
+          Safe activation sequence: connected EA → bridge v1.23 + risk policy v1.21 heartbeat → one 0.01-lot order test with resolved order/deal/position IDs → verify broker result → enable autonomous FTMO execution.
         </p>
 
         {hasLegacyProviderSetting && (
@@ -112,12 +112,19 @@ export default async function FtmoPage() {
 
           <Row label="FTMO connector" active={ftmoEnabled} />
           <Row label="EA heartbeat" active={readiness?.terminalConnected === true && readiness?.heartbeatFresh === true} />
+          <Row label="Bridge v1.23" active={readiness?.bridgeVersionCompatible === true} />
+          <Row label="Risk policy v1.21" active={readiness?.policyVersionCompatible === true} />
           <Row label="Order test verified" active={readiness?.orderTestVerified === true} />
           <Row label="Live execution gate" active={liveExecution} />
           <Row label="Auto trade gate" active={autoTrade} />
           <Row label="V3 engine" active={useV3} />
           <Row label="ICT engine" active={useICT} />
           <Row label="Saved FTMO connection" active={Boolean(active)} />
+
+          <div style={card}>
+            <strong>Bridge heartbeat</strong>
+            <span>{readiness?.terminalBridgeVersion ?? '—'}</span>
+          </div>
 
           <div style={card}>
             <strong>Environment</strong>
@@ -139,7 +146,7 @@ export default async function FtmoPage() {
       </section>
 
       <FtmoOrderTestControl
-        connected={readiness?.terminalConnected === true && readiness?.heartbeatFresh === true}
+        connected={readiness?.terminalConnected === true && readiness?.heartbeatFresh === true && readiness?.bridgeVersionCompatible === true && readiness?.policyVersionCompatible === true}
         liveExecutionEnabled={liveExecution}
         orderTestVerified={readiness?.orderTestVerified === true}
         marketClosedMessage={marketClosedMessage()}
