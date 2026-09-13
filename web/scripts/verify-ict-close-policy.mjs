@@ -17,7 +17,7 @@ for (const marker of [
   'outside_management_window_02:15-17:30_ET',
 ]) {
   if (!route.includes(marker)) {
-    throw new Error(`Profit Protection v3 route verification failed: missing ${marker}`);
+    throw new Error(`Profit Protection v4 route verification failed: missing ${marker}`);
   }
 }
 
@@ -27,32 +27,33 @@ for (const forbidden of [
   "decision.action === 'FULL_CLOSE'",
 ]) {
   if (route.includes(forbidden)) {
-    throw new Error(`Profit Protection v3 route verification failed: forbidden ${forbidden}`);
+    throw new Error(`Profit Protection v4 route verification failed: forbidden ${forbidden}`);
   }
 }
 
 for (const marker of [
-  "ACTIVE_EXIT_POLICY = 'profit_protection_v3'",
-  'FIXED_STOP_LOSS_PIPS = 10',
+  "ACTIVE_EXIT_POLICY = 'profit_protection_v4'",
+  'FIXED_STOP_LOSS_PIPS = 15',
+  'BREAK_EVEN_TRIGGER_PIPS = 10',
   'FIRST_TAKE_PROFIT_PIPS = 15',
   'FIRST_PARTIAL_PERCENT = 80',
   'FINAL_TAKE_PROFIT_PIPS = 18',
   'FINAL_PARTIAL_PERCENT = 20',
-  'FIXED_RR = 1.5',
+  'FIXED_RR = 1.04',
   "action: 'MOVE_STOP_TO_BREAKEVEN'",
   "action: 'PARTIAL_CLOSE'",
   'automaticFullCloseAllowed: false',
   "decision?.action !== 'PARTIAL_CLOSE'",
 ]) {
   if (!policy.includes(marker)) {
-    throw new Error(`Profit Protection v3 policy verification failed: missing ${marker}`);
+    throw new Error(`Profit Protection v4 policy verification failed: missing ${marker}`);
   }
 }
 
 for (const forbidden of ["action: 'FULL_CLOSE'", "return 'ALL'"]) {
   if (policy.includes(forbidden)) {
-    throw new Error(`Profit Protection v3 policy verification failed: forbidden ${forbidden}`);
+    throw new Error(`Profit Protection v4 policy verification failed: forbidden ${forbidden}`);
   }
 }
 
-console.log('Profit Protection v3 verified: fixed 10 pip SL, 80% partial at +15 pips, breakeven remaining 20%, and final 20% close at +18 pips; no automatic full close.');
+console.log('Profit Protection v4 verified: 15 pip SL, breakeven at +10 pips, 80% partial at +15 pips, final 20% close at +18 pips; no discretionary automatic full close.');
