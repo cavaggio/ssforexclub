@@ -1,8 +1,6 @@
 /**
- * web/app/api/ict/analyze/[pair]/route.ts
- *
- * ICT Intelligence — analyse a single pair. Same authenticated proxy path as
- * the all-pairs route, scoped via `pairs:[pair]`. Read-only / shadow.
+ * ICT Intelligence — analyse a single pair. Read-only market analysis remains
+ * available when FTMO is the active execution broker.
  */
 
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
@@ -16,6 +14,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ pair: string }
     internalPath: '/api/internal/oanda/ict',
     logTag: 'ICT_ANALYZE_PAIR',
     payloadKey: 'ict',
+    analysisOnly: true,
     extraBody: { pairs: [pair.toUpperCase()] },
   });
 }
