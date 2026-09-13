@@ -124,11 +124,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
     }).eq('id', commandId)
       .eq('account_login', terminal.accountLogin)
       .eq('terminal_id', terminal.terminalId)
-      .select('id')
+      .select('id,payload')
       .maybeSingle();
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     if (!data) return NextResponse.json({ ok: false, error: 'Unknown command' }, { status: 404 });
-    return NextResponse.json({ ok: true });
+
+    const payload = data.payload && typeof data.payload === 'object'
+      ? data.payload as Record<string, unknown>
+      : {};
+    const successfulOrderTest = success && payload.testMode === true && payload.source === 'signal-stack-ftmo-order-test';
+    if (successfulOrderTest) {
+      await supabase.from('mt5_ea_terminals').update({
+        order_test_verified_at: new Date().toISOString(),
+        order_test_command_id: data.id,
+        updated_at: new Date().toISOString(),
+      })
+        .eq('account_login', terminal.accountLogin)
+        .eq('terminal_id', terminal.terminalId);
+    }
+
+    return NextResponse.json({ ok: true, orderTestVerified: successfulOrderTest || undefined });
   }
 
   return NextResponse.json({ ok: false, error: 'Unknown MT5 EA operation' }, { status: 404 });
