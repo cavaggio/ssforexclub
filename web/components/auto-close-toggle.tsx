@@ -105,7 +105,7 @@ export function AutoCloseToggle() {
           <div style={{ fontWeight: 800, fontSize: 14 }}>Auto Profit Protection</div>
           <div style={{ marginTop: 4, color: 'var(--muted)', fontSize: 12, lineHeight: 1.55 }}>
             {state.ftmoHardPolicy
-              ? 'FTMO uses mandatory broker-side protection in SignalStackBridge v1.20: 15-pip SL, breakeven at +10 pips, 80% partial at +15 pips, and the final 20% at +18 pips.'
+              ? 'FTMO uses mandatory broker-side protection in SignalStackBridge v1.21: 10-pip SL, breakeven at +10 pips, 80% partial at +15 pips, and the final 20% at +18 pips (1.56R blended).'
               : 'Automatic protection never widens a stop or guesses an early full exit. It protects profitable trades according to the active broker policy.'}
           </div>
           <div style={{ marginTop: 7, fontSize: 12 }}>
