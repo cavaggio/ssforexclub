@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.22"
+#property version   "1.23"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -11,9 +11,10 @@ input string TerminalToken = "";
 input int PollSeconds = 2;
 input ulong SignalStackMagic = 560091247;
 
-// Risk policy version remains 1.21. Bridge v1.22 adds detailed position
-// snapshots and makes MT5 volume (lots) the canonical FTMO position size.
-const string BRIDGE_VERSION = "1.22";
+// Risk policy remains 1.21. Bridge v1.23 adds deterministic broker fill
+// reconciliation so every accepted order is linked to its MT5 order, deal,
+// position identifier/ticket, and actual fill price before it is reported.
+const string BRIDGE_VERSION = "1.23";
 const string RISK_POLICY_VERSION = "1.21";
 const double BASE_RISK_PERCENT = 1.0;
 const double POST_SL_RISK_PERCENT = 0.5;
@@ -321,6 +322,92 @@ ulong FindNewestSignalStackPosition(string symbol) {
    return bestTicket;
 }
 
+ulong FindPositionByIdentifier(ulong identifier, string symbol) {
+   if(identifier == 0) return 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      if(!IsSignalStackPositionSelected()) continue;
+      ulong currentIdentifier = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(currentIdentifier == identifier) return ticket;
+   }
+   return 0;
+}
+
+bool ResolveExecutionFill(string symbol,
+                          datetime submittedAt,
+                          ulong orderTicket,
+                          ulong &dealTicket,
+                          ulong &positionTicket,
+                          ulong &positionIdentifier,
+                          double &fillPrice) {
+   dealTicket = trade.ResultDeal();
+   positionTicket = 0;
+   positionIdentifier = 0;
+   fillPrice = trade.ResultPrice();
+
+   for(int attempt = 0; attempt < 20; attempt++) {
+      if(orderTicket > 0 && PositionSelectByTicket(orderTicket)) {
+         if(PositionGetString(POSITION_SYMBOL) == symbol && IsSignalStackPositionSelected()) {
+            positionTicket = orderTicket;
+            positionIdentifier = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+            if(fillPrice <= 0.0) fillPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         }
+      }
+
+      if(dealTicket > 0 && HistoryDealSelect(dealTicket)) {
+         if(positionIdentifier == 0)
+            positionIdentifier = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+         if(fillPrice <= 0.0)
+            fillPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      }
+
+      if(orderTicket > 0 && (dealTicket == 0 || positionIdentifier == 0 || fillPrice <= 0.0)) {
+         datetime from = submittedAt > 10 ? submittedAt - 10 : 0;
+         HistorySelect(from, TimeCurrent() + 10);
+         for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
+            ulong candidate = HistoryDealGetTicket(i);
+            if(candidate == 0) continue;
+            if((ulong)HistoryDealGetInteger(candidate, DEAL_ORDER) != orderTicket) continue;
+            if((ulong)HistoryDealGetInteger(candidate, DEAL_MAGIC) != SignalStackMagic) continue;
+            if(HistoryDealGetString(candidate, DEAL_SYMBOL) != symbol) continue;
+            ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(candidate, DEAL_ENTRY);
+            if(dealEntry != DEAL_ENTRY_IN && dealEntry != DEAL_ENTRY_INOUT) continue;
+
+            dealTicket = candidate;
+            positionIdentifier = (ulong)HistoryDealGetInteger(candidate, DEAL_POSITION_ID);
+            fillPrice = HistoryDealGetDouble(candidate, DEAL_PRICE);
+            break;
+         }
+      }
+
+      if(positionTicket == 0 && positionIdentifier > 0)
+         positionTicket = FindPositionByIdentifier(positionIdentifier, symbol);
+
+      if(positionTicket == 0) {
+         ulong newest = FindNewestSignalStackPosition(symbol);
+         if(newest > 0 && PositionSelectByTicket(newest)) {
+            datetime openedAt = (datetime)PositionGetInteger(POSITION_TIME);
+            if(openedAt >= submittedAt - 2) {
+               positionTicket = newest;
+               if(positionIdentifier == 0)
+                  positionIdentifier = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+               if(fillPrice <= 0.0)
+                  fillPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            }
+         }
+      }
+
+      if(dealTicket > 0 && positionTicket > 0 && positionIdentifier > 0 && fillPrice > 0.0)
+         return true;
+
+      Sleep(50);
+   }
+
+   return dealTicket > 0 && positionTicket > 0 && positionIdentifier > 0 && fillPrice > 0.0;
+}
+
 void StoreInitialPositionState(ulong ticket) {
    if(ticket == 0 || !PositionSelectByTicket(ticket)) return;
    if(!GlobalVariableCheck(PositionInitialVolumeKey(ticket)))
@@ -428,6 +515,7 @@ string PositionSnapshotJson(ulong ticket) {
    long openTimeMsc = PositionGetInteger(POSITION_TIME_MSC);
    datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
    long magic = PositionGetInteger(POSITION_MAGIC);
+   ulong identifier = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
    string comment = PositionGetString(POSITION_COMMENT);
    bool managed = IsSignalStackPositionSelected();
    int priceDigits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
@@ -435,6 +523,7 @@ string PositionSnapshotJson(ulong ticket) {
 
    string json = "{";
    json += "\"ticket\":\"" + IntegerToString((long)ticket) + "\",";
+   json += "\"positionIdentifier\":\"" + IntegerToString((long)identifier) + "\",";
    json += "\"symbol\":\"" + JsonEscape(symbol) + "\",";
    json += "\"side\":\"" + side + "\",";
    json += "\"volume\":" + DoubleToString(volume, volumeDigits) + ",";
@@ -595,6 +684,7 @@ void HandleCommand(string json) {
       trade.SetExpertMagicNumber(SignalStackMagic);
       trade.SetTypeFillingBySymbol(mt5Symbol);
 
+      datetime submittedAt = TimeCurrent();
       bool ok = side == "buy"
          ? trade.Buy(volume, mt5Symbol, 0.0, sl, tp, "SignalStack")
          : trade.Sell(volume, mt5Symbol, 0.0, sl, tp, "SignalStack");
@@ -604,20 +694,45 @@ void HandleCommand(string json) {
          return;
       }
 
-      ulong positionTicket = FindNewestSignalStackPosition(mt5Symbol);
+      ulong orderTicket = trade.ResultOrder();
+      ulong dealTicket = 0;
+      ulong positionTicket = 0;
+      ulong positionIdentifier = 0;
+      double fillPrice = 0.0;
+      bool executionResolved = ResolveExecutionFill(
+         mt5Symbol,
+         submittedAt,
+         orderTicket,
+         dealTicket,
+         positionTicket,
+         positionIdentifier,
+         fillPrice
+      );
+
       if(positionTicket > 0) {
          StoreInitialPositionState(positionTicket);
          AdjustProtectionToActualFill(positionTicket);
       }
 
+      Print("Signal Stack execution reconcile order=", orderTicket,
+            " deal=", dealTicket,
+            " positionTicket=", positionTicket,
+            " positionIdentifier=", positionIdentifier,
+            " fill=", DoubleToString(fillPrice, digits),
+            " resolved=", executionResolved ? "true" : "false");
+
       double contract = ContractSize(mt5Symbol);
       double notionalUnits = NotionalUnitsFromVolume(mt5Symbol, volume);
       string result = "{\"ok\":true,\"requestedSymbol\":\"" + JsonEscape(requestedSymbol) +
                       "\",\"mt5Symbol\":\"" + JsonEscape(mt5Symbol) +
-                      "\",\"order\":" + IntegerToString((long)trade.ResultOrder()) +
-                      ",\"deal\":" + IntegerToString((long)trade.ResultDeal()) +
+                      "\",\"order\":" + IntegerToString((long)orderTicket) +
+                      ",\"deal\":" + IntegerToString((long)dealTicket) +
                       ",\"positionTicket\":" + IntegerToString((long)positionTicket) +
-                      ",\"price\":" + DoubleToString(trade.ResultPrice(), digits) +
+                      ",\"positionIdentifier\":" + IntegerToString((long)positionIdentifier) +
+                      ",\"price\":" + DoubleToString(fillPrice, digits) +
+                      ",\"executionResolved\":" + (executionResolved ? "true" : "false") +
+                      ",\"retcode\":" + IntegerToString((long)trade.ResultRetcode()) +
+                      ",\"retcodeDescription\":\"" + JsonEscape(trade.ResultRetcodeDescription()) + "\"" +
                       ",\"volume\":" + DoubleToString(volume, VolumeDigits(mt5Symbol)) +
                       ",\"sizeUnit\":\"lots\"" +
                       ",\"contractSize\":" + DoubleToString(contract, 2) +
@@ -692,6 +807,7 @@ int OnInit() {
          " TerminalId=", TerminalId,
          " TokenLength=", StringLen(TerminalToken),
          " Size=MT5 volume(lots)",
+         " FillTracking=order+deal+position",
          " Policy=1% risk / 0.5% after SL / 2% equity daily lock / SL10 BE10 80%@15 20%@18 / blended RR 1.56");
 
    LogSymbolResolution("EUR_USD");
