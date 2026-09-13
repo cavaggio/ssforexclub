@@ -38,13 +38,13 @@ required = {
     ],
     ACTIVE_EXIT_POLICY: [
         "ACTIVE_EXIT_POLICY = 'profit_protection_v4'",
-        "FIXED_STOP_LOSS_PIPS = 15",
+        "FIXED_STOP_LOSS_PIPS = 10",
         "BREAK_EVEN_TRIGGER_PIPS = 10",
         "FIRST_TAKE_PROFIT_PIPS = 15",
         "FIRST_PARTIAL_PERCENT = 80",
         "FINAL_TAKE_PROFIT_PIPS = 18",
         "FINAL_PARTIAL_PERCENT = 20",
-        "FIXED_RR = 1.04",
+        "FIXED_RR = 1.56",
         "ten_pip_breakeven_trigger",
         "fifteen_pip_profit_milestone",
         "eighteen_pip_final_milestone",
@@ -64,4 +64,4 @@ for path in (REASSESSOR, ACTIVE_MANAGEMENT_ROUTE, ACTIVE_EXIT_POLICY):
         if forbidden in body:
             raise RuntimeError(f"Profit Protection v4 verification failed: {path.relative_to(ROOT)} contains forbidden {forbidden}")
 
-print("Profit Protection v4 verified: 15p SL, BE at +10p, 80% at +15p, final 20% at +18p, no discretionary automatic full close.")
+print("Profit Protection v4 verified: 10p SL, BE at +10p, 80% at +15p, final 20% at +18p, blended 1.56R, no discretionary automatic full close.")
