@@ -18,6 +18,20 @@ async function authTerminal(req: NextRequest, body: Record<string, unknown>) {
   return terminal ? { ...terminal, accountLogin, terminalId } : null;
 }
 
+async function markSavedFtmoConnectionValidated(userId: string, accountLogin: string) {
+  const supabase = getServerSupabase();
+  const now = new Date().toISOString();
+  await supabase.from('broker_connections').update({
+    validation_status: 'validated',
+    last_validated_at: now,
+    updated_at: now,
+  })
+    .eq('user_id', userId)
+    .eq('broker', 'ftmo')
+    .eq('account_id', accountLogin)
+    .eq('is_active', true);
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string }> }) {
   const { op } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -33,6 +47,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
       await markMt5EaHeartbeat(terminal.terminalId, terminal.accountLogin, `Server mismatch: ${server}`).catch(() => undefined);
       return NextResponse.json({ ok: false, error: 'MT5 server does not match saved Signal Stack connection' }, { status: 409 });
     }
+    await markSavedFtmoConnectionValidated(terminal.userId, terminal.accountLogin).catch(() => undefined);
     return NextResponse.json({ ok: true, connected: true, server: terminal.server });
   }
 
