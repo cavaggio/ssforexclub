@@ -241,18 +241,19 @@ export default async function DashboardPage() {
             <KV label="Current Equity" value={money(ftmoTerminal.equity)} />
             <KV label="Daily Loss" value={percent(ftmoTerminal.daily_loss_percent)} color={(ftmoTerminal.daily_loss_percent ?? 0) >= 2 ? 'var(--bad)' : 'var(--text)'} />
             <KV label="Daily Loss Limit" value="2.00%" />
-            <KV label="Fixed Stop" value="15 pips" />
+            <KV label="Fixed Stop" value="10 pips" />
             <KV label="Breakeven" value="+10 pips" />
             <KV label="Profit Plan" value="80% @ +15p · 20% @ +18p" />
+            <KV label="Blended R:R" value="1.56R" />
           </div>
 
           <div style={{ marginTop: 14, padding: '11px 12px', border: '1px dashed var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--muted)', lineHeight: 1.55 }}>
             After a Signal Stack stop-loss, all later bot trades for that New York trading day are capped at <strong style={{ color: 'var(--text)' }}>0.5%</strong> risk. At a <strong style={{ color: 'var(--text)' }}>2% equity drawdown</strong> from the NY-day starting balance, the EA closes Signal Stack-managed positions and blocks new bot orders until the next NY trading day.
           </div>
 
-          {!ftmoTerminal.risk_policy_version && (
+          {ftmoTerminal.risk_policy_version !== '1.21' && (
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--warn)' }}>
-              Waiting for the upgraded SignalStackBridge v1.20 heartbeat. The connected EA is still on the older build until you compile and reattach v1.20 in MT5.
+              SignalStackBridge v1.21 is required for the 10-pip stop / 1.56R policy. Compile and reattach v1.21 in MT5 before running the FTMO order test or enabling autonomous execution.
             </div>
           )}
         </section>
