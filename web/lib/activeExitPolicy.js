@@ -1,28 +1,30 @@
 /**
- * Profit Protection v3 — fixed 10p SL / 15p TP / 18p final exit.
+ * Profit Protection v4 — fixed 15p SL / +10p breakeven / 80%@+15p / 20%@+18p.
  *
- * Automated management is deliberately unable to liquidate a full trade before
- * the defined profit milestones. The broker stop remains the loss authority.
- * Policy: close 80% at +15 pips, move the remaining 20% to breakeven, then
- * close that final 20% at +18 pips. No discretionary early liquidation.
+ * Automated management never widens a stop or guesses an early exit. The broker
+ * stop remains the loss authority until price reaches +10 pips, at which point
+ * the stop moves to entry. At +15 pips the system banks 80%; the remaining 20%
+ * stays protected at breakeven and exits at +18 pips.
  */
 
-export const ACTIVE_EXIT_POLICY = 'profit_protection_v3';
-export const FIXED_STOP_LOSS_PIPS = 10;
+export const ACTIVE_EXIT_POLICY = 'profit_protection_v4';
+export const FIXED_STOP_LOSS_PIPS = 15;
+export const BREAK_EVEN_TRIGGER_PIPS = 10;
 export const FIRST_TAKE_PROFIT_PIPS = 15;
 export const FIRST_PARTIAL_PERCENT = 80;
 export const FINAL_TAKE_PROFIT_PIPS = 18;
 export const FINAL_PARTIAL_PERCENT = 20;
-export const FIXED_RR = 1.5;
+// Blended reward/risk if both milestones fill: 0.8*(15/15) + 0.2*(18/15) = 1.04R.
+export const FIXED_RR = 1.04;
+export const FINAL_TARGET_RR = 1.2;
 
 const finite = (value, fallback = null) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const text = (value) => String(value ?? '').toLowerCase();
 
-function actionResult({ action, percent = 0, reason, confidence, evidence, metrics, stopLoss = null, cancelTakeProfit = false }) {
+function actionResult({ action, percent = 0, reason, confidence, evidence, metrics, stopLoss = null }) {
   return {
     action,
     closePercent: percent,
@@ -30,10 +32,10 @@ function actionResult({ action, percent = 0, reason, confidence, evidence, metri
     confidence: Math.round(clamp(confidence, 0, 100)),
     policy: ACTIVE_EXIT_POLICY,
     stopLoss: Number.isFinite(stopLoss) ? stopLoss : null,
-    cancelTakeProfit,
+    cancelTakeProfit: false,
     automaticFullCloseAllowed: false,
-    preserveOriginalTakeProfit: !cancelTakeProfit,
-    originalTakeProfitRole: cancelTakeProfit ? 'fixed_profit_milestone' : 'broker_target',
+    preserveOriginalTakeProfit: true,
+    originalTakeProfitRole: 'broker_target',
     evidence,
     metrics,
   };
@@ -41,16 +43,12 @@ function actionResult({ action, percent = 0, reason, confidence, evidence, metri
 
 /**
  * Fixed exit policy:
- *   +15 pips -> close 80%, move remaining 20% SL to entry/breakeven.
+ *   +10 pips -> move SL to entry/breakeven.
+ *   +15 pips -> close 80%; keep the remaining 20% protected at breakeven.
  *   +18 pips -> close the remaining 20%.
- *
- * The second milestone is deliberately an explicit 20% close, not a runner
- * trail. This implements the requested C model exactly.
  */
 export function evaluateActiveExit(plan = {}, state = {}) {
-  const direction = text(plan.direction ?? plan.side) === 'short' ? 'short' : 'long';
   const entryPrice = finite(plan.entryPrice, null);
-  const currentPrice = finite(plan.currentPrice, null);
   const currentProfitPips = finite(
     plan.unrealizedPips ?? plan.currentProfitPips,
     finite(plan.profitPips, 0),
@@ -63,76 +61,86 @@ export function evaluateActiveExit(plan = {}, state = {}) {
   const metrics = {
     currentProfitPips: +currentProfitPips.toFixed(2),
     fixedStopLossPips: FIXED_STOP_LOSS_PIPS,
+    breakEvenTriggerPips: BREAK_EVEN_TRIGGER_PIPS,
     firstTakeProfitPips: FIRST_TAKE_PROFIT_PIPS,
     firstPartialPercent: FIRST_PARTIAL_PERCENT,
     finalTakeProfitPips: FINAL_TAKE_PROFIT_PIPS,
     finalPartialPercent: FINAL_PARTIAL_PERCENT,
     fixedRR: FIXED_RR,
+    finalTargetRR: FINAL_TARGET_RR,
     priorPartialCount,
     firstPartialTaken,
     finalPartialTaken,
     breakEvenSet,
   };
 
-  // At +18 pips, close the remaining 20%. This is checked first so a price
-  // jump from below +15 directly through +18 cannot strand the final runner.
+  // If price gaps through both milestones, finish the runner rather than leave
+  // a stale 20% position open.
   if (firstPartialTaken && !finalPartialTaken && currentProfitPips >= FINAL_TAKE_PROFIT_PIPS) {
     return actionResult({
       action: 'PARTIAL_CLOSE',
       percent: FINAL_PARTIAL_PERCENT,
       reason: `Final profit milestone reached at +${currentProfitPips.toFixed(1)} pips; close the remaining 20% at +${FINAL_TAKE_PROFIT_PIPS} pips.`,
-      confidence: 98,
-      evidence: ['eighteen_pip_final_milestone', 'remaining_twenty_percent', 'no_trailing_runner'],
+      confidence: 99,
+      evidence: ['eighteen_pip_final_milestone', 'remaining_twenty_percent'],
       metrics,
       stopLoss: entryPrice,
-      cancelTakeProfit: true,
     });
   }
 
-  // First milestone: bank exactly 80%, then protect the remaining 20% at entry.
+  // +15 pips banks 80%. If a fast move skipped the +10 reconciliation, this
+  // same decision also carries the entry-price stop so the remaining 20% is
+  // protected immediately.
   if (!firstPartialTaken && currentProfitPips >= FIRST_TAKE_PROFIT_PIPS) {
     return actionResult({
       action: 'PARTIAL_CLOSE',
       percent: FIRST_PARTIAL_PERCENT,
-      reason: `First profit milestone reached at +${currentProfitPips.toFixed(1)} pips; close 80% and move the remaining 20% stop to breakeven.`,
-      confidence: 98,
+      reason: `First profit milestone reached at +${currentProfitPips.toFixed(1)} pips; close 80% and keep the remaining 20% protected at breakeven.`,
+      confidence: 99,
       evidence: ['fifteen_pip_profit_milestone', 'eighty_percent_partial', 'breakeven_remaining_twenty'],
       metrics,
       stopLoss: entryPrice,
-      cancelTakeProfit: true,
     });
   }
 
-  // If the partial was already executed by another protection path, enforce
-  // the requested breakeven protection independently on the next reconciliation.
+  // Breakeven occurs independently at +10 pips, before the first partial.
+  if (!breakEvenSet && currentProfitPips >= BREAK_EVEN_TRIGGER_PIPS) {
+    return actionResult({
+      action: 'MOVE_STOP_TO_BREAKEVEN',
+      reason: `Trade reached +${currentProfitPips.toFixed(1)} pips; move SL to entry at the +${BREAK_EVEN_TRIGGER_PIPS} pip protection trigger.`,
+      confidence: 99,
+      evidence: ['ten_pip_breakeven_trigger', 'no_early_close'],
+      metrics,
+      stopLoss: entryPrice,
+    });
+  }
+
   if (firstPartialTaken && !breakEvenSet) {
     return actionResult({
       action: 'MOVE_STOP_TO_BREAKEVEN',
-      reason: 'The 80% first partial is already banked; move the remaining 20% stop to entry/breakeven and protect the runner until +18 pips.',
-      confidence: 98,
-      evidence: ['partial_already_taken', 'breakeven_required', 'remaining_twenty_percent'],
+      reason: 'The 80% first partial is already banked; enforce breakeven on the remaining 20%.',
+      confidence: 99,
+      evidence: ['partial_already_taken', 'breakeven_required'],
       metrics,
       stopLoss: entryPrice,
-      cancelTakeProfit: true,
     });
   }
 
   if (firstPartialTaken && !finalPartialTaken) {
     return actionResult({
       action: 'HOLD_TO_TP',
-      reason: `80% is banked and the remaining 20% is protected at breakeven; hold for the fixed +${FINAL_TAKE_PROFIT_PIPS} pip final milestone.`,
-      confidence: 94,
+      reason: `80% is banked and the remaining 20% is protected at breakeven; hold for +${FINAL_TAKE_PROFIT_PIPS} pips.`,
+      confidence: 95,
       evidence: ['eighty_percent_banked', 'breakeven_protected', 'await_eighteen_pips'],
       metrics,
-      cancelTakeProfit: true,
     });
   }
 
   return actionResult({
     action: 'HOLD_TO_TP',
-    reason: `No profit milestone is due; broker SL remains the loss authority and the fixed +${FIRST_TAKE_PROFIT_PIPS} pip first target remains active.`,
-    confidence: 90,
-    evidence: ['protective_sl_is_loss_authority', 'await_fifteen_pips'],
+    reason: `No profit milestone is due; keep the fixed ${FIXED_STOP_LOSS_PIPS}-pip SL and wait for the +${BREAK_EVEN_TRIGGER_PIPS} pip breakeven trigger.`,
+    confidence: 92,
+    evidence: ['protective_sl_is_loss_authority', 'await_ten_pip_breakeven'],
     metrics,
   });
 }
