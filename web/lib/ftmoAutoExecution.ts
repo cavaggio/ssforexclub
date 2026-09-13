@@ -7,14 +7,15 @@ export const FTMO_EXECUTION_POLICY = Object.freeze({
   baseRiskPercent: 1,
   postStopLossRiskPercent: 0.5,
   dailyLossLockPercent: 2,
-  stopLossPips: 15,
+  stopLossPips: 10,
   breakEvenPips: 10,
   firstPartialPips: 15,
   firstPartialPercent: 80,
   finalTakeProfitPips: 18,
   finalPartialPercent: 20,
-  blendedRewardRisk: 1.04,
-  finalTargetRewardRisk: 1.2,
+  blendedRewardRisk: 1.56,
+  firstTargetRewardRisk: 1.5,
+  finalTargetRewardRisk: 1.8,
 });
 
 export type FtmoAutoOrder = {
