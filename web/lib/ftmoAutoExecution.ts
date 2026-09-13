@@ -212,9 +212,11 @@ export async function enqueueFtmoAutoOrder(args: {
 }
 
 /**
- * Controlled minimum-volume order test. This bypasses the order-test and
- * auto-trade gates because its purpose is to earn verification. It still
- * requires a fresh connected EA and the explicit live-execution kill switch.
+ * Controlled minimum-volume order test. This bypasses the order-test,
+ * auto-trade, and autonomous live-execution flags because its only purpose is
+ * to earn verification. It still requires a fresh connected EA, the required
+ * risk-policy version, an unlocked daily risk state, and the API route's
+ * explicit confirmation + market-hours + 0.01-lot maximum safeguards.
  */
 export async function enqueueFtmoOrderTest(args: {
   userId: string;
@@ -224,7 +226,6 @@ export async function enqueueFtmoOrderTest(args: {
   volume: number;
   confirmationId: string;
 }) {
-  const config = flags();
   const terminal = await latestTerminal(args.userId, args.accountLogin);
   const heartbeatMs = terminal?.last_heartbeat_at ? new Date(String(terminal.last_heartbeat_at)).getTime() : NaN;
   const heartbeatFresh = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= 120_000;
@@ -236,9 +237,6 @@ export async function enqueueFtmoOrderTest(args: {
   }
   if (terminal.trading_locked === true) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
-  }
-  if (!config.liveExecutionEnabled) {
-    return { ok: false as const, blocked: true as const, reason: 'FTMO_LIVE_EXECUTION_ENABLED must be true for the explicit order test' };
   }
 
   const symbol = String(args.symbol || '').trim().toUpperCase();
