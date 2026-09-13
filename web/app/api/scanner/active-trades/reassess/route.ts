@@ -1,18 +1,16 @@
 /**
- * web/app/api/scanner/active-trades/reassess/route.ts
+ * Authenticated 30-minute reassessment endpoint.
  *
- * Authenticated, per-user 30-min reassessment endpoint. Calls Railway's
- * internal `/api/internal/oanda/active-trades/reassess` with credentials
- * resolved from the current user's broker connection. Hard-fails (409) when
- * no usable credentials exist — never falls back to platform defaults.
- *
- * After a successful reassessment, writes one `reassessed` row per active
- * trade to Supabase `trade_logs`. Any trade flagged for `shouldAutoClose=true`
- * also emits an `auto_close_recommended` row so the audit trail captures
- * the recommendation even before the user (or future automation) acts on it.
+ * OANDA keeps the existing Railway lifecycle reassessment. FTMO reads the
+ * position snapshot from the connected MT5 EA and surfaces the hard broker-side
+ * protection plan without trying to query or manage an OANDA position.
  */
 
+import { NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
+import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
+import { getFtmoPositionsForUser, mt5SymbolToSignalPair } from '@/lib/ftmoPositions';
 import { logTradeEvent } from '@/lib/tradeLogs';
 
 export const dynamic = 'force-dynamic';
@@ -37,17 +35,85 @@ type ReassessTrade = {
   managementReasons?: string[];
 };
 
+function ftmoReassessment(position: Awaited<ReturnType<typeof getFtmoPositionsForUser>>['positions'][number]) {
+  return {
+    tradeId: position.ticket,
+    instrument: mt5SymbolToSignalPair(position.symbol),
+    direction: position.side,
+    units: position.volume,
+    currentPnL: position.profit,
+    recommendedAction: 'HOLD',
+    recommendedStopLoss: position.stopLoss,
+    recommendedTakeProfit: position.takeProfit,
+    managementReasons: [
+      'FTMO position is managed inside SignalStackBridge.',
+      'Do not discretionary-close before the protective stop.',
+      'Move SL to breakeven at +10 pips.',
+      'Take 80% at +15 pips and the final 20% at +18 pips.',
+    ],
+    lifecycleRecommendation: {
+      action: 'hold',
+      reason: 'Broker-side FTMO protection is authoritative; no early discretionary close is requested.',
+      confidence: 100,
+      shouldAutoClose: false,
+      autoCloseReason: null,
+    },
+    source: 'ftmo_mt5',
+    brokerManaged: true,
+  };
+}
+
 export async function POST() {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
+  }
+
+  const resolved = await resolveActiveBrokerForUser(userId);
+  if (resolved.activeBroker === 'ftmo') {
+    try {
+      const snapshot = await getFtmoPositionsForUser(userId);
+      const trades = snapshot.positions.map(ftmoReassessment);
+      const detailPending = snapshot.positionCount > 0 && !snapshot.detailAvailable;
+
+      return NextResponse.json({
+        ok: true,
+        activeBroker: 'ftmo',
+        activeEnvironment: resolved.activeEnvironment,
+        executionTransport: 'mt5_ea',
+        reassessment: {
+          trades,
+          meta: {
+            reassessedAt: new Date().toISOString(),
+            session: 'FTMO / MT5',
+            environment: resolved.activeEnvironment,
+            totalActive: snapshot.positionCount,
+            autoCloseEnabled: false,
+            recommendationCounts: trades.length ? { hold: trades.length } : {},
+            notice: detailPending
+              ? `MT5 reports ${snapshot.positionCount} open position(s); the current EA response contains count-only position data.`
+              : snapshot.positionCount === 0
+                ? 'No open FTMO positions to reassess.'
+                : 'FTMO positions are managed by the EA hard protection policy; reassessment will not guess an early exit.',
+          },
+        },
+      });
+    } catch (err) {
+      return NextResponse.json(
+        { ok: false, error: err instanceof Error ? err.message : String(err) },
+        { status: 502 },
+      );
+    }
+  }
+
   return callScannerForCurrentUser({
     internalPath: '/api/internal/oanda/active-trades/reassess',
     logTag: 'SCANNER_REASSESS',
     payloadKey: 'reassessment',
     afterCall: async (ctx, result) => {
-      if (!result.ok) return;
+      if (!result.ok || ctx.broker !== 'oanda') return;
       const reassessment = (result.data ?? {}) as { trades?: ReassessTrade[] };
       const trades = Array.isArray(reassessment.trades) ? reassessment.trades : [];
-      // Best-effort: don't await sequentially to keep latency low. Each
-      // logTradeEvent is non-throwing.
       await Promise.allSettled(
         trades.flatMap((t) => {
           const rec = t.lifecycleRecommendation;
@@ -55,9 +121,9 @@ export async function POST() {
           events.push(
             logTradeEvent({
               userId: ctx.userId,
-              broker: ctx.broker,
+              broker: 'oanda',
               brokerAccountId: ctx.brokerAccountId,
-              environment: ctx.environment,
+              environment: ctx.environment as 'practice' | 'live' | 'paper',
               eventType: 'reassessed',
               instrument: t.instrument ?? null,
               tradeId: t.tradeId ?? null,
@@ -76,9 +142,9 @@ export async function POST() {
             events.push(
               logTradeEvent({
                 userId: ctx.userId,
-                broker: ctx.broker,
+                broker: 'oanda',
                 brokerAccountId: ctx.brokerAccountId,
-                environment: ctx.environment,
+                environment: ctx.environment as 'practice' | 'live' | 'paper',
                 eventType: 'auto_close_recommended',
                 instrument: t.instrument ?? null,
                 tradeId: t.tradeId ?? null,
