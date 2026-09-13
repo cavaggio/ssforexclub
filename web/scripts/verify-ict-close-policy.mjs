@@ -33,13 +33,13 @@ for (const forbidden of [
 
 for (const marker of [
   "ACTIVE_EXIT_POLICY = 'profit_protection_v4'",
-  'FIXED_STOP_LOSS_PIPS = 15',
+  'FIXED_STOP_LOSS_PIPS = 10',
   'BREAK_EVEN_TRIGGER_PIPS = 10',
   'FIRST_TAKE_PROFIT_PIPS = 15',
   'FIRST_PARTIAL_PERCENT = 80',
   'FINAL_TAKE_PROFIT_PIPS = 18',
   'FINAL_PARTIAL_PERCENT = 20',
-  'FIXED_RR = 1.04',
+  'FIXED_RR = 1.56',
   "action: 'MOVE_STOP_TO_BREAKEVEN'",
   "action: 'PARTIAL_CLOSE'",
   'automaticFullCloseAllowed: false',
@@ -56,4 +56,4 @@ for (const forbidden of ["action: 'FULL_CLOSE'", "return 'ALL'"]) {
   }
 }
 
-console.log('Profit Protection v4 verified: 15 pip SL, breakeven at +10 pips, 80% partial at +15 pips, final 20% close at +18 pips; no discretionary automatic full close.');
+console.log('Profit Protection v4 verified: 10 pip SL, breakeven at +10 pips, 80% partial at +15 pips, final 20% close at +18 pips, blended 1.56R; no discretionary automatic full close.');
