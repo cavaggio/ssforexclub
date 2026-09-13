@@ -44,7 +44,9 @@ function flags() {
   return {
     autoTradeEnabled: truthy(process.env.FTMO_AUTO_TRADE_ENABLED),
     liveExecutionEnabled: truthy(process.env.FTMO_LIVE_EXECUTION_ENABLED),
-    orderTestVerified: truthy(process.env.FTMO_ORDER_TEST_VERIFIED),
+    // Backward-compatible emergency override. Normal verification now comes
+    // from the successful explicit order-test timestamp stored with the terminal.
+    orderTestOverride: truthy(process.env.FTMO_ORDER_TEST_VERIFIED),
   };
 }
 
@@ -57,7 +59,7 @@ async function latestTerminal(userId: string, accountLogin: string) {
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('mt5_ea_terminals')
-    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error')
+    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error,order_test_verified_at,order_test_command_id,trading_locked,effective_risk_percent,daily_loss_percent')
     .eq('user_id', userId)
     .eq('account_login', accountLogin)
     .order('updated_at', { ascending: false })
@@ -76,17 +78,22 @@ export async function getFtmoExecutionReadiness(args: {
   const heartbeatMs = terminal?.last_heartbeat_at ? new Date(String(terminal.last_heartbeat_at)).getTime() : NaN;
   const heartbeatFresh = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= 120_000;
   const terminalConnected = terminal?.status === 'connected';
+  const orderTestVerified = config.orderTestOverride || Boolean(terminal?.order_test_verified_at);
+  const terminalRiskLocked = terminal?.trading_locked === true;
 
   let reason = 'FTMO execution ready';
   if (!terminalConnected) reason = 'MT5 EA terminal is not connected';
   else if (!heartbeatFresh) reason = 'MT5 EA heartbeat is stale';
-  else if (!config.orderTestVerified) reason = 'Minimum-volume MT5 order test has not been verified';
+  else if (terminalRiskLocked) reason = 'MT5 EA daily risk lock is active';
+  else if (!orderTestVerified) reason = 'Minimum-volume MT5 order test has not been verified';
   else if (!config.liveExecutionEnabled) reason = 'FTMO_LIVE_EXECUTION_ENABLED is false';
   else if (!config.autoTradeEnabled) reason = 'FTMO_AUTO_TRADE_ENABLED is false';
 
   return {
-    ready: terminalConnected && heartbeatFresh && config.orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
-    ...config,
+    ready: terminalConnected && heartbeatFresh && !terminalRiskLocked && orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
+    autoTradeEnabled: config.autoTradeEnabled,
+    liveExecutionEnabled: config.liveExecutionEnabled,
+    orderTestVerified,
     terminalConnected,
     heartbeatFresh,
     reason,
@@ -103,6 +110,9 @@ async function enqueueCommand(args: {
   const terminal = await latestTerminal(args.userId, args.accountLogin);
   if (!terminal?.terminal_id) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO terminal disappeared before queue submission' };
+  }
+  if (terminal.trading_locked === true) {
+    return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
   }
 
   const supabase = getServerSupabase();
@@ -189,11 +199,9 @@ export async function enqueueFtmoAutoOrder(args: {
 }
 
 /**
- * Controlled minimum-volume order test. This deliberately bypasses the
- * FTMO_ORDER_TEST_VERIFIED and auto-trade flags because its purpose is to earn
- * that verification. It still requires a fresh connected EA and the explicit
- * FTMO_LIVE_EXECUTION_ENABLED kill switch. The EA applies the same 15/10/15/18
- * protection geometry to the test position.
+ * Controlled minimum-volume order test. This bypasses the order-test and
+ * auto-trade gates because its purpose is to earn verification. It still
+ * requires a fresh connected EA and the explicit live-execution kill switch.
  */
 export async function enqueueFtmoOrderTest(args: {
   userId: string;
@@ -209,6 +217,9 @@ export async function enqueueFtmoOrderTest(args: {
   const heartbeatFresh = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= 120_000;
   if (terminal?.status !== 'connected' || !heartbeatFresh) {
     return { ok: false as const, blocked: true as const, reason: 'MT5 EA terminal must be connected with a fresh heartbeat' };
+  }
+  if (terminal.trading_locked === true) {
+    return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
   }
   if (!config.liveExecutionEnabled) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO_LIVE_EXECUTION_ENABLED must be true for the explicit order test' };
