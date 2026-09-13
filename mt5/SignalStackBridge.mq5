@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.20"
+#property version   "1.21"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -16,7 +16,7 @@ input ulong SignalStackMagic = 560091247;
 const double BASE_RISK_PERCENT = 1.0;
 const double POST_SL_RISK_PERCENT = 0.5;
 const double DAILY_LOSS_LOCK_PERCENT = 2.0;
-const double STOP_LOSS_PIPS = 15.0;
+const double STOP_LOSS_PIPS = 10.0;
 const double BREAK_EVEN_PIPS = 10.0;
 const double FIRST_PARTIAL_PIPS = 15.0;
 const double FIRST_PARTIAL_PERCENT = 80.0;
@@ -412,7 +412,7 @@ void HandleCommand(string json) {
       string result = "{\"ok\":true,\"login\":\"" + AccountLogin() +
          "\",\"server\":\"" + JsonEscape(AccountServer()) +
          "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
-         "\",\"policyVersion\":\"1.20\"}";
+         "\",\"policyVersion\":\"1.21\"}";
       Report(commandId, true, result);
       return;
    }
@@ -490,7 +490,7 @@ void HandleCommand(string json) {
 
       Print("Signal Stack order: ", requestedSymbol, " -> ", mt5Symbol,
             " side=", side, " volume=", DoubleToString(volume, VolumeDigits(mt5Symbol)),
-            " risk=", DoubleToString(riskPercent, 2), "% SL=15p BE=10p P80=15p TP=18p",
+            " risk=", DoubleToString(riskPercent, 2), "% SL=10p BE=10p P80=15p TP=18p RR=1.56",
             testMode ? " TEST" : "");
 
       trade.SetAsyncMode(false);
@@ -519,7 +519,7 @@ void HandleCommand(string json) {
          ",\"price\":" + DoubleToString(trade.ResultPrice(), digits) +
          ",\"volume\":" + DoubleToString(volume, VolumeDigits(mt5Symbol)) +
          ",\"riskPercent\":" + DoubleToString(riskPercent,2) +
-         ",\"stopPips\":15,\"breakEvenPips\":10,\"firstPartialPips\":15,\"firstPartialPercent\":80,\"finalTakeProfitPips\":18}";
+         ",\"stopPips\":10,\"breakEvenPips\":10,\"firstPartialPips\":15,\"firstPartialPercent\":80,\"finalTakeProfitPips\":18,\"blendedRewardRisk\":1.56}";
       Report(commandId, true, result);
       return;
    }
@@ -555,7 +555,8 @@ void Heartbeat() {
       ",\"dailyLossPercent\":" + DoubleToString(DailyLossPercent(),4) +
       ",\"effectiveRiskPercent\":" + DoubleToString(EffectiveRiskPercent(),2) +
       ",\"tradingLocked\":" + (DailyTradingLocked() ? "true" : "false") +
-      ",\"reducedRisk\":" + (ReducedRiskActive() ? "true" : "false") + "}";
+      ",\"reducedRisk\":" + (ReducedRiskActive() ? "true" : "false") +
+      ",\"riskPolicyVersion\":\"1.21\"}";
    string response; int status;
    PostJson("/api/mt5-ea/heartbeat", body, response, status);
 }
@@ -577,9 +578,9 @@ int OnInit() {
 
    trade.SetExpertMagicNumber(SignalStackMagic);
    EnsureDailyState();
-   Print("Signal Stack bridge v1.20 starting. Login=", AccountLogin(), " Server=", AccountServer(),
+   Print("Signal Stack bridge v1.21 starting. Login=", AccountLogin(), " Server=", AccountServer(),
          " TerminalId=", TerminalId, " TokenLength=", StringLen(TerminalToken),
-         " Policy=1% risk / 0.5% after SL / 2% equity daily lock / SL15 BE10 80%@15 20%@18");
+         " Policy=1% risk / 0.5% after SL / 2% equity daily lock / SL10 BE10 80%@15 20%@18 / blended RR 1.56");
    LogSymbolResolution("EUR_USD");
    LogSymbolResolution("GBP_USD");
    LogSymbolResolution("USD_JPY");
