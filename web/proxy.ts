@@ -4,6 +4,7 @@
  * Clerk route protection.
  *
  *   - `/`             : public (login / signup)
+ *   - selected system API routes authenticate themselves
  *   - everything else : authenticated only
  *
  * When an unauthenticated request hits a protected route, Clerk redirects to
@@ -21,6 +22,7 @@ const isPublicRoute = createRouteMatcher([
   '/api/health',          // unauthenticated health-check (for Vercel/Render probes)
   '/sso-callback(.*)',    // Clerk OAuth handshake
   '/api/cron(.*)',        // system cron endpoints (no Clerk session) — gated by their own X-Cron-Secret
+  '/api/mt5-ea(.*)',      // MT5 EA has its own bearer-token authentication in the route handler
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
