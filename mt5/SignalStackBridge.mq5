@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.10"
+#property version   "1.12"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -60,7 +60,16 @@ bool PostJson(string path, string body, string &response, int &status) {
    string url = SignalStackBaseUrl + path;
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + TerminalToken + "\r\n";
    char data[]; char result[]; string result_headers;
+
+   // StringToCharArray with WHOLE_ARRAY includes the terminating NUL byte.
+   // Remove it before WebRequest so Next.js receives valid JSON instead of a
+   // JSON body with a trailing \0, which causes req.json() to fail.
    StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   int dataSize = ArraySize(data);
+   if(dataSize > 0 && data[dataSize - 1] == 0) {
+      ArrayResize(data, dataSize - 1);
+   }
+
    ResetLastError();
    status = WebRequest("POST", url, headers, 8000, data, result, result_headers);
    if(status == -1) {
@@ -68,6 +77,7 @@ bool PostJson(string path, string body, string &response, int &status) {
       return false;
    }
    response = CharArrayToString(result, 0, -1, CP_UTF8);
+   Print("Signal Stack HTTP status=", status, " URL=", url, " Response=", response);
    return status >= 200 && status < 300;
 }
 
@@ -216,7 +226,7 @@ int OnInit() {
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   Print("Signal Stack bridge starting. Login=", AccountLogin(), " Server=", AccountServer(), " TerminalId=", TerminalId);
+   Print("Signal Stack bridge starting. Login=", AccountLogin(), " Server=", AccountServer(), " TerminalId=", TerminalId, " TokenLength=", StringLen(TerminalToken));
    LogSymbolResolution("EUR_USD");
    LogSymbolResolution("GBP_USD");
    LogSymbolResolution("USD_JPY");
