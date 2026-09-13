@@ -12,9 +12,35 @@ const ALLOWED_TEST_SYMBOLS = new Set(['EUR_USD', 'GBP_USD', 'USD_JPY', 'GBP_JPY'
 const CONFIRMATION = 'PLACE FTMO TEST ORDER';
 const MAX_TEST_VOLUME = 0.01;
 
+function fxMarketClosedNow(now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour12: false,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  const weekday = read('weekday');
+  const minutes = (parseInt(read('hour'), 10) % 24) * 60 + parseInt(read('minute'), 10);
+  if (weekday === 'Sat') return true;
+  if (weekday === 'Fri' && minutes >= 17 * 60) return true;
+  // Five-minute reopening buffer avoids submitting into the Sunday rollover/spread spike.
+  if (weekday === 'Sun' && minutes < 17 * 60 + 5) return true;
+  return false;
+}
+
 export async function POST(req: Request) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ ok: false, error: 'Unauthenticated' }, { status: 401 });
+
+  if (fxMarketClosedNow()) {
+    return NextResponse.json({
+      ok: false,
+      blocked: true,
+      error: 'The controlled FTMO order test is disabled while the FX market is closed. Retry after Sunday 5:05 PM ET or during the normal weekday FX session.',
+    }, { status: 409 });
+  }
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch {}
