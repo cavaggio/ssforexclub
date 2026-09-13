@@ -2,12 +2,14 @@
  * web/app/dashboard/page.tsx
  *
  * Main trading dashboard. Shows the user's active environment summary, trade
- * activity, risk controls, Auto AI controls, V3 watch status, and scanner.
+ * activity, risk controls, Auto AI controls, V3 watch status, scanner, and
+ * connected FTMO / MT5 terminal identity when available.
  */
 
 import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
+import { getServerSupabase } from '@/lib/db';
 import {
   resolveActiveBrokerForUser,
   toClientSafeBrokerStatus,
@@ -19,6 +21,15 @@ import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 import { AutoCloseToggle } from '@/components/auto-close-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
+
+type FtmoTerminalStatus = {
+  account_login: string;
+  server: string;
+  terminal_id: string;
+  status: string;
+  last_heartbeat_at: string | null;
+  last_error: string | null;
+};
 
 function unavailableBrokerStatus(): ClientSafeBrokerStatus {
   return {
@@ -36,6 +47,64 @@ function unavailableBrokerStatus(): ClientSafeBrokerStatus {
   };
 }
 
+async function loadLatestFtmoTerminal(userId: string): Promise<FtmoTerminalStatus | null> {
+  const supabase = getServerSupabase();
+  const { data, error } = await supabase
+    .from('mt5_ea_terminals')
+    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`loadLatestFtmoTerminal: ${error.message}`);
+  return data ? (data as FtmoTerminalStatus) : null;
+}
+
+function environmentLabel(value: string | null | undefined): string {
+  if (value === 'challenge') return 'Challenge';
+  if (value === 'verification') return 'Verification';
+  if (value === 'funded') return 'Funded';
+  if (value === 'evaluation') return 'Evaluation';
+  if (value === 'sim') return 'Sim';
+  if (value === 'practice') return 'Practice';
+  if (value === 'paper') return 'Paper';
+  if (value === 'live') return 'Live';
+  return value || '—';
+}
+
+function terminalStatusColor(status: string): string {
+  if (status === 'connected') return 'var(--good)';
+  if (status === 'disabled') return 'var(--bad)';
+  return 'var(--warn)';
+}
+
+function formatHeartbeat(value: string | null): string {
+  if (!value) return 'Waiting for first heartbeat';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function KV({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 13, fontWeight: 700, color: color || 'var(--text)', fontFamily: 'var(--mono, monospace)' }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 export default async function DashboardPage() {
   const { userId } = await auth();
   if (!userId) return null;
@@ -43,9 +112,10 @@ export default async function DashboardPage() {
   // These reads are display dependencies, not authorization gates. A temporary
   // Supabase/credential-resolution failure must degrade the affected cards rather
   // than reject the complete /dashboard server render.
-  const [connectionsResult, brokerResult] = await Promise.allSettled([
+  const [connectionsResult, brokerResult, ftmoTerminalResult] = await Promise.allSettled([
     listBrokerConnectionsForUser(userId),
     resolveActiveBrokerForUser(userId),
+    loadLatestFtmoTerminal(userId),
   ]);
 
   if (connectionsResult.status === 'rejected') {
@@ -54,19 +124,22 @@ export default async function DashboardPage() {
   if (brokerResult.status === 'rejected') {
     console.error('[dashboard] active broker resolution failed:', brokerResult.reason);
   }
+  if (ftmoTerminalResult.status === 'rejected') {
+    console.error('[dashboard] FTMO terminal read failed:', ftmoTerminalResult.reason);
+  }
 
   const connections = connectionsResult.status === 'fulfilled' ? connectionsResult.value : [];
   const brokerStatus = brokerResult.status === 'fulfilled'
     ? toClientSafeBrokerStatus(brokerResult.value)
     : unavailableBrokerStatus();
+  const ftmoTerminal = ftmoTerminalResult.status === 'fulfilled' ? ftmoTerminalResult.value : null;
+  const ftmoConnection = ftmoTerminal
+    ? connections.find((c) => c.broker === 'ftmo' && c.accountId === ftmoTerminal.account_login && c.isActive) ?? null
+    : null;
   const brokerStatusUnavailable = brokerResult.status === 'rejected';
   const isLive = brokerStatus.isLiveTrading;
   const hasAnyConnection = connections.length > 0 || brokerStatus.brokerCredentialStatus === 'ready';
-  const modeLabel = isLive
-    ? 'Live'
-    : brokerStatus.activeEnvironment === 'practice'
-      ? 'Practice'
-      : 'Paper';
+  const modeLabel = environmentLabel(brokerStatus.activeEnvironment);
 
   return (
     <div
@@ -157,6 +230,88 @@ export default async function DashboardPage() {
         </Link>
       </section>
 
+      {ftmoTerminal && (
+        <section
+          style={{
+            background: 'var(--panel)',
+            border: ftmoTerminal.status === 'connected' ? '1px solid rgba(34,197,94,.45)' : '1px solid var(--border)',
+            borderRadius: 12,
+            padding: 18,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800 }}>FTMO Prop Account</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                MetaTrader 5 EA bridge · account identity and terminal health
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  color: terminalStatusColor(ftmoTerminal.status),
+                  border: `1px solid ${terminalStatusColor(ftmoTerminal.status)}`,
+                }}
+              >
+                {ftmoTerminal.status}
+              </span>
+              <Link
+                href="/dashboard/ftmo"
+                style={{
+                  padding: '7px 12px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  color: 'var(--text)',
+                  textDecoration: 'none',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  background: 'var(--bg)',
+                }}
+              >
+                Manage FTMO →
+              </Link>
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: 16,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+              gap: 14,
+            }}
+          >
+            <KV label="Environment" value={environmentLabel(ftmoConnection?.environment)} />
+            <KV label="MT5 Login" value={ftmoTerminal.account_login} />
+            <KV label="MT5 Server" value={ftmoTerminal.server || '—'} />
+            <KV label="Terminal ID" value={ftmoTerminal.terminal_id} />
+            <KV
+              label="EA Connection"
+              value={ftmoTerminal.status === 'connected' ? 'Connected' : 'Waiting'}
+              color={terminalStatusColor(ftmoTerminal.status)}
+            />
+            <KV label="Last Heartbeat" value={formatHeartbeat(ftmoTerminal.last_heartbeat_at)} />
+          </div>
+
+          {ftmoTerminal.last_error && (
+            <div style={{ marginTop: 14, fontSize: 12, color: 'var(--bad)' }}>
+              MT5 bridge warning: {ftmoTerminal.last_error}
+            </div>
+          )}
+
+          {ftmoTerminal.status !== 'connected' && (
+            <div style={{ marginTop: 14, fontSize: 12, color: 'var(--warn)', lineHeight: 1.5 }}>
+              FTMO is saved but the EA has not completed a valid heartbeat yet. Auto trade and live execution should remain disabled until this card shows Connected.
+            </div>
+          )}
+        </section>
+      )}
+
       {!hasAnyConnection && !brokerStatusUnavailable && (
         <section
           style={{
@@ -170,9 +325,9 @@ export default async function DashboardPage() {
             Connect a broker to get started
           </h3>
           <p style={{ color: 'var(--text)', marginTop: 8, fontSize: 13, lineHeight: 1.5 }}>
-            The trading dashboard activates once you link an OANDA practice or live
-            account in <Link href="/dashboard/settings">Settings</Link>. Practice mode is
-            available immediately and risk-free.
+            The trading dashboard activates once you link a supported broker account in{' '}
+            <Link href="/dashboard/settings">Settings</Link> or connect FTMO from the{' '}
+            <Link href="/dashboard/ftmo">FTMO page</Link>.
           </p>
         </section>
       )}
