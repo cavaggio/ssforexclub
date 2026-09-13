@@ -3,6 +3,8 @@ import 'server-only';
 import crypto from 'crypto';
 import { getServerSupabase } from './db';
 
+export const REQUIRED_FTMO_EA_POLICY_VERSION = '1.21';
+
 export const FTMO_EXECUTION_POLICY = Object.freeze({
   baseRiskPercent: 1,
   postStopLossRiskPercent: 0.5,
@@ -35,6 +37,8 @@ export type FtmoExecutionReadiness = {
   orderTestVerified: boolean;
   terminalConnected: boolean;
   heartbeatFresh: boolean;
+  policyVersionCompatible: boolean;
+  terminalPolicyVersion: string | null;
   reason: string;
   policy: typeof FTMO_EXECUTION_POLICY;
 };
@@ -60,7 +64,7 @@ async function latestTerminal(userId: string, accountLogin: string) {
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('mt5_ea_terminals')
-    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error,order_test_verified_at,order_test_command_id,trading_locked,effective_risk_percent,daily_loss_percent')
+    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error,order_test_verified_at,order_test_command_id,trading_locked,effective_risk_percent,daily_loss_percent,risk_policy_version')
     .eq('user_id', userId)
     .eq('account_login', accountLogin)
     .order('updated_at', { ascending: false })
@@ -79,24 +83,29 @@ export async function getFtmoExecutionReadiness(args: {
   const heartbeatMs = terminal?.last_heartbeat_at ? new Date(String(terminal.last_heartbeat_at)).getTime() : NaN;
   const heartbeatFresh = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= 120_000;
   const terminalConnected = terminal?.status === 'connected';
+  const terminalPolicyVersion = terminal?.risk_policy_version ? String(terminal.risk_policy_version) : null;
+  const policyVersionCompatible = terminalPolicyVersion === REQUIRED_FTMO_EA_POLICY_VERSION;
   const orderTestVerified = config.orderTestOverride || Boolean(terminal?.order_test_verified_at);
   const terminalRiskLocked = terminal?.trading_locked === true;
 
   let reason = 'FTMO execution ready';
   if (!terminalConnected) reason = 'MT5 EA terminal is not connected';
   else if (!heartbeatFresh) reason = 'MT5 EA heartbeat is stale';
+  else if (!policyVersionCompatible) reason = `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before FTMO execution`;
   else if (terminalRiskLocked) reason = 'MT5 EA daily risk lock is active';
   else if (!orderTestVerified) reason = 'Minimum-volume MT5 order test has not been verified';
   else if (!config.liveExecutionEnabled) reason = 'FTMO_LIVE_EXECUTION_ENABLED is false';
   else if (!config.autoTradeEnabled) reason = 'FTMO_AUTO_TRADE_ENABLED is false';
 
   return {
-    ready: terminalConnected && heartbeatFresh && !terminalRiskLocked && orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
+    ready: terminalConnected && heartbeatFresh && policyVersionCompatible && !terminalRiskLocked && orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
     autoTradeEnabled: config.autoTradeEnabled,
     liveExecutionEnabled: config.liveExecutionEnabled,
     orderTestVerified,
     terminalConnected,
     heartbeatFresh,
+    policyVersionCompatible,
+    terminalPolicyVersion,
     reason,
     policy: FTMO_EXECUTION_POLICY,
   };
@@ -111,6 +120,9 @@ async function enqueueCommand(args: {
   const terminal = await latestTerminal(args.userId, args.accountLogin);
   if (!terminal?.terminal_id) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO terminal disappeared before queue submission' };
+  }
+  if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
+    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required` };
   }
   if (terminal.trading_locked === true) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
@@ -218,6 +230,9 @@ export async function enqueueFtmoOrderTest(args: {
   const heartbeatFresh = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= 120_000;
   if (terminal?.status !== 'connected' || !heartbeatFresh) {
     return { ok: false as const, blocked: true as const, reason: 'MT5 EA terminal must be connected with a fresh heartbeat' };
+  }
+  if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
+    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before the order test` };
   }
   if (terminal.trading_locked === true) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
