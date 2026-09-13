@@ -19,7 +19,12 @@ export function FtmoOrderTestControl({ connected, liveExecutionEnabled, orderTes
   const [message, setMessage] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
 
-  const enabled = connected && liveExecutionEnabled && !orderTestVerified && !marketClosedMessage && confirmation === CONFIRMATION && !pending;
+  // The controlled 0.01-lot test is intentionally independent of the
+  // autonomous live-execution environment flag. The server route still
+  // requires authentication, active FTMO mode, an open FX session, a fresh
+  // EA heartbeat, the required risk-policy version, an unlocked daily risk
+  // state, exact confirmation text, and a maximum volume of 0.01 lots.
+  const enabled = connected && !orderTestVerified && !marketClosedMessage && confirmation === CONFIRMATION && !pending;
 
   async function submit() {
     if (!enabled) return;
@@ -63,7 +68,7 @@ export function FtmoOrderTestControl({ connected, liveExecutionEnabled, orderTes
           {!connected && <p style={{ color: 'var(--bad)', fontSize: 12 }}>MT5 EA must be connected first.</p>}
           {!liveExecutionEnabled && (
             <p style={{ color: 'var(--warn)', fontSize: 12 }}>
-              FTMO_LIVE_EXECUTION_ENABLED is still false. Keep it false until the market is open and you are ready to run this single controlled test.
+              Autonomous FTMO live execution is still disabled. That is expected for this stage; the single 0.01-lot controlled test can run independently and does not arm auto trading.
             </p>
           )}
           {marketClosedMessage && <p style={{ color: 'var(--warn)', fontSize: 12 }}>{marketClosedMessage}</p>}
