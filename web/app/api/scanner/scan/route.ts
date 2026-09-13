@@ -4,8 +4,9 @@
  * The persisted Clerk-scoped Scanner / Auto AI engine is authoritative. The
  * browser may scope pairs, but it cannot choose or override the engine.
  *
- * When Auto AI is enabled and PPR is selected, the scanner is instructed to
- * execute every signal classified as qualified in the same user-scoped scan.
+ * Analysis is broker-independent. When FTMO is active, scannerProxy uses a
+ * validated OANDA connection only for candles/pricing and hard-disables any
+ * OANDA execution. Qualified FTMO orders are routed separately through MT5 EA.
  */
 
 import { NextResponse } from 'next/server';
@@ -65,6 +66,7 @@ async function handle(req: Request) {
     internalPath: route.internalPath,
     logTag: route.logTag,
     payloadKey: 'scan',
+    analysisOnly: true,
     extraBody: {
       pairs: normalizePairs(body.pairs),
       autoExecute,
