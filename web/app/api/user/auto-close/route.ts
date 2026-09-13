@@ -15,13 +15,16 @@ export async function GET() {
       getAutoClosePreference(userId),
       getUserTradingSettings(userId),
     ]);
+    const ftmoHardPolicy = settings.activeBroker === 'ftmo';
     return NextResponse.json({
       ok: true,
-      autoCloseEnabled: preference.enabled,
+      autoCloseEnabled: ftmoHardPolicy ? true : preference.enabled,
       migrationRequired: preference.migrationRequired,
       platformLiveTradingEnabled: platformLiveTradingEnabled(),
       liveTradingAcknowledged: settings.liveTradingAcknowledged,
       activeEnvironment: settings.activeEnvironment,
+      activeBroker: settings.activeBroker,
+      ftmoHardPolicy,
     });
   } catch (err) {
     return NextResponse.json({
@@ -47,11 +50,29 @@ export async function POST(req: Request) {
   }
 
   try {
+    const settings = await getUserTradingSettings(userId);
+    if (settings.activeBroker === 'ftmo') {
+      if (body.enabled === false) {
+        return NextResponse.json({
+          ok: false,
+          error: 'FTMO broker-side profit protection is mandatory and cannot be disabled while FTMO is the active execution account.',
+        }, { status: 409 });
+      }
+      await setAutoClosePreference(userId, true);
+      return NextResponse.json({
+        ok: true,
+        autoCloseEnabled: true,
+        migrationRequired: false,
+        ftmoHardPolicy: true,
+      });
+    }
+
     const preference = await setAutoClosePreference(userId, body.enabled);
     return NextResponse.json({
       ok: true,
       autoCloseEnabled: preference.enabled,
       migrationRequired: false,
+      ftmoHardPolicy: false,
     });
   } catch (err) {
     return NextResponse.json({
