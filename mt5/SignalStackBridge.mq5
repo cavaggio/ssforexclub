@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.21"
+#property version   "1.22"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -11,8 +11,10 @@ input string TerminalToken = "";
 input int PollSeconds = 2;
 input ulong SignalStackMagic = 560091247;
 
-// Hard execution policy. The EA is the final broker-side authority, so a stale
-// server payload cannot widen these limits.
+// Risk policy version remains 1.21. Bridge v1.22 adds detailed position
+// snapshots and makes MT5 volume (lots) the canonical FTMO position size.
+const string BRIDGE_VERSION = "1.22";
+const string RISK_POLICY_VERSION = "1.21";
 const double BASE_RISK_PERCENT = 1.0;
 const double POST_SL_RISK_PERCENT = 0.5;
 const double DAILY_LOSS_LOCK_PERCENT = 2.0;
@@ -28,6 +30,8 @@ string AccountServer() { return AccountInfoString(ACCOUNT_SERVER); }
 string JsonEscape(string s) {
    StringReplace(s, "\\", "\\\\");
    StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", "\\r");
+   StringReplace(s, "\n", "\\n");
    return s;
 }
 
@@ -122,6 +126,7 @@ bool PostJson(string path, string body, string &response, int &status) {
       Print("Signal Stack WebRequest failed. Error=", GetLastError(), " URL=", url);
       return false;
    }
+
    response = CharArrayToString(result, 0, -1, CP_UTF8);
    if(status < 200 || status >= 300) {
       Print("Signal Stack HTTP status=", status, " URL=", url, " Response=", response);
@@ -155,10 +160,10 @@ bool IsNewYorkDst(datetime gmtNow) {
 
    MqlDateTime start;
    start.year = g.year; start.mon = 3; start.day = secondSundayMarch;
-   start.hour = 7; start.min = 0; start.sec = 0; // 02:00 EST = 07:00 UTC
+   start.hour = 7; start.min = 0; start.sec = 0;
    MqlDateTime finish;
    finish.year = g.year; finish.mon = 11; finish.day = firstSundayNovember;
-   finish.hour = 6; finish.min = 0; finish.sec = 0; // 02:00 EDT = 06:00 UTC
+   finish.hour = 6; finish.min = 0; finish.sec = 0;
 
    datetime startUtc = StructToTime(start);
    datetime finishUtc = StructToTime(finish);
@@ -255,7 +260,7 @@ void EnforceDailyLossLock() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Broker geometry and sizing
+// MT5 volume geometry and risk sizing
 // ─────────────────────────────────────────────────────────────────────────────
 double PipSize(string symbol) {
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
@@ -286,13 +291,22 @@ double NormalizeVolumeDown(string symbol, double volume) {
 double RiskSizedVolume(string symbol, string side, double entry, double stop, double riskPercent) {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskUsd = balance * (riskPercent / 100.0);
-   double lossPerLot = 0.0;
    ENUM_ORDER_TYPE orderType = side == "buy" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double hypothetical = 0.0;
    if(!OrderCalcProfit(orderType, symbol, 1.0, entry, stop, hypothetical)) return 0.0;
-   lossPerLot = MathAbs(hypothetical);
+   double lossPerLot = MathAbs(hypothetical);
    if(lossPerLot <= 0.0) return 0.0;
    return NormalizeVolumeDown(symbol, riskUsd / lossPerLot);
+}
+
+double ContractSize(string symbol) {
+   double contract = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   return contract > 0.0 ? contract : 0.0;
+}
+
+double NotionalUnitsFromVolume(string symbol, double volume) {
+   double contract = ContractSize(symbol);
+   return contract > 0.0 && volume > 0.0 ? contract * volume : 0.0;
 }
 
 ulong FindNewestSignalStackPosition(string symbol) {
@@ -332,6 +346,7 @@ void AdjustProtectionToActualFill(ulong ticket) {
 void ManageSignalStackPositions() {
    trade.SetAsyncMode(false);
    trade.SetExpertMagicNumber(SignalStackMagic);
+
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !IsSignalStackPositionSelected()) continue;
@@ -350,20 +365,19 @@ void ManageSignalStackPositions() {
       double initialVol = GlobalVariableGet(initialKey);
       double profitPips = type == POSITION_TYPE_BUY ? (current - entry) / pip : (entry - current) / pip;
 
-      // +10 pips: move stop to exact entry. Never widen a stop that is already
-      // more protective than breakeven.
       if(profitPips >= BREAK_EVEN_PIPS && !GlobalVariableCheck(PositionBreakEvenKey(ticket))) {
          double currentSl = PositionGetDouble(POSITION_SL);
-         bool alreadyBetter = type == POSITION_TYPE_BUY ? currentSl >= entry : (currentSl > 0.0 && currentSl <= entry);
+         bool alreadyBetter = type == POSITION_TYPE_BUY
+            ? currentSl >= entry
+            : (currentSl > 0.0 && currentSl <= entry);
          bool ok = alreadyBetter || trade.PositionModify(ticket, entry, tp);
          if(ok) {
             GlobalVariableSet(PositionBreakEvenKey(ticket), 1.0);
-            Print("Signal Stack BE set ticket=", ticket, " profitPips=", DoubleToString(profitPips, 1));
+            Print("Signal Stack BE set ticket=", ticket,
+                  " profitPips=", DoubleToString(profitPips, 1));
          }
       }
 
-      // +15 pips: bank 80% of the ORIGINAL size. Keep at least broker minimum
-      // volume for the +18-pip final target.
       if(profitPips >= FIRST_PARTIAL_PIPS && !GlobalVariableCheck(PositionPartialKey(ticket))) {
          double minVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
          double closeVol = NormalizeVolumeDown(symbol, initialVol * (FIRST_PARTIAL_PERCENT / 100.0));
@@ -377,13 +391,12 @@ void ManageSignalStackPositions() {
                trade.PositionModify(ticket, entry, remainingTp);
             }
             GlobalVariableSet(PositionBreakEvenKey(ticket), 1.0);
-            Print("Signal Stack 80% partial ticket=", ticket, " closedVolume=", DoubleToString(closeVol, VolumeDigits(symbol)),
-                  " profitPips=", DoubleToString(profitPips, 1));
+            Print("Signal Stack 80% partial ticket=", ticket,
+                  " closedVolume=", DoubleToString(closeVol, VolumeDigits(symbol)),
+                  " lots profitPips=", DoubleToString(profitPips, 1));
          }
       }
 
-      // Broker TP is fixed at +18. This fallback closes the remaining position
-      // if price has crossed +18 and the broker target has not yet filled.
       if(profitPips >= FINAL_TAKE_PROFIT_PIPS && GlobalVariableCheck(PositionPartialKey(ticket))) {
          if(PositionSelectByTicket(ticket) && trade.PositionClose(ticket)) {
             Print("Signal Stack final 20% closed ticket=", ticket, " at +18p fallback");
@@ -392,13 +405,86 @@ void ManageSignalStackPositions() {
    }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Detailed position snapshot. MT5 volume (lots) is canonical.
+// ─────────────────────────────────────────────────────────────────────────────
+string PositionSnapshotJson(ulong ticket) {
+   if(ticket == 0 || !PositionSelectByTicket(ticket)) return "";
+
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   long type = PositionGetInteger(POSITION_TYPE);
+   string side = type == POSITION_TYPE_SELL ? "short" : "long";
+   double volume = PositionGetDouble(POSITION_VOLUME);
+   double volumeMin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double volumeMax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double volumeStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double contract = ContractSize(symbol);
+   double notionalUnits = NotionalUnitsFromVolume(symbol, volume);
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+   double current = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double sl = PositionGetDouble(POSITION_SL);
+   double tp = PositionGetDouble(POSITION_TP);
+   double profit = PositionGetDouble(POSITION_PROFIT);
+   long openTimeMsc = PositionGetInteger(POSITION_TIME_MSC);
+   datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+   long magic = PositionGetInteger(POSITION_MAGIC);
+   string comment = PositionGetString(POSITION_COMMENT);
+   bool managed = IsSignalStackPositionSelected();
+   int priceDigits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   int volumeDigits = VolumeDigits(symbol);
+
+   string json = "{";
+   json += "\"ticket\":\"" + IntegerToString((long)ticket) + "\",";
+   json += "\"symbol\":\"" + JsonEscape(symbol) + "\",";
+   json += "\"side\":\"" + side + "\",";
+   json += "\"volume\":" + DoubleToString(volume, volumeDigits) + ",";
+   json += "\"sizeUnit\":\"lots\",";
+   json += "\"volumeMin\":" + DoubleToString(volumeMin, volumeDigits) + ",";
+   json += "\"volumeMax\":" + DoubleToString(volumeMax, volumeDigits) + ",";
+   json += "\"volumeStep\":" + DoubleToString(volumeStep, volumeDigits) + ",";
+   json += "\"contractSize\":" + DoubleToString(contract, 2) + ",";
+   json += "\"notionalUnits\":" + DoubleToString(notionalUnits, 2) + ",";
+   json += "\"entryPrice\":" + DoubleToString(entry, priceDigits) + ",";
+   json += "\"currentPrice\":" + DoubleToString(current, priceDigits) + ",";
+   json += "\"stopLoss\":" + DoubleToString(sl, priceDigits) + ",";
+   json += "\"takeProfit\":" + DoubleToString(tp, priceDigits) + ",";
+   json += "\"profit\":" + DoubleToString(profit, 2) + ",";
+   json += "\"openTime\":\"" + JsonEscape(TimeToString(openTime, TIME_DATE|TIME_SECONDS)) + "\",";
+   json += "\"openTimeEpochMs\":" + IntegerToString(openTimeMsc) + ",";
+   json += "\"magic\":\"" + IntegerToString(magic) + "\",";
+   json += "\"comment\":\"" + JsonEscape(comment) + "\",";
+   json += "\"managedBySignalStack\":" + (managed ? "true" : "false");
+   json += "}";
+   return json;
+}
+
+string PositionsSnapshotJson() {
+   string positions = "[";
+   int count = 0;
+   int total = PositionsTotal();
+
+   for(int i = 0; i < total; i++) {
+      ulong ticket = PositionGetTicket(i);
+      string item = PositionSnapshotJson(ticket);
+      if(item == "") continue;
+      if(count > 0) positions += ",";
+      positions += item;
+      count++;
+   }
+
+   positions += "]";
+   return "{\"ok\":true,\"bridgeVersion\":\"" + BRIDGE_VERSION +
+          "\",\"sizeUnit\":\"lots\",\"positionCount\":" + IntegerToString(count) +
+          ",\"positions\":" + positions + "}";
+}
+
 void Report(string commandId, bool success, string resultJson, string errorText = "") {
    string body = "{\"accountLogin\":\"" + JsonEscape(AccountLogin()) +
-      "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
-      "\",\"commandId\":\"" + JsonEscape(commandId) +
-      "\",\"success\":" + (success ? "true" : "false") +
-      ",\"result\":" + (resultJson == "" ? "{}" : resultJson) +
-      ",\"error\":\"" + JsonEscape(errorText) + "\"}";
+                 "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
+                 "\",\"commandId\":\"" + JsonEscape(commandId) +
+                 "\",\"success\":" + (success ? "true" : "false") +
+                 ",\"result\":" + (resultJson == "" ? "{}" : resultJson) +
+                 ",\"error\":\"" + JsonEscape(errorText) + "\"}";
    string response; int status;
    PostJson("/api/mt5-ea/report", body, response, status);
 }
@@ -410,33 +496,37 @@ void HandleCommand(string json) {
 
    if(commandType == "health") {
       string result = "{\"ok\":true,\"login\":\"" + AccountLogin() +
-         "\",\"server\":\"" + JsonEscape(AccountServer()) +
-         "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
-         "\",\"policyVersion\":\"1.21\"}";
+                      "\",\"server\":\"" + JsonEscape(AccountServer()) +
+                      "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
+                      "\",\"bridgeVersion\":\"" + BRIDGE_VERSION +
+                      "\",\"riskPolicyVersion\":\"" + RISK_POLICY_VERSION + "\"}";
       Report(commandId, true, result);
       return;
    }
 
    if(commandType == "account_summary") {
       string result = "{\"ok\":true,\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2) +
-         ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) +
-         ",\"marginFree\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2) +
-         ",\"dailyStartingBalance\":" + DoubleToString(DailyStartingBalance(),2) +
-         ",\"dailyLossPercent\":" + DoubleToString(DailyLossPercent(),4) +
-         ",\"effectiveRiskPercent\":" + DoubleToString(EffectiveRiskPercent(),2) +
-         ",\"tradingLocked\":" + (DailyTradingLocked() ? "true" : "false") + "}";
+                      ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) +
+                      ",\"marginFree\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2) +
+                      ",\"dailyStartingBalance\":" + DoubleToString(DailyStartingBalance(),2) +
+                      ",\"dailyLossPercent\":" + DoubleToString(DailyLossPercent(),4) +
+                      ",\"effectiveRiskPercent\":" + DoubleToString(EffectiveRiskPercent(),2) +
+                      ",\"tradingLocked\":" + (DailyTradingLocked() ? "true" : "false") +
+                      ",\"bridgeVersion\":\"" + BRIDGE_VERSION +
+                      "\",\"riskPolicyVersion\":\"" + RISK_POLICY_VERSION + "\"}";
       Report(commandId, true, result);
       return;
    }
 
    if(commandType == "positions_list") {
-      Report(commandId, true, "{\"ok\":true,\"positionCount\":" + IntegerToString(PositionsTotal()) + "}");
+      Report(commandId, true, PositionsSnapshotJson());
       return;
    }
 
    if(commandType == "order_place") {
       EnsureDailyState();
       EnforceDailyLossLock();
+
       if(DailyTradingLocked()) {
          Report(commandId, false, "{}", "Daily 2% loss lock is active until the next New York trading day");
          return;
@@ -474,28 +564,37 @@ void HandleCommand(string json) {
       sl = NormalizeDouble(sl, digits);
       tp = NormalizeDouble(tp, digits);
 
-      double volume = testMode ? NormalizeVolumeDown(mt5Symbol, explicitVolume) : RiskSizedVolume(mt5Symbol, side, entry, sl, riskPercent);
+      // MT5 executes VOLUME (lots). Normal autonomous orders are risk-sized by
+      // the EA; explicit volume is accepted only for the controlled test order.
+      double volume = testMode
+         ? NormalizeVolumeDown(mt5Symbol, explicitVolume)
+         : RiskSizedVolume(mt5Symbol, side, entry, sl, riskPercent);
+
       if(volume <= 0.0) {
-         Report(commandId, false, "{}", testMode ? "Invalid test volume" : "Could not calculate a broker-valid risk-sized volume");
+         Report(commandId, false, "{}", testMode ? "Invalid MT5 test volume" : "Could not calculate a broker-valid MT5 volume");
          return;
       }
 
       if(!testMode) {
          double minVol = SymbolInfoDouble(mt5Symbol, SYMBOL_VOLUME_MIN);
          if(volume < minVol * 5.0 - 1e-9) {
-            Report(commandId, false, "{}", "Risk-sized volume is too small to preserve an 80/20 partial structure at broker minimum volume");
+            Report(commandId, false, "{}",
+                   "Risk-sized MT5 volume is too small to preserve an 80/20 partial structure at broker minimum volume");
             return;
          }
       }
 
       Print("Signal Stack order: ", requestedSymbol, " -> ", mt5Symbol,
-            " side=", side, " volume=", DoubleToString(volume, VolumeDigits(mt5Symbol)),
-            " risk=", DoubleToString(riskPercent, 2), "% SL=10p BE=10p P80=15p TP=18p RR=1.56",
+            " side=", side,
+            " volume=", DoubleToString(volume, VolumeDigits(mt5Symbol)), " lots",
+            " risk=", DoubleToString(riskPercent, 2),
+            "% SL=10p BE=10p P80=15p TP=18p RR=1.56",
             testMode ? " TEST" : "");
 
       trade.SetAsyncMode(false);
       trade.SetExpertMagicNumber(SignalStackMagic);
       trade.SetTypeFillingBySymbol(mt5Symbol);
+
       bool ok = side == "buy"
          ? trade.Buy(volume, mt5Symbol, 0.0, sl, tp, "SignalStack")
          : trade.Sell(volume, mt5Symbol, 0.0, sl, tp, "SignalStack");
@@ -511,15 +610,22 @@ void HandleCommand(string json) {
          AdjustProtectionToActualFill(positionTicket);
       }
 
+      double contract = ContractSize(mt5Symbol);
+      double notionalUnits = NotionalUnitsFromVolume(mt5Symbol, volume);
       string result = "{\"ok\":true,\"requestedSymbol\":\"" + JsonEscape(requestedSymbol) +
-         "\",\"mt5Symbol\":\"" + JsonEscape(mt5Symbol) +
-         "\",\"order\":" + IntegerToString((long)trade.ResultOrder()) +
-         ",\"deal\":" + IntegerToString((long)trade.ResultDeal()) +
-         ",\"positionTicket\":" + IntegerToString((long)positionTicket) +
-         ",\"price\":" + DoubleToString(trade.ResultPrice(), digits) +
-         ",\"volume\":" + DoubleToString(volume, VolumeDigits(mt5Symbol)) +
-         ",\"riskPercent\":" + DoubleToString(riskPercent,2) +
-         ",\"stopPips\":10,\"breakEvenPips\":10,\"firstPartialPips\":15,\"firstPartialPercent\":80,\"finalTakeProfitPips\":18,\"blendedRewardRisk\":1.56}";
+                      "\",\"mt5Symbol\":\"" + JsonEscape(mt5Symbol) +
+                      "\",\"order\":" + IntegerToString((long)trade.ResultOrder()) +
+                      ",\"deal\":" + IntegerToString((long)trade.ResultDeal()) +
+                      ",\"positionTicket\":" + IntegerToString((long)positionTicket) +
+                      ",\"price\":" + DoubleToString(trade.ResultPrice(), digits) +
+                      ",\"volume\":" + DoubleToString(volume, VolumeDigits(mt5Symbol)) +
+                      ",\"sizeUnit\":\"lots\"" +
+                      ",\"contractSize\":" + DoubleToString(contract, 2) +
+                      ",\"notionalUnits\":" + DoubleToString(notionalUnits, 2) +
+                      ",\"riskPercent\":" + DoubleToString(riskPercent, 2) +
+                      ",\"stopPips\":10,\"breakEvenPips\":10,\"firstPartialPips\":15" +
+                      ",\"firstPartialPercent\":80,\"finalTakeProfitPips\":18" +
+                      ",\"blendedRewardRisk\":1.56}";
       Report(commandId, true, result);
       return;
    }
@@ -547,23 +653,24 @@ void HandleCommand(string json) {
 void Heartbeat() {
    EnsureDailyState();
    string body = "{\"accountLogin\":\"" + AccountLogin() +
-      "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
-      "\",\"server\":\"" + JsonEscape(AccountServer()) +
-      "\",\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2) +
-      ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) +
-      ",\"dailyStartingBalance\":" + DoubleToString(DailyStartingBalance(),2) +
-      ",\"dailyLossPercent\":" + DoubleToString(DailyLossPercent(),4) +
-      ",\"effectiveRiskPercent\":" + DoubleToString(EffectiveRiskPercent(),2) +
-      ",\"tradingLocked\":" + (DailyTradingLocked() ? "true" : "false") +
-      ",\"reducedRisk\":" + (ReducedRiskActive() ? "true" : "false") +
-      ",\"riskPolicyVersion\":\"1.21\"}";
+                 "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
+                 "\",\"server\":\"" + JsonEscape(AccountServer()) +
+                 "\",\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2) +
+                 ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) +
+                 ",\"dailyStartingBalance\":" + DoubleToString(DailyStartingBalance(),2) +
+                 ",\"dailyLossPercent\":" + DoubleToString(DailyLossPercent(),4) +
+                 ",\"effectiveRiskPercent\":" + DoubleToString(EffectiveRiskPercent(),2) +
+                 ",\"tradingLocked\":" + (DailyTradingLocked() ? "true" : "false") +
+                 ",\"reducedRisk\":" + (ReducedRiskActive() ? "true" : "false") +
+                 ",\"bridgeVersion\":\"" + BRIDGE_VERSION +
+                 "\",\"riskPolicyVersion\":\"" + RISK_POLICY_VERSION + "\"}";
    string response; int status;
    PostJson("/api/mt5-ea/heartbeat", body, response, status);
 }
 
 void Poll() {
    string body = "{\"accountLogin\":\"" + AccountLogin() +
-      "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
+                 "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
    string response; int status;
    if(!PostJson("/api/mt5-ea/poll", body, response, status)) return;
    if(Contains(response, "\"command\":null")) return;
@@ -578,9 +685,15 @@ int OnInit() {
 
    trade.SetExpertMagicNumber(SignalStackMagic);
    EnsureDailyState();
-   Print("Signal Stack bridge v1.21 starting. Login=", AccountLogin(), " Server=", AccountServer(),
-         " TerminalId=", TerminalId, " TokenLength=", StringLen(TerminalToken),
+
+   Print("Signal Stack bridge v", BRIDGE_VERSION,
+         " starting. Login=", AccountLogin(),
+         " Server=", AccountServer(),
+         " TerminalId=", TerminalId,
+         " TokenLength=", StringLen(TerminalToken),
+         " Size=MT5 volume(lots)",
          " Policy=1% risk / 0.5% after SL / 2% equity daily lock / SL10 BE10 80%@15 20%@18 / blended RR 1.56");
+
    LogSymbolResolution("EUR_USD");
    LogSymbolResolution("GBP_USD");
    LogSymbolResolution("USD_JPY");
@@ -593,7 +706,9 @@ int OnInit() {
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason) { EventKillTimer(); }
+void OnDeinit(const int reason) {
+   EventKillTimer();
+}
 
 void OnTimer() {
    static int heartbeatCounter = 0;
@@ -619,10 +734,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
    ENUM_DEAL_REASON reason = (ENUM_DEAL_REASON)HistoryDealGetInteger(trans.deal, DEAL_REASON);
+
    if((entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY) && reason == DEAL_REASON_SL) {
       EnsureDailyState();
       GlobalVariableSet(ReducedRiskKey(), 1.0);
-      Print("SIGNAL STACK STOP LOSS DETECTED: all subsequent bot trades for NY day ", NyDayKey(),
-            " are capped at ", DoubleToString(POST_SL_RISK_PERCENT, 2), "% risk.");
+      Print("SIGNAL STACK STOP LOSS DETECTED: all subsequent bot trades for NY day ",
+            NyDayKey(), " are capped at ",
+            DoubleToString(POST_SL_RISK_PERCENT, 2), "% risk.");
    }
 }
