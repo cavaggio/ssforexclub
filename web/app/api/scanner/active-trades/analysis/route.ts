@@ -4,6 +4,10 @@
  * OANDA/Alpaca keep the existing Railway analysis path. FTMO reads the open
  * position snapshot directly from the connected MT5 EA so selecting FTMO does
  * not try to use an OANDA execution account.
+ *
+ * MT5 sizing note: `volume` (lots) is the canonical FTMO size. `units` is
+ * included only as a generic-dashboard compatibility field and is derived from
+ * volume × broker contract size; it is never used for MT5 execution.
  */
 
 import { NextResponse } from 'next/server';
@@ -38,16 +42,29 @@ function ftmoTrade(position: Awaited<ReturnType<typeof getFtmoPositionsForUser>>
     ? 18
     : Math.max(0.0001, Math.abs(position.takeProfit - entry) / pip);
   const tpProgress = Math.max(0, Math.min(100, (unrealizedPips / totalTargetPips) * 100));
-  const openTimeMs = position.openTime ? new Date(position.openTime).getTime() : NaN;
+  const openTimeMs = position.openTimeEpochMs ?? (position.openTime ? new Date(position.openTime).getTime() : NaN);
   const minutesElapsed = Number.isFinite(openTimeMs)
-    ? Math.max(0, Math.round((Date.now() - openTimeMs) / 60_000))
+    ? Math.max(0, Math.round((Date.now() - Number(openTimeMs)) / 60_000))
     : 0;
 
   return {
     tradeId: position.ticket,
     instrument: pair,
     side: position.side,
-    units: position.volume,
+
+    // MT5-native broker sizing.
+    volume: position.volume,
+    sizeUnit: 'lots',
+    volumeMin: position.volumeMin,
+    volumeMax: position.volumeMax,
+    volumeStep: position.volumeStep,
+    contractSize: position.contractSize,
+    notionalUnits: position.notionalUnits,
+
+    // Compatibility for generic OANDA-oriented dashboard widgets. This is true
+    // notional units, not MT5 volume mislabeled as units.
+    units: position.notionalUnits ?? 0,
+
     entryPrice: entry,
     currentPrice: current,
     openTime: position.openTime || new Date().toISOString(),
@@ -59,8 +76,6 @@ function ftmoTrade(position: Awaited<ReturnType<typeof getFtmoPositionsForUser>>
     distanceToTPPips,
     distanceToSLPips,
     tpProgress,
-    // FTMO trade protection is broker-side in the EA. We deliberately do not
-    // invent OANDA waterfall scores for an MT5 position.
     currentAlignmentScore: 0,
     currentConfidence: 0,
     tradeState: 'OPEN_HEALTHY',
@@ -76,6 +91,7 @@ function ftmoTrade(position: Awaited<ReturnType<typeof getFtmoPositionsForUser>>
     waterfall: null,
     source: 'ftmo_mt5',
     brokerManaged: true,
+    managedBySignalStack: position.managedBySignalStack,
   };
 }
 
@@ -104,6 +120,7 @@ export async function POST() {
       activeBroker: 'ftmo',
       activeEnvironment: resolved.activeEnvironment,
       executionTransport: 'mt5_ea',
+      positionSizeUnit: 'lots',
       analysis: {
         trades,
         meta: {
@@ -111,11 +128,12 @@ export async function POST() {
           session: 'FTMO / MT5',
           totalActive: snapshot.positionCount,
           autoCloseEnabled: false,
+          positionSizeUnit: 'lots',
           notice: detailPending
-            ? `MT5 reports ${snapshot.positionCount} open position(s). The current EA build only returned the count; detailed position cards will populate after the detailed position snapshot is available.`
+            ? `MT5 reports ${snapshot.positionCount} open position(s). The attached EA has not yet returned the detailed v1.22 position snapshot.`
             : snapshot.positionCount === 0
               ? 'No open FTMO positions on the connected MT5 account.'
-              : 'Live positions sourced directly from the connected FTMO MT5 EA. Broker-side protection remains authoritative.',
+              : 'Live positions sourced directly from FTMO MT5. Position size is displayed in MT5 volume (lots); broker-side protection remains authoritative.',
         },
       },
     });
