@@ -91,7 +91,7 @@ export default async function FtmoPage() {
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12 }}>
-          Safe activation sequence: connected EA → v1.20 risk heartbeat → one 0.01-lot order test → verify broker result → enable autonomous FTMO execution.
+          Safe activation sequence: connected EA → v1.21 risk heartbeat → one 0.01-lot order test → verify broker result → enable autonomous FTMO execution.
         </p>
 
         {hasLegacyProviderSetting && (
@@ -133,7 +133,7 @@ export default async function FtmoPage() {
         {readiness && (
           <div style={{ marginTop: 14, padding: 12, border: '1px dashed var(--border)', borderRadius: 8, fontSize: 12, lineHeight: 1.55, color: readiness.ready ? 'var(--good)' : 'var(--muted)' }}>
             <strong>{readiness.ready ? 'FTMO autonomous execution is armed.' : 'FTMO autonomous execution remains fail-closed.'}</strong>{' '}
-            {readiness.reason}. Risk policy: 1% initial risk, 0.5% after an SL for the rest of the NY trading day, 2% daily equity-loss lock, 15-pip SL, +10-pip breakeven, 80% at +15 pips, final 20% at +18 pips.
+            {readiness.reason}. Risk policy: 1% initial risk, 0.5% after an SL for the rest of the NY trading day, 2% daily equity-loss lock, 10-pip SL, +10-pip breakeven, 80% at +15 pips, final 20% at +18 pips, 1.56R blended reward/risk.
           </div>
         )}
       </section>
