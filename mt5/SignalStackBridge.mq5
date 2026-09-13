@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.00"
+#property version   "1.10"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -19,6 +19,43 @@ string JsonEscape(string s) {
    return s;
 }
 
+string CompactSignalSymbol(string symbol) {
+   string compact = symbol;
+   StringReplace(compact, "_", "");
+   StringReplace(compact, "/", "");
+   return compact;
+}
+
+bool TrySelectSymbol(string symbol) {
+   if(symbol == "") return false;
+   return SymbolSelect(symbol, true);
+}
+
+string ResolveMt5Symbol(string signalSymbol) {
+   string raw = signalSymbol;
+   if(TrySelectSymbol(raw)) return raw;
+
+   string compact = CompactSignalSymbol(raw);
+   if(TrySelectSymbol(compact)) return compact;
+
+   string sim = compact + ".sim";
+   if(TrySelectSymbol(sim)) return sim;
+
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++) {
+      string candidate = SymbolName(i, false);
+      if(StringFind(candidate, compact) == 0 && TrySelectSymbol(candidate)) return candidate;
+   }
+
+   return "";
+}
+
+void LogSymbolResolution(string signalSymbol) {
+   string resolved = ResolveMt5Symbol(signalSymbol);
+   if(resolved == "") Print("Signal Stack symbol resolution FAILED: ", signalSymbol);
+   else Print("Signal Stack symbol map: ", signalSymbol, " -> ", resolved);
+}
+
 bool PostJson(string path, string body, string &response, int &status) {
    string url = SignalStackBaseUrl + path;
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + TerminalToken + "\r\n";
@@ -35,6 +72,7 @@ bool PostJson(string path, string body, string &response, int &status) {
 }
 
 bool Contains(string haystack, string needle) { return StringFind(haystack, needle) >= 0; }
+
 string ExtractString(string json, string key) {
    string marker = "\"" + key + "\":\"";
    int start = StringFind(json, marker);
@@ -53,14 +91,20 @@ double ExtractNumber(string json, string key, double fallback = 0.0) {
    int end = start;
    while(end < StringLen(json)) {
       ushort c = StringGetCharacter(json, end);
-      if((c >= '0' && c <= '9') || c == '.' || c == '-') end++; else break;
+      if((c >= '0' && c <= '9') || c == '.' || c == '-') end++;
+      else break;
    }
    string raw = StringSubstr(json, start, end - start);
    return raw == "" ? fallback : StringToDouble(raw);
 }
 
 void Report(string commandId, bool success, string resultJson, string errorText = "") {
-   string body = "{\"accountLogin\":\"" + JsonEscape(AccountLogin()) + "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\",\"commandId\":\"" + JsonEscape(commandId) + "\",\"success\":" + (success ? "true" : "false") + ",\"result\":" + (resultJson == "" ? "{}" : resultJson) + ",\"error\":\"" + JsonEscape(errorText) + "\"}";
+   string body = "{\"accountLogin\":\"" + JsonEscape(AccountLogin()) +
+      "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
+      "\",\"commandId\":\"" + JsonEscape(commandId) +
+      "\",\"success\":" + (success ? "true" : "false") +
+      ",\"result\":" + (resultJson == "" ? "{}" : resultJson) +
+      ",\"error\":\"" + JsonEscape(errorText) + "\"}";
    string response; int status;
    PostJson("/api/mt5-ea/report", body, response, status);
 }
@@ -71,13 +115,17 @@ void HandleCommand(string json) {
    if(commandId == "" || commandType == "") return;
 
    if(commandType == "health") {
-      string result = "{\"ok\":true,\"login\":\"" + AccountLogin() + "\",\"server\":\"" + JsonEscape(AccountServer()) + "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
+      string result = "{\"ok\":true,\"login\":\"" + AccountLogin() +
+         "\",\"server\":\"" + JsonEscape(AccountServer()) +
+         "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
       Report(commandId, true, result);
       return;
    }
 
    if(commandType == "account_summary") {
-      string result = "{\"ok\":true,\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2) + ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) + ",\"marginFree\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2) + "}";
+      string result = "{\"ok\":true,\"balance\":" + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2) +
+         ",\"equity\":" + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2) +
+         ",\"marginFree\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2) + "}";
       Report(commandId, true, result);
       return;
    }
@@ -88,19 +136,40 @@ void HandleCommand(string json) {
    }
 
    if(commandType == "order_place") {
-      string symbol = ExtractString(json, "symbol");
+      string requestedSymbol = ExtractString(json, "symbol");
       string side = ExtractString(json, "side");
       double volume = ExtractNumber(json, "volume", 0.0);
       double sl = ExtractNumber(json, "stopLoss", 0.0);
       double tp = ExtractNumber(json, "takeProfit", 0.0);
-      if(symbol == "" || volume <= 0.0 || (side != "buy" && side != "sell")) {
+
+      if(requestedSymbol == "" || volume <= 0.0 || (side != "buy" && side != "sell")) {
          Report(commandId, false, "{}", "Invalid order payload");
          return;
       }
+
+      string mt5Symbol = ResolveMt5Symbol(requestedSymbol);
+      if(mt5Symbol == "") {
+         Report(commandId, false, "{}", "Symbol resolution failed for " + requestedSymbol);
+         return;
+      }
+
+      Print("Signal Stack order symbol: ", requestedSymbol, " -> ", mt5Symbol);
       trade.SetAsyncMode(false);
-      bool ok = side == "buy" ? trade.Buy(volume, symbol, 0.0, sl, tp, "SignalStack") : trade.Sell(volume, symbol, 0.0, sl, tp, "SignalStack");
-      if(!ok) { Report(commandId, false, "{}", trade.ResultRetcodeDescription()); return; }
-      string result = "{\"ok\":true,\"order\":" + IntegerToString((long)trade.ResultOrder()) + ",\"deal\":" + IntegerToString((long)trade.ResultDeal()) + ",\"price\":" + DoubleToString(trade.ResultPrice(), _Digits) + "}";
+      bool ok = side == "buy"
+         ? trade.Buy(volume, mt5Symbol, 0.0, sl, tp, "SignalStack")
+         : trade.Sell(volume, mt5Symbol, 0.0, sl, tp, "SignalStack");
+
+      if(!ok) {
+         Report(commandId, false, "{}", trade.ResultRetcodeDescription());
+         return;
+      }
+
+      int digits = (int)SymbolInfoInteger(mt5Symbol, SYMBOL_DIGITS);
+      string result = "{\"ok\":true,\"requestedSymbol\":\"" + JsonEscape(requestedSymbol) +
+         "\",\"mt5Symbol\":\"" + JsonEscape(mt5Symbol) +
+         "\",\"order\":" + IntegerToString((long)trade.ResultOrder()) +
+         ",\"deal\":" + IntegerToString((long)trade.ResultDeal()) +
+         ",\"price\":" + DoubleToString(trade.ResultPrice(), digits) + "}";
       Report(commandId, true, result);
       return;
    }
@@ -108,9 +177,15 @@ void HandleCommand(string json) {
    if(commandType == "position_close") {
       string positionId = ExtractString(json, "positionId");
       ulong ticket = (ulong)StringToInteger(positionId);
-      if(ticket == 0) { Report(commandId, false, "{}", "Invalid position ticket"); return; }
+      if(ticket == 0) {
+         Report(commandId, false, "{}", "Invalid position ticket");
+         return;
+      }
       bool ok = trade.PositionClose(ticket);
-      if(!ok) { Report(commandId, false, "{}", trade.ResultRetcodeDescription()); return; }
+      if(!ok) {
+         Report(commandId, false, "{}", trade.ResultRetcodeDescription());
+         return;
+      }
       Report(commandId, true, "{\"ok\":true}");
       return;
    }
@@ -119,13 +194,16 @@ void HandleCommand(string json) {
 }
 
 void Heartbeat() {
-   string body = "{\"accountLogin\":\"" + AccountLogin() + "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\",\"server\":\"" + JsonEscape(AccountServer()) + "\"}";
+   string body = "{\"accountLogin\":\"" + AccountLogin() +
+      "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
+      "\",\"server\":\"" + JsonEscape(AccountServer()) + "\"}";
    string response; int status;
    PostJson("/api/mt5-ea/heartbeat", body, response, status);
 }
 
 void Poll() {
-   string body = "{\"accountLogin\":\"" + AccountLogin() + "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
+   string body = "{\"accountLogin\":\"" + AccountLogin() +
+      "\",\"terminalId\":\"" + JsonEscape(TerminalId) + "\"}";
    string response; int status;
    if(!PostJson("/api/mt5-ea/poll", body, response, status)) return;
    if(Contains(response, "\"command\":null")) return;
@@ -133,11 +211,30 @@ void Poll() {
 }
 
 int OnInit() {
-   if(TerminalToken == "") { Print("Signal Stack EA token is required"); return INIT_PARAMETERS_INCORRECT; }
+   if(TerminalToken == "") {
+      Print("Signal Stack EA token is required");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   Print("Signal Stack bridge starting. Login=", AccountLogin(), " Server=", AccountServer(), " TerminalId=", TerminalId);
+   LogSymbolResolution("EUR_USD");
+   LogSymbolResolution("GBP_USD");
+   LogSymbolResolution("USD_JPY");
+   LogSymbolResolution("GBP_JPY");
+
    EventSetTimer(MathMax(PollSeconds, 1));
    Heartbeat();
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason) { EventKillTimer(); }
-void OnTimer() { static int heartbeatCounter = 0; Poll(); heartbeatCounter++; if(heartbeatCounter >= 15) { Heartbeat(); heartbeatCounter = 0; } }
+
+void OnTimer() {
+   static int heartbeatCounter = 0;
+   Poll();
+   heartbeatCounter++;
+   if(heartbeatCounter >= 15) {
+      Heartbeat();
+      heartbeatCounter = 0;
+   }
+}
