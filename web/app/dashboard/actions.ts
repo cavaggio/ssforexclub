@@ -1,23 +1,14 @@
 /**
- * web/app/dashboard/actions.ts
- *
- * Server Actions for the dashboard. All three actions:
- *   1. Run server-only (the `'use server'` directive).
- *   2. Derive userId from `(await auth()).userId` — NEVER from form data.
- *   3. Re-validate the dashboard route on success so the new state is
- *      reflected on the next render.
- *
- * Public actions:
- *   saveBrokerConnectionAction     — create or upsert an OANDA / Alpaca conn
- *   setActiveTradingModeAction     — flip between practice/paper/live
- *   acknowledgeLiveTradingAction   — one-time risk acceptance
- *   removeBrokerConnectionAction   — deactivate a connection (soft delete)
+ * Dashboard server actions for broker selection and connection management.
+ * FTMO prop accounts use the outbound MT5 EA bridge and may be selected only
+ * after their terminal has completed a valid heartbeat.
  */
 
 'use server';
 
-import { auth } from '@clerk/nextjs/server';
+import { auth, currentUser } from '@clerk/nextjs/server';
 import { revalidatePath } from 'next/cache';
+import { getServerSupabase } from '@/lib/db';
 import {
   createBrokerConnection,
   deactivateBrokerConnection,
@@ -33,16 +24,15 @@ import {
   type ActiveEnvironment,
 } from '@/lib/userTradingSettings';
 import { upsertUserFromClerk } from '@/lib/users';
-import { currentUser } from '@clerk/nextjs/server';
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
 const OANDA_ACCOUNT_ID_PATTERN = /^\d{3}-\d{3}-\d{6,12}-\d{3}$/;
+const FTMO_ENVIRONMENTS = new Set<ActiveEnvironment>(['challenge', 'verification', 'funded']);
 
 async function requireUserId(): Promise<string> {
   const { userId } = await auth();
   if (!userId) throw new Error('Unauthenticated');
-  // Make sure the shadow-user row exists before we FK off it.
   const u = await currentUser();
   if (u) {
     await upsertUserFromClerk({
@@ -53,14 +43,25 @@ async function requireUserId(): Promise<string> {
   return userId;
 }
 
-// ─── saveBrokerConnectionAction ─────────────────────────────────────────────
-// Atomic upsert: reconnecting the same (user, broker, environment, account_id)
-// refreshes credentials, reactivates the row, and resets validation to pending.
-// Never deactivate first — a later write failure must not strand the account.
+async function ftmoTerminalConnected(userId: string, accountLogin: string): Promise<boolean> {
+  const supabase = getServerSupabase();
+  const { data, error } = await supabase
+    .from('mt5_ea_terminals')
+    .select('status,last_heartbeat_at')
+    .eq('user_id', userId)
+    .eq('account_login', accountLogin)
+    .eq('status', 'connected')
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data?.last_heartbeat_at) return false;
+  const heartbeat = new Date(String(data.last_heartbeat_at)).getTime();
+  return Number.isFinite(heartbeat) && Date.now() - heartbeat <= 120_000;
+}
+
 export async function saveBrokerConnectionAction(formData: FormData): Promise<ActionResult> {
   try {
     const userId = await requireUserId();
-
     const broker = String(formData.get('broker') || '').toLowerCase() as BrokerKind;
     const environment = String(formData.get('environment') || '').toLowerCase() as BrokerEnvironment;
     const accountId = String(formData.get('accountId') || '').trim();
@@ -68,13 +69,13 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
     const secret = String(formData.get('secret') || '').trim() || null;
 
     if (broker !== 'oanda' && broker !== 'alpaca') {
-      return { ok: false, error: 'Broker must be oanda or alpaca' };
+      return { ok: false, error: 'Use the dedicated FTMO or Futures connection page for non-OANDA/Alpaca brokers' };
     }
     if (!['practice', 'paper', 'live'].includes(environment)) {
       return { ok: false, error: 'Environment must be practice, paper, or live' };
     }
     if (!accountId) return { ok: false, error: 'Account ID is required' };
-    if (!token)     return { ok: false, error: 'API token is required' };
+    if (!token) return { ok: false, error: 'API token is required' };
     if (broker === 'oanda' && !OANDA_ACCOUNT_ID_PATTERN.test(accountId)) {
       return {
         ok: false,
@@ -82,15 +83,7 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
       };
     }
 
-    await createBrokerConnection({
-      clerkUserId: userId,
-      broker,
-      accountId,
-      environment,
-      token,
-      secret,
-    });
-
+    await createBrokerConnection({ clerkUserId: userId, broker, accountId, environment, token, secret });
     revalidatePath('/dashboard');
     revalidatePath('/dashboard/settings');
     return { ok: true };
@@ -99,39 +92,39 @@ export async function saveBrokerConnectionAction(formData: FormData): Promise<Ac
   }
 }
 
-// ─── setActiveTradingModeAction ─────────────────────────────────────────────
-// The user-facing toggle. Hard rules (Part 7):
-//   - Cannot flip to live without `live_trading_acknowledged=true`.
-//   - Cannot flip to a mode that has no matching active broker_connection
-//     (we'd rather error than silently swap).
 export async function setActiveTradingModeAction(formData: FormData): Promise<ActionResult> {
   try {
     const userId = await requireUserId();
     const broker = String(formData.get('broker') || '').toLowerCase() as ActiveBroker;
     const environment = String(formData.get('environment') || '').toLowerCase() as ActiveEnvironment;
 
-    if (broker !== 'oanda' && broker !== 'alpaca') {
-      return { ok: false, error: 'Broker must be oanda or alpaca' };
+    if (broker !== 'oanda' && broker !== 'alpaca' && broker !== 'ftmo') {
+      return { ok: false, error: 'Broker must be OANDA, Alpaca, or FTMO' };
     }
-    if (!['practice', 'paper', 'live'].includes(environment)) {
-      return { ok: false, error: 'Environment must be practice, paper, or live' };
+
+    const validEnvironment = broker === 'ftmo'
+      ? FTMO_ENVIRONMENTS.has(environment)
+      : ['practice', 'paper', 'live'].includes(environment);
+    if (!validEnvironment) {
+      return {
+        ok: false,
+        error: broker === 'ftmo'
+          ? 'FTMO environment must be challenge, verification, or funded'
+          : 'Environment must be practice, paper, or live',
+      };
     }
 
     const settings = await getUserTradingSettings(userId);
-    if (environment === 'live' && !settings.liveTradingAcknowledged) {
-      return { ok: false, error: 'You must acknowledge the live-trading risk warning before activating live mode' };
+    if ((environment === 'live' || broker === 'ftmo') && !settings.liveTradingAcknowledged) {
+      return { ok: false, error: 'Accept the trading-risk acknowledgement before activating this execution account' };
     }
 
-    // Find a matching active broker_connection for the target mode.
     const connections = await listBrokerConnectionsForUser(userId);
-    const conn = connections.find(
-      (c) => c.broker === broker && c.environment === environment && c.isActive
-    );
-    if (!conn) {
-      const friendly = environment === 'live'
-        ? `No live ${broker.toUpperCase()} credentials connected — link a live account before activating live mode`
-        : `No ${environment} ${broker.toUpperCase()} credentials connected — link a ${environment} account first`;
-      return { ok: false, error: friendly };
+    const conn = connections.find((c) => c.broker === broker && c.environment === environment && c.isActive);
+    if (!conn) return { ok: false, error: `No active ${environment} ${broker.toUpperCase()} connection is saved` };
+
+    if (broker === 'ftmo' && !(await ftmoTerminalConnected(userId, conn.accountId))) {
+      return { ok: false, error: 'FTMO MT5 EA is not currently connected. Restore the heartbeat before selecting FTMO.' };
     }
 
     await setActiveBroker({
@@ -143,15 +136,13 @@ export async function setActiveTradingModeAction(formData: FormData): Promise<Ac
 
     revalidatePath('/dashboard');
     revalidatePath('/dashboard/settings');
+    revalidatePath('/dashboard/ftmo');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-// ─── acknowledgeLiveTradingAction ───────────────────────────────────────────
-// One-time acceptance of the live-trading risk warning. Does NOT activate
-// live mode by itself — the user still has to flip the toggle separately.
 export async function acknowledgeLiveTradingAction(): Promise<ActionResult> {
   try {
     const userId = await requireUserId();
@@ -164,10 +155,6 @@ export async function acknowledgeLiveTradingAction(): Promise<ActionResult> {
   }
 }
 
-// ─── removeBrokerConnectionAction ───────────────────────────────────────────
-// Soft delete — the row stays in the DB (audit) but is_active becomes false.
-// If the deactivated row was the user's currently-active one, the trading
-// settings are reset so the user must reconfirm.
 export async function removeBrokerConnectionAction(formData: FormData): Promise<ActionResult> {
   try {
     const userId = await requireUserId();
@@ -175,20 +162,19 @@ export async function removeBrokerConnectionAction(formData: FormData): Promise<
     if (!connectionId) return { ok: false, error: 'connectionId is required' };
 
     await deactivateBrokerConnection(userId, connectionId);
-
-    // If this was the active connection, clear the pointer to avoid stale state.
     const settings = await getUserTradingSettings(userId);
     if (settings.activeBrokerConnectionId === connectionId && settings.activeBroker) {
       await setActiveBroker({
         clerkUserId: userId,
         activeBroker: settings.activeBroker,
-        activeEnvironment: 'practice',     // safe default
+        activeEnvironment: 'practice',
         activeBrokerConnectionId: null,
       });
     }
 
     revalidatePath('/dashboard');
     revalidatePath('/dashboard/settings');
+    revalidatePath('/dashboard/ftmo');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
