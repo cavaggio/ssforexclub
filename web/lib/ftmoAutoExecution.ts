@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { getServerSupabase } from './db';
 
 export const REQUIRED_FTMO_EA_POLICY_VERSION = '1.21';
+export const REQUIRED_FTMO_BRIDGE_VERSION = '1.23';
 
 export const FTMO_EXECUTION_POLICY = Object.freeze({
   baseRiskPercent: 1,
@@ -39,6 +40,8 @@ export type FtmoExecutionReadiness = {
   heartbeatFresh: boolean;
   policyVersionCompatible: boolean;
   terminalPolicyVersion: string | null;
+  bridgeVersionCompatible: boolean;
+  terminalBridgeVersion: string | null;
   reason: string;
   policy: typeof FTMO_EXECUTION_POLICY;
 };
@@ -64,7 +67,7 @@ async function latestTerminal(userId: string, accountLogin: string) {
   const supabase = getServerSupabase();
   const { data, error } = await supabase
     .from('mt5_ea_terminals')
-    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error,order_test_verified_at,order_test_command_id,trading_locked,effective_risk_percent,daily_loss_percent,risk_policy_version')
+    .select('account_login,server,terminal_id,status,last_heartbeat_at,last_error,order_test_verified_at,order_test_command_id,trading_locked,effective_risk_percent,daily_loss_percent,risk_policy_version,bridge_version')
     .eq('user_id', userId)
     .eq('account_login', accountLogin)
     .order('updated_at', { ascending: false })
@@ -85,20 +88,23 @@ export async function getFtmoExecutionReadiness(args: {
   const terminalConnected = terminal?.status === 'connected';
   const terminalPolicyVersion = terminal?.risk_policy_version ? String(terminal.risk_policy_version) : null;
   const policyVersionCompatible = terminalPolicyVersion === REQUIRED_FTMO_EA_POLICY_VERSION;
+  const terminalBridgeVersion = terminal?.bridge_version ? String(terminal.bridge_version) : null;
+  const bridgeVersionCompatible = terminalBridgeVersion === REQUIRED_FTMO_BRIDGE_VERSION;
   const orderTestVerified = config.orderTestOverride || Boolean(terminal?.order_test_verified_at);
   const terminalRiskLocked = terminal?.trading_locked === true;
 
   let reason = 'FTMO execution ready';
   if (!terminalConnected) reason = 'MT5 EA terminal is not connected';
   else if (!heartbeatFresh) reason = 'MT5 EA heartbeat is stale';
-  else if (!policyVersionCompatible) reason = `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before FTMO execution`;
+  else if (!policyVersionCompatible) reason = `Risk policy ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before FTMO execution`;
+  else if (!bridgeVersionCompatible) reason = `SignalStackBridge ${REQUIRED_FTMO_BRIDGE_VERSION} is required before FTMO execution`;
   else if (terminalRiskLocked) reason = 'MT5 EA daily risk lock is active';
   else if (!orderTestVerified) reason = 'Minimum-volume MT5 order test has not been verified';
   else if (!config.liveExecutionEnabled) reason = 'FTMO_LIVE_EXECUTION_ENABLED is false';
   else if (!config.autoTradeEnabled) reason = 'FTMO_AUTO_TRADE_ENABLED is false';
 
   return {
-    ready: terminalConnected && heartbeatFresh && policyVersionCompatible && !terminalRiskLocked && orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
+    ready: terminalConnected && heartbeatFresh && policyVersionCompatible && bridgeVersionCompatible && !terminalRiskLocked && orderTestVerified && config.liveExecutionEnabled && config.autoTradeEnabled,
     autoTradeEnabled: config.autoTradeEnabled,
     liveExecutionEnabled: config.liveExecutionEnabled,
     orderTestVerified,
@@ -106,6 +112,8 @@ export async function getFtmoExecutionReadiness(args: {
     heartbeatFresh,
     policyVersionCompatible,
     terminalPolicyVersion,
+    bridgeVersionCompatible,
+    terminalBridgeVersion,
     reason,
     policy: FTMO_EXECUTION_POLICY,
   };
@@ -122,7 +130,10 @@ async function enqueueCommand(args: {
     return { ok: false as const, blocked: true as const, reason: 'FTMO terminal disappeared before queue submission' };
   }
   if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
-    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required` };
+    return { ok: false as const, blocked: true as const, reason: `Risk policy ${REQUIRED_FTMO_EA_POLICY_VERSION} is required` };
+  }
+  if (String(terminal.bridge_version || '') !== REQUIRED_FTMO_BRIDGE_VERSION) {
+    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_BRIDGE_VERSION} is required` };
   }
   if (terminal.trading_locked === true) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
@@ -214,9 +225,9 @@ export async function enqueueFtmoAutoOrder(args: {
 /**
  * Controlled minimum-volume order test. This bypasses the order-test,
  * auto-trade, and autonomous live-execution flags because its only purpose is
- * to earn verification. It still requires a fresh connected EA, the required
- * risk-policy version, an unlocked daily risk state, and the API route's
- * explicit confirmation + market-hours + 0.01-lot maximum safeguards.
+ * to earn verification. It still requires a fresh connected v1.23 EA, the
+ * required risk-policy version, an unlocked daily risk state, and the API
+ * route's explicit confirmation + market-hours + 0.01-lot maximum safeguards.
  */
 export async function enqueueFtmoOrderTest(args: {
   userId: string;
@@ -233,7 +244,10 @@ export async function enqueueFtmoOrderTest(args: {
     return { ok: false as const, blocked: true as const, reason: 'MT5 EA terminal must be connected with a fresh heartbeat' };
   }
   if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
-    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before the order test` };
+    return { ok: false as const, blocked: true as const, reason: `Risk policy ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before the order test` };
+  }
+  if (String(terminal.bridge_version || '') !== REQUIRED_FTMO_BRIDGE_VERSION) {
+    return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_BRIDGE_VERSION} is required before the order test` };
   }
   if (terminal.trading_locked === true) {
     return { ok: false as const, blocked: true as const, reason: 'FTMO daily risk lock is active' };
