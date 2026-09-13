@@ -84,10 +84,13 @@ export async function callInternalEndpoint(
   return { ok: true, data };
 }
 
+// Keep this context aligned with legacy scanner/trade logging callers. FTMO
+// analysis does not invoke afterCall hooks; FTMO execution/logging has its own
+// dedicated MT5 path.
 export type AfterCallContext = {
   userId: string;
-  broker: 'oanda' | 'alpaca' | 'ftmo';
-  environment: 'practice' | 'live' | 'paper' | 'challenge' | 'verification' | 'funded';
+  broker: 'oanda' | 'alpaca';
+  environment: 'practice' | 'live' | 'paper';
   brokerAccountId: string | null;
   isLiveTrading: boolean;
 };
@@ -235,8 +238,6 @@ export async function callScannerForCurrentUser(args: {
       baseUrl: marketData.baseUrl,
       environment: marketData.environment,
       ...extraBody,
-      // Never allow a scanner endpoint to place an OANDA order while FTMO is
-      // the selected execution broker.
       autoExecute: false,
       analysisOnly: true,
       executionBroker: 'ftmo',
@@ -244,16 +245,7 @@ export async function callScannerForCurrentUser(args: {
       userId,
     });
 
-    const afterCtx: AfterCallContext = {
-      userId,
-      broker: 'ftmo',
-      environment: resolved.activeEnvironment as AfterCallContext['environment'],
-      brokerAccountId: resolved.activeConnectionId,
-      isLiveTrading: resolved.isLiveTrading,
-    };
-
     if (!result.ok) {
-      await runAfterCall(afterCtx, { ok: false, data: null, error: result.error });
       return NextResponse.json(
         {
           ok: false,
@@ -268,7 +260,6 @@ export async function callScannerForCurrentUser(args: {
       );
     }
 
-    await runAfterCall(afterCtx, { ok: true, data: result.data });
     return NextResponse.json({
       ok: true,
       activeBroker: 'ftmo',
@@ -349,8 +340,8 @@ export async function callScannerForCurrentUser(args: {
 
   const afterCtx: AfterCallContext = {
     userId,
-    broker: (resolved.activeBroker ?? 'oanda') as AfterCallContext['broker'],
-    environment: resolved.activeEnvironment as AfterCallContext['environment'],
+    broker: (resolved.activeBroker ?? 'oanda') as 'oanda' | 'alpaca',
+    environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
     brokerAccountId: creds.accountId,
     isLiveTrading: resolved.isLiveTrading,
   };
