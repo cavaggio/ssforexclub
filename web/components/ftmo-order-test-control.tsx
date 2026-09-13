@@ -51,7 +51,7 @@ export function FtmoOrderTestControl({ connected, liveExecutionEnabled, orderTes
     <section style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, padding: 24 }}>
       <h3 style={{ margin: 0, fontSize: 16 }}>Controlled MT5 Order Test</h3>
       <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>
-        This sends one real 0.01-lot test order to the active FTMO Verification account. It does not enable autonomous trading. The EA applies the same 15-pip SL, +10-pip breakeven, 80% at +15 pips, and final 20% at +18 pips.
+        This sends one real 0.01-lot test order to the active FTMO Verification account. It does not enable autonomous trading. The EA applies the same 10-pip SL, +10-pip breakeven, 80% at +15 pips, and final 20% at +18 pips (1.56R blended reward/risk).
       </p>
 
       {orderTestVerified ? (
