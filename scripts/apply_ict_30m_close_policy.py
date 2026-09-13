@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Read-only deployment verification for Profit Protection v3.
+"""Read-only deployment verification for Profit Protection v4.
 
 The file name is retained for compatibility with the existing generated-source
-pipeline. Production builds must verify the committed policy rather than try
-to mutate it with the retired v2 patcher.
+pipeline. Production builds verify the committed policy instead of mutating it.
 """
 
 from pathlib import Path
@@ -38,13 +37,15 @@ required = {
         "outside_management_window_02:15-17:30_ET",
     ],
     ACTIVE_EXIT_POLICY: [
-        "ACTIVE_EXIT_POLICY = 'profit_protection_v3'",
-        "FIXED_STOP_LOSS_PIPS = 10",
+        "ACTIVE_EXIT_POLICY = 'profit_protection_v4'",
+        "FIXED_STOP_LOSS_PIPS = 15",
+        "BREAK_EVEN_TRIGGER_PIPS = 10",
         "FIRST_TAKE_PROFIT_PIPS = 15",
         "FIRST_PARTIAL_PERCENT = 80",
         "FINAL_TAKE_PROFIT_PIPS = 18",
         "FINAL_PARTIAL_PERCENT = 20",
-        "FIXED_RR = 1.5",
+        "FIXED_RR = 1.04",
+        "ten_pip_breakeven_trigger",
         "fifteen_pip_profit_milestone",
         "eighteen_pip_final_milestone",
         "remaining_twenty_percent",
@@ -55,12 +56,12 @@ for path, markers in required.items():
     body = path.read_text(encoding="utf-8")
     for marker in markers:
         if marker not in body:
-            raise RuntimeError(f"Profit Protection v3 verification failed: {path.relative_to(ROOT)} missing {marker}")
+            raise RuntimeError(f"Profit Protection v4 verification failed: {path.relative_to(ROOT)} missing {marker}")
 
 for path in (REASSESSOR, ACTIVE_MANAGEMENT_ROUTE, ACTIVE_EXIT_POLICY):
     body = path.read_text(encoding="utf-8")
     for forbidden in ["units: 'ALL'", "action: 'FULL_CLOSE'"]:
         if forbidden in body:
-            raise RuntimeError(f"Profit Protection v3 verification failed: {path.relative_to(ROOT)} contains forbidden {forbidden}")
+            raise RuntimeError(f"Profit Protection v4 verification failed: {path.relative_to(ROOT)} contains forbidden {forbidden}")
 
-print("Profit Protection v3 verified: 10p SL, 80% at +15p, remaining 20% protected at breakeven, final 20% at +18p, no automatic full close.")
+print("Profit Protection v4 verified: 15p SL, BE at +10p, 80% at +15p, final 20% at +18p, no discretionary automatic full close.")
