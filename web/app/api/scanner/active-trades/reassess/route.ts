@@ -4,6 +4,10 @@
  * OANDA keeps the existing Railway lifecycle reassessment. FTMO reads the
  * position snapshot from the connected MT5 EA and surfaces the hard broker-side
  * protection plan without trying to query or manage an OANDA position.
+ *
+ * MT5 sizing note: FTMO positions are broker-native `volume` (lots). Any
+ * `units` field emitted for generic dashboard compatibility is derived from
+ * volume × broker contract size and is never used for MT5 execution.
  */
 
 import { NextResponse } from 'next/server';
@@ -21,6 +25,7 @@ type ReassessTrade = {
   instrument?: string;
   direction?: 'long' | 'short';
   units?: number;
+  volume?: number;
   currentPnL?: number;
   recommendedAction?: string;
   recommendedStopLoss?: number | null;
@@ -40,12 +45,18 @@ function ftmoReassessment(position: Awaited<ReturnType<typeof getFtmoPositionsFo
     tradeId: position.ticket,
     instrument: mt5SymbolToSignalPair(position.symbol),
     direction: position.side,
-    units: position.volume,
+    volume: position.volume,
+    sizeUnit: 'lots',
+    contractSize: position.contractSize,
+    notionalUnits: position.notionalUnits,
+    // Generic dashboard compatibility only. This is true notional size.
+    units: position.notionalUnits ?? 0,
     currentPnL: position.profit,
     recommendedAction: 'HOLD',
     recommendedStopLoss: position.stopLoss,
     recommendedTakeProfit: position.takeProfit,
     managementReasons: [
+      `MT5 position size: ${position.volume} lot(s).`,
       'FTMO position is managed inside SignalStackBridge.',
       'Do not discretionary-close before the protective stop.',
       'Move SL to breakeven at +10 pips.',
@@ -60,6 +71,7 @@ function ftmoReassessment(position: Awaited<ReturnType<typeof getFtmoPositionsFo
     },
     source: 'ftmo_mt5',
     brokerManaged: true,
+    managedBySignalStack: position.managedBySignalStack,
   };
 }
 
@@ -81,6 +93,7 @@ export async function POST() {
         activeBroker: 'ftmo',
         activeEnvironment: resolved.activeEnvironment,
         executionTransport: 'mt5_ea',
+        positionSizeUnit: 'lots',
         reassessment: {
           trades,
           meta: {
@@ -89,12 +102,13 @@ export async function POST() {
             environment: resolved.activeEnvironment,
             totalActive: snapshot.positionCount,
             autoCloseEnabled: false,
+            positionSizeUnit: 'lots',
             recommendationCounts: trades.length ? { hold: trades.length } : {},
             notice: detailPending
-              ? `MT5 reports ${snapshot.positionCount} open position(s); the current EA response contains count-only position data.`
+              ? `MT5 reports ${snapshot.positionCount} open position(s); detailed position data requires SignalStackBridge v1.22.`
               : snapshot.positionCount === 0
                 ? 'No open FTMO positions to reassess.'
-                : 'FTMO positions are managed by the EA hard protection policy; reassessment will not guess an early exit.',
+                : 'FTMO positions use native MT5 volume (lots) and are managed by the EA hard protection policy; reassessment will not guess an early exit.',
           },
         },
       });
