@@ -1,10 +1,9 @@
 /**
- * web/app/api/ict/analyze/route.ts
+ * ICT Intelligence — analyse all configured pairs.
  *
- * ICT Intelligence — analyse all configured pairs. Authenticated; forwards to
- * the Railway scanner's internal ICT endpoint with the current user's broker
- * credentials (same proxy path as the scanner). Read-only / shadow: it never
- * trades. Returns the ICT analysis under `ict`.
+ * Read-only market analysis is independent from the selected execution broker.
+ * When FTMO is active, scannerProxy uses a validated OANDA connection only for
+ * candles/pricing and leaves MT5 EA as the exclusive execution transport.
  */
 
 import { callScannerForCurrentUser } from '@/lib/scannerProxy';
@@ -17,5 +16,6 @@ export async function GET() {
     internalPath: '/api/internal/oanda/ict',
     logTag: 'ICT_ANALYZE',
     payloadKey: 'ict',
+    analysisOnly: true,
   });
 }
