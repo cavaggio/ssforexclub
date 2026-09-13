@@ -52,6 +52,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
       tradingLocked: body.tradingLocked,
       reducedRisk: body.reducedRisk,
       riskPolicyVersion: body.riskPolicyVersion ?? '1.20',
+      bridgeVersion: body.bridgeVersion ?? null,
     } : {},
   ).catch(() => undefined);
 
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
           tradingLocked: body.tradingLocked,
           reducedRisk: body.reducedRisk,
           riskPolicyVersion: body.riskPolicyVersion ?? '1.20',
+          bridgeVersion: body.bridgeVersion ?? null,
         },
       ).catch(() => undefined);
       return NextResponse.json({ ok: false, error: 'MT5 server does not match saved Signal Stack connection' }, { status: 409 });
@@ -114,7 +116,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
     const commandId = String(body.commandId || '').trim();
     if (!commandId) return NextResponse.json({ ok: false, error: 'commandId required' }, { status: 400 });
     const success = body.success === true;
-    const result = body.result && typeof body.result === 'object' ? body.result : {};
+    const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {};
     const errorText = success ? null : String(body.error || 'MT5 command failed').slice(0, 1000);
     const { data, error } = await supabase.from('mt5_ea_commands').update({
       status: success ? 'completed' : 'failed',
@@ -132,7 +134,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
     const payload = data.payload && typeof data.payload === 'object'
       ? data.payload as Record<string, unknown>
       : {};
-    const successfulOrderTest = success && payload.testMode === true && payload.source === 'signal-stack-ftmo-order-test';
+    const order = Number(result.order);
+    const deal = Number(result.deal);
+    const positionTicket = Number(result.positionTicket);
+    const executionResolved = result.executionResolved === true;
+    const successfulOrderTest = success &&
+      payload.testMode === true &&
+      payload.source === 'signal-stack-ftmo-order-test' &&
+      executionResolved &&
+      Number.isFinite(order) && order > 0 &&
+      Number.isFinite(deal) && deal > 0 &&
+      Number.isFinite(positionTicket) && positionTicket > 0;
+
     if (successfulOrderTest) {
       await supabase.from('mt5_ea_terminals').update({
         order_test_verified_at: new Date().toISOString(),
@@ -143,7 +156,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
         .eq('terminal_id', terminal.terminalId);
     }
 
-    return NextResponse.json({ ok: true, orderTestVerified: successfulOrderTest || undefined });
+    return NextResponse.json({
+      ok: true,
+      orderTestVerified: successfulOrderTest || undefined,
+      executionResolved: success ? executionResolved : undefined,
+    });
   }
 
   return NextResponse.json({ ok: false, error: 'Unknown MT5 EA operation' }, { status: 404 });
