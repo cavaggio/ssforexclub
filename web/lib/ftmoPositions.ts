@@ -3,19 +3,35 @@ import 'server-only';
 import crypto from 'node:crypto';
 import { getServerSupabase } from './db';
 
+/**
+ * FTMO / MT5 position sizing contract.
+ *
+ * MetaTrader executes positions in VOLUME (lots), not OANDA-style units.
+ * `volume` is therefore the canonical broker size everywhere on the FTMO path.
+ * `notionalUnits` is derived strictly for reporting / compatibility using the
+ * broker-reported SYMBOL_TRADE_CONTRACT_SIZE; it is never sent back to MT5 as
+ * an execution size.
+ */
 export type FtmoPosition = {
   ticket: string;
   symbol: string;
   side: 'long' | 'short';
   volume: number;
+  volumeMin: number | null;
+  volumeMax: number | null;
+  volumeStep: number | null;
+  contractSize: number | null;
+  notionalUnits: number | null;
   entryPrice: number;
   currentPrice: number;
   stopLoss: number | null;
   takeProfit: number | null;
   profit: number;
   openTime: string | null;
+  openTimeEpochMs: number | null;
   magic: string | null;
   comment: string | null;
+  managedBySignalStack: boolean;
 };
 
 export type FtmoPositionsSnapshot = {
@@ -24,6 +40,7 @@ export type FtmoPositionsSnapshot = {
   positionCount: number;
   positions: FtmoPosition[];
   detailAvailable: boolean;
+  sizeUnit: 'lots';
   raw: Record<string, unknown>;
 };
 
@@ -38,8 +55,39 @@ function nullableFinite(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function positiveOrNull(value: unknown): number | null {
+  const parsed = nullableFinite(value);
+  return parsed != null && parsed > 0 ? parsed : null;
+}
+
 function normalizeSymbol(symbol: unknown): string {
   return String(symbol || '').trim().toUpperCase();
+}
+
+function isoFromPositionTime(row: Record<string, unknown>): { openTime: string | null; openTimeEpochMs: number | null } {
+  const epochMs = nullableFinite(row.openTimeEpochMs ?? row.timeMsc ?? row.positionTimeMsc);
+  if (epochMs != null && epochMs > 0) {
+    const date = new Date(epochMs);
+    if (Number.isFinite(date.getTime())) {
+      return { openTime: date.toISOString(), openTimeEpochMs: epochMs };
+    }
+  }
+
+  if (row.openTime) {
+    const raw = String(row.openTime);
+    // MQL5 commonly emits `YYYY.MM.DD HH:MM:SS`; normalize that to ISO.
+    const mt5 = raw.match(/^(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+    const candidate = mt5
+      ? `${mt5[1]}-${mt5[2]}-${mt5[3]}T${mt5[4]}:${mt5[5]}:${mt5[6]}Z`
+      : raw;
+    const parsed = new Date(candidate);
+    if (Number.isFinite(parsed.getTime())) {
+      return { openTime: parsed.toISOString(), openTimeEpochMs: parsed.getTime() };
+    }
+    return { openTime: raw, openTimeEpochMs: null };
+  }
+
+  return { openTime: null, openTimeEpochMs: null };
 }
 
 function normalizePosition(value: unknown): FtmoPosition | null {
@@ -55,19 +103,39 @@ function normalizePosition(value: unknown): FtmoPosition | null {
       ? 'short'
       : 'long';
 
+  // MT5-native size. Do not reinterpret an OANDA-style `units` value as lots.
+  // The `units` fallback is retained only for legacy pre-v1.22 snapshots where
+  // the old EA accidentally returned volume under the units key.
+  const volume = Math.abs(finite(row.volume ?? row.lots ?? row.units, 0));
+  const contractSize = positiveOrNull(row.contractSize ?? row.tradeContractSize);
+  const reportedNotionalUnits = positiveOrNull(row.notionalUnits);
+  const notionalUnits = reportedNotionalUnits ?? (
+    contractSize != null && volume > 0
+      ? volume * contractSize
+      : null
+  );
+  const opened = isoFromPositionTime(row);
+
   return {
     ticket,
     symbol,
     side,
-    volume: Math.abs(finite(row.volume ?? row.units, 0)),
+    volume,
+    volumeMin: positiveOrNull(row.volumeMin),
+    volumeMax: positiveOrNull(row.volumeMax),
+    volumeStep: positiveOrNull(row.volumeStep),
+    contractSize,
+    notionalUnits,
     entryPrice: finite(row.entryPrice ?? row.priceOpen ?? row.openPrice, 0),
     currentPrice: finite(row.currentPrice ?? row.priceCurrent ?? row.marketPrice, 0),
     stopLoss: nullableFinite(row.stopLoss ?? row.sl),
     takeProfit: nullableFinite(row.takeProfit ?? row.tp),
     profit: finite(row.profit ?? row.unrealizedPL, 0),
-    openTime: row.openTime ? String(row.openTime) : null,
+    openTime: opened.openTime,
+    openTimeEpochMs: opened.openTimeEpochMs,
     magic: row.magic == null ? null : String(row.magic),
     comment: row.comment == null ? null : String(row.comment),
+    managedBySignalStack: row.managedBySignalStack === true || String(row.managedBySignalStack).toLowerCase() === 'true',
   };
 }
 
@@ -108,7 +176,7 @@ async function enqueueReadCommand(accountLogin: string, terminalId: string) {
       account_login: accountLogin,
       terminal_id: terminalId,
       command_type: 'positions_list',
-      payload: { detail: true, source: 'signal-stack-dashboard' },
+      payload: { detail: true, sizeUnit: 'lots', source: 'signal-stack-dashboard' },
       idempotency_key: idempotencyKey,
       status: 'pending',
       expires_at: new Date(Date.now() + 30_000).toISOString(),
@@ -170,6 +238,7 @@ export async function getFtmoPositionsForUser(userId: string): Promise<FtmoPosit
     positionCount,
     positions,
     detailAvailable: rawPositions.length > 0 || positionCount === 0,
+    sizeUnit: 'lots',
     raw,
   };
 }
@@ -182,4 +251,12 @@ export function mt5SymbolToSignalPair(symbol: string): string {
 
   if (compact.length === 6) return `${compact.slice(0, 3)}_${compact.slice(3)}`;
   return String(symbol || '').toUpperCase();
+}
+
+/** Convert an MT5 volume in lots to notional units using the broker contract. */
+export function mt5VolumeToNotionalUnits(volume: number, contractSize: number | null | undefined): number | null {
+  const lots = Number(volume);
+  const contract = Number(contractSize);
+  if (!Number.isFinite(lots) || lots < 0 || !Number.isFinite(contract) || contract <= 0) return null;
+  return lots * contract;
 }
