@@ -1,66 +1,64 @@
 /**
- * web/components/trading-mode-toggle.tsx
- *
- * Per-user Paper / Live toggle. Renders a segmented control and calls the
- * setActiveTradingModeAction Server Action. Hard rules enforced server-side:
- *   - Live requires liveTradingAcknowledged=true
- *   - Live requires a connected live broker_connection
- * The button itself stays clickable; the server returns a clear error if the
- * preconditions aren't met, which we surface inline.
+ * Per-user execution-account selector.
+ * OANDA/Alpaca keep their existing practice/live semantics; FTMO prop modes
+ * are selectable only after the server action confirms a live MT5 EA heartbeat.
  */
 
 'use client';
 
 import { useActionState } from 'react';
-// IMPORTANT: take the client-safe projection of ResolvedBroker. The full
-// ResolvedBroker carries a `getCredentials` callback that React refuses to
-// serialize across the Server → Client component boundary.
 import type { ClientSafeBrokerStatus } from '@/lib/brokerResolver';
 import { setActiveTradingModeAction, type ActionResult } from '@/app/dashboard/actions';
 
 type ToggleMode = {
   label: string;
-  broker: 'oanda' | 'alpaca';
-  environment: 'practice' | 'paper' | 'live';
+  broker: 'oanda' | 'alpaca' | 'ftmo';
+  environment: 'practice' | 'paper' | 'live' | 'challenge' | 'verification' | 'funded';
+  riskMode?: boolean;
 };
 
 const MODES: ToggleMode[] = [
   { label: 'OANDA Practice', broker: 'oanda', environment: 'practice' },
-  { label: 'OANDA Live',     broker: 'oanda', environment: 'live' },
-  // Alpaca rows are scaffolded but not yet exposed — uncomment when Alpaca
-  // creds are connectable from the form.
-  // { label: 'Alpaca Paper', broker: 'alpaca', environment: 'paper' },
-  // { label: 'Alpaca Live',  broker: 'alpaca', environment: 'live' },
+  { label: 'OANDA Live', broker: 'oanda', environment: 'live', riskMode: true },
+  { label: 'FTMO Challenge', broker: 'ftmo', environment: 'challenge', riskMode: true },
+  { label: 'FTMO Verification', broker: 'ftmo', environment: 'verification', riskMode: true },
+  { label: 'FTMO Funded', broker: 'ftmo', environment: 'funded', riskMode: true },
 ];
 
 async function actionWrapper(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
   return setActiveTradingModeAction(formData);
 }
 
-export function TradingModeToggle({
-  resolved,
-}: {
-  resolved: ClientSafeBrokerStatus;
-}) {
+function environmentLabel(value: string): string {
+  if (value === 'challenge') return 'Challenge';
+  if (value === 'verification') return 'Verification';
+  if (value === 'funded') return 'Funded';
+  if (value === 'practice') return 'Practice';
+  if (value === 'paper') return 'Paper';
+  if (value === 'live') return 'Live';
+  return value;
+}
+
+export function TradingModeToggle({ resolved }: { resolved: ClientSafeBrokerStatus }) {
   const [state, formAction, pending] = useActionState(actionWrapper, null);
-  const isLive = resolved.isLiveTrading;
+  const activeIsRiskMode = resolved.isLiveTrading || resolved.activeBroker === 'ftmo';
 
   return (
     <section
       style={{
         background: 'var(--panel)',
-        border: isLive ? '1px solid var(--bad)' : '1px solid var(--border)',
+        border: activeIsRiskMode ? '1px solid var(--warn)' : '1px solid var(--border)',
         borderRadius: 10,
         padding: 24,
-        boxShadow: isLive ? '0 0 0 2px rgba(255,77,77,0.15) inset' : undefined,
+        boxShadow: activeIsRiskMode ? '0 0 0 2px rgba(255,178,36,0.10) inset' : undefined,
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
         <div>
           <h3 style={{ margin: 0, fontSize: 16 }}>Trading mode</h3>
-          <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, maxWidth: 480 }}>
-            Choose whether the bot runs against your practice or live broker account. The
-            selection applies to scans, trade execution, and active-trade reassessment.
+          <p style={{ color: 'var(--muted)', marginTop: 8, fontSize: 13, maxWidth: 620, lineHeight: 1.55 }}>
+            Choose the account that receives autonomous execution. FTMO modes require a connected
+            MT5 Expert Advisor and never fall back to OANDA execution when selected.
           </p>
         </div>
         <div
@@ -69,13 +67,13 @@ export function TradingModeToggle({
             borderRadius: 6,
             fontSize: 13,
             fontWeight: 700,
-            background: isLive ? '#320d0d' : '#0d3320',
-            color: isLive ? 'var(--bad)' : 'var(--good)',
-            border: `1px solid ${isLive ? '#5c1a1a' : '#1a5c38'}`,
+            background: activeIsRiskMode ? '#33270d' : '#0d3320',
+            color: activeIsRiskMode ? 'var(--warn)' : 'var(--good)',
+            border: `1px solid ${activeIsRiskMode ? '#5c481a' : '#1a5c38'}`,
             whiteSpace: 'nowrap',
           }}
         >
-          Active Trading Mode: {resolved.isLiveTrading ? 'Live' : resolved.activeEnvironment === 'practice' ? 'Practice' : 'Paper'}
+          Active: {resolved.activeBroker ? resolved.activeBroker.toUpperCase() : '—'} · {environmentLabel(resolved.activeEnvironment)}
         </div>
       </div>
 
@@ -83,6 +81,7 @@ export function TradingModeToggle({
         style={{
           marginTop: 16,
           display: 'flex',
+          flexWrap: 'wrap',
           gap: 8,
           padding: 4,
           background: 'var(--bg)',
@@ -92,8 +91,7 @@ export function TradingModeToggle({
         }}
       >
         {MODES.map((m) => {
-          const isActive =
-            resolved.activeBroker === m.broker && resolved.activeEnvironment === m.environment;
+          const isActive = resolved.activeBroker === m.broker && resolved.activeEnvironment === m.environment;
           return (
             <form key={`${m.broker}-${m.environment}`} action={formAction} style={{ margin: 0 }}>
               <input type="hidden" name="broker" value={m.broker} />
@@ -105,12 +103,8 @@ export function TradingModeToggle({
                   padding: '8px 18px',
                   border: 'none',
                   borderRadius: 6,
-                  background: isActive
-                    ? (m.environment === 'live' ? 'var(--bad)' : 'var(--border)')
-                    : 'transparent',
-                  color: isActive
-                    ? (m.environment === 'live' ? '#fff' : 'var(--text)')
-                    : 'var(--muted)',
+                  background: isActive ? (m.riskMode ? 'var(--warn)' : 'var(--border)') : 'transparent',
+                  color: isActive ? (m.riskMode ? '#1b1400' : 'var(--text)') : 'var(--muted)',
                   fontFamily: 'inherit',
                   fontSize: 13,
                   fontWeight: 700,
@@ -124,37 +118,17 @@ export function TradingModeToggle({
         })}
       </div>
 
-      <div style={{ marginTop: 12, fontSize: 12, color: 'var(--muted)', maxWidth: 600, lineHeight: 1.5 }}>
+      <div style={{ marginTop: 12, fontSize: 12, color: 'var(--muted)', maxWidth: 700, lineHeight: 1.5 }}>
         {resolved.reason}
       </div>
 
       {state && !state.ok && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: '10px 14px',
-            background: '#320d0d',
-            border: '1px solid #5c1a1a',
-            color: 'var(--bad)',
-            borderRadius: 6,
-            fontSize: 13,
-          }}
-        >
+        <div style={{ marginTop: 12, padding: '10px 14px', background: '#320d0d', border: '1px solid #5c1a1a', color: 'var(--bad)', borderRadius: 6, fontSize: 13 }}>
           {state.error}
         </div>
       )}
       {state && state.ok && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: '10px 14px',
-            background: '#0d3320',
-            border: '1px solid #1a5c38',
-            color: 'var(--good)',
-            borderRadius: 6,
-            fontSize: 13,
-          }}
-        >
+        <div style={{ marginTop: 12, padding: '10px 14px', background: '#0d3320', border: '1px solid #1a5c38', color: 'var(--good)', borderRadius: 6, fontSize: 13 }}>
           Trading mode updated.
         </div>
       )}
