@@ -4,6 +4,10 @@ import { getServerSupabase } from './db';
 
 function clean(value: unknown): string { return String(value ?? '').trim(); }
 function hashToken(token: string): string { return crypto.createHash('sha256').update(token).digest('hex'); }
+function finite(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
 export function generateMt5EaToken(): string {
   return crypto.randomBytes(32).toString('base64url');
@@ -52,12 +56,49 @@ export async function authenticateMt5EaTerminal(args: {
   return { id: String(data.id), userId: String(data.user_id), server: String(data.server) };
 }
 
-export async function markMt5EaHeartbeat(terminalId: string, accountLogin: string, lastError?: string | null): Promise<void> {
+export type Mt5EaRiskTelemetry = {
+  balance?: unknown;
+  equity?: unknown;
+  dailyStartingBalance?: unknown;
+  dailyLossPercent?: unknown;
+  effectiveRiskPercent?: unknown;
+  tradingLocked?: unknown;
+  reducedRisk?: unknown;
+  riskPolicyVersion?: unknown;
+};
+
+export async function markMt5EaHeartbeat(
+  terminalId: string,
+  accountLogin: string,
+  lastError?: string | null,
+  telemetry: Mt5EaRiskTelemetry = {},
+): Promise<void> {
   const supabase = getServerSupabase();
-  await supabase.from('mt5_ea_terminals').update({
+  const update: Record<string, unknown> = {
     status: 'connected',
     last_heartbeat_at: new Date().toISOString(),
     last_error: lastError ?? null,
     updated_at: new Date().toISOString(),
-  }).eq('account_login', clean(accountLogin)).eq('terminal_id', clean(terminalId));
+  };
+
+  const balance = finite(telemetry.balance);
+  const equity = finite(telemetry.equity);
+  const dailyStartingBalance = finite(telemetry.dailyStartingBalance);
+  const dailyLossPercent = finite(telemetry.dailyLossPercent);
+  const effectiveRiskPercent = finite(telemetry.effectiveRiskPercent);
+  if (balance != null) update.balance = balance;
+  if (equity != null) update.equity = equity;
+  if (dailyStartingBalance != null) update.daily_starting_balance = dailyStartingBalance;
+  if (dailyLossPercent != null) update.daily_loss_percent = dailyLossPercent;
+  if (effectiveRiskPercent != null) update.effective_risk_percent = effectiveRiskPercent;
+  if (typeof telemetry.tradingLocked === 'boolean') update.trading_locked = telemetry.tradingLocked;
+  if (typeof telemetry.reducedRisk === 'boolean') update.reduced_risk = telemetry.reducedRisk;
+  if (telemetry.riskPolicyVersion != null) update.risk_policy_version = clean(telemetry.riskPolicyVersion).slice(0, 64) || null;
+
+  const { error } = await supabase
+    .from('mt5_ea_terminals')
+    .update(update)
+    .eq('account_login', clean(accountLogin))
+    .eq('terminal_id', clean(terminalId));
+  if (error) throw new Error(`markMt5EaHeartbeat: ${error.message}`);
 }
