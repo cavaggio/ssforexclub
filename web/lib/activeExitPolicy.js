@@ -1,5 +1,5 @@
 /**
- * Profit Protection v4 — fixed 15p SL / +10p breakeven / 80%@+15p / 20%@+18p.
+ * Profit Protection v4 — fixed 10p SL / +10p breakeven / 80%@+15p / 20%@+18p.
  *
  * Automated management never widens a stop or guesses an early exit. The broker
  * stop remains the loss authority until price reaches +10 pips, at which point
@@ -8,15 +8,15 @@
  */
 
 export const ACTIVE_EXIT_POLICY = 'profit_protection_v4';
-export const FIXED_STOP_LOSS_PIPS = 15;
+export const FIXED_STOP_LOSS_PIPS = 10;
 export const BREAK_EVEN_TRIGGER_PIPS = 10;
 export const FIRST_TAKE_PROFIT_PIPS = 15;
 export const FIRST_PARTIAL_PERCENT = 80;
 export const FINAL_TAKE_PROFIT_PIPS = 18;
 export const FINAL_PARTIAL_PERCENT = 20;
-// Blended reward/risk if both milestones fill: 0.8*(15/15) + 0.2*(18/15) = 1.04R.
-export const FIXED_RR = 1.04;
-export const FINAL_TARGET_RR = 1.2;
+// Blended reward/risk if both milestones fill: 0.8*(15/10) + 0.2*(18/10) = 1.56R.
+export const FIXED_RR = 1.56;
+export const FINAL_TARGET_RR = 1.8;
 
 const finite = (value, fallback = null) => {
   const parsed = Number(value);
@@ -74,8 +74,6 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     breakEvenSet,
   };
 
-  // If price gaps through both milestones, finish the runner rather than leave
-  // a stale 20% position open.
   if (firstPartialTaken && !finalPartialTaken && currentProfitPips >= FINAL_TAKE_PROFIT_PIPS) {
     return actionResult({
       action: 'PARTIAL_CLOSE',
@@ -88,9 +86,6 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     });
   }
 
-  // +15 pips banks 80%. If a fast move skipped the +10 reconciliation, this
-  // same decision also carries the entry-price stop so the remaining 20% is
-  // protected immediately.
   if (!firstPartialTaken && currentProfitPips >= FIRST_TAKE_PROFIT_PIPS) {
     return actionResult({
       action: 'PARTIAL_CLOSE',
@@ -103,7 +98,6 @@ export function evaluateActiveExit(plan = {}, state = {}) {
     });
   }
 
-  // Breakeven occurs independently at +10 pips, before the first partial.
   if (!breakEvenSet && currentProfitPips >= BREAK_EVEN_TRIGGER_PIPS) {
     return actionResult({
       action: 'MOVE_STOP_TO_BREAKEVEN',
