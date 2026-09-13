@@ -39,12 +39,40 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ op: string
   if (!terminal) return NextResponse.json({ ok: false, error: 'Unauthorized terminal' }, { status: 401 });
 
   const supabase = getServerSupabase();
-  await markMt5EaHeartbeat(terminal.terminalId, terminal.accountLogin).catch(() => undefined);
+  await markMt5EaHeartbeat(
+    terminal.terminalId,
+    terminal.accountLogin,
+    null,
+    op === 'heartbeat' ? {
+      balance: body.balance,
+      equity: body.equity,
+      dailyStartingBalance: body.dailyStartingBalance,
+      dailyLossPercent: body.dailyLossPercent,
+      effectiveRiskPercent: body.effectiveRiskPercent,
+      tradingLocked: body.tradingLocked,
+      reducedRisk: body.reducedRisk,
+      riskPolicyVersion: body.riskPolicyVersion ?? '1.20',
+    } : {},
+  ).catch(() => undefined);
 
   if (op === 'heartbeat') {
     const server = String(body.server || '').trim();
     if (server && server !== terminal.server) {
-      await markMt5EaHeartbeat(terminal.terminalId, terminal.accountLogin, `Server mismatch: ${server}`).catch(() => undefined);
+      await markMt5EaHeartbeat(
+        terminal.terminalId,
+        terminal.accountLogin,
+        `Server mismatch: ${server}`,
+        {
+          balance: body.balance,
+          equity: body.equity,
+          dailyStartingBalance: body.dailyStartingBalance,
+          dailyLossPercent: body.dailyLossPercent,
+          effectiveRiskPercent: body.effectiveRiskPercent,
+          tradingLocked: body.tradingLocked,
+          reducedRisk: body.reducedRisk,
+          riskPolicyVersion: body.riskPolicyVersion ?? '1.20',
+        },
+      ).catch(() => undefined);
       return NextResponse.json({ ok: false, error: 'MT5 server does not match saved Signal Stack connection' }, { status: 409 });
     }
     await markSavedFtmoConnectionValidated(terminal.userId, terminal.accountLogin).catch(() => undefined);
