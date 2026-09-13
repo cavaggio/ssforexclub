@@ -9,7 +9,7 @@ import 'server-only';
 import { getServerSupabase } from './db';
 
 export type ActiveBroker = 'oanda' | 'alpaca' | 'ninjatrader' | 'topstep' | 'ftmo';
-export type ActiveEnvironment = 'practice' | 'paper' | 'live' | 'sim' | 'evaluation' | 'funded';
+export type ActiveEnvironment = 'practice' | 'paper' | 'live' | 'sim' | 'evaluation' | 'funded' | 'challenge' | 'verification';
 export type AutoAiEngine = 'ict' | 'v3' | 'ppr';
 
 export type UserTradingSettings = {
