@@ -1,6 +1,8 @@
 import { auth } from '@clerk/nextjs/server';
 import { listFuturesConnections } from '@/lib/futuresProvider';
 import { ConnectFtmoForm } from '@/components/connect-ftmo-form';
+import { FtmoOrderTestControl } from '@/components/ftmo-order-test-control';
+import { getFtmoExecutionReadiness } from '@/lib/ftmoAutoExecution';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,11 +36,29 @@ function Row({ label, active }: { label: string; active: boolean }) {
 }
 
 function environmentLabel(value: string | null | undefined) {
-  if (value === 'free_trial') return 'FTMO Free Trial';
   if (value === 'challenge') return 'FTMO Challenge';
   if (value === 'verification') return 'Verification';
   if (value === 'funded') return 'FTMO Account / Funded';
   return value || '—';
+}
+
+function marketClosedMessage(now = new Date()): string | null {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour12: false,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  const weekday = read('weekday');
+  const minutes = (parseInt(read('hour'), 10) % 24) * 60 + parseInt(read('minute'), 10);
+  const closed = weekday === 'Sat' ||
+    (weekday === 'Fri' && minutes >= 17 * 60) ||
+    (weekday === 'Sun' && minutes < 17 * 60 + 5);
+  return closed
+    ? 'The FX market is currently inside the weekend close. The controlled test is blocked until after Sunday 5:05 PM ET.'
+    : null;
 }
 
 export default async function FtmoPage() {
@@ -53,45 +73,51 @@ export default async function FtmoPage() {
   const liveExecution = on(process.env.FTMO_LIVE_EXECUTION_ENABLED);
   const useV3 = process.env.FTMO_USE_V3_ENGINE == null || on(process.env.FTMO_USE_V3_ENGINE);
   const useICT = process.env.FTMO_USE_ICT_ENGINE == null || on(process.env.FTMO_USE_ICT_ENGINE);
-  const staleProvider = String(process.env.FTMO_PROVIDER || '').trim().toLowerCase();
-  const hasLegacyProviderSetting = Boolean(staleProvider && staleProvider !== 'mt5_bridge');
+  const configuredProvider = String(process.env.FTMO_PROVIDER || '').trim().toLowerCase();
+  const hasLegacyProviderSetting = Boolean(configuredProvider && configuredProvider !== 'mt5_ea');
+  const readiness = userId && active
+    ? await getFtmoExecutionReadiness({ userId, accountLogin: active.accountId }).catch(() => null)
+    : null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
       <section style={panel}>
-        <h2 style={{ margin: 0, fontSize: 20 }}>FTMO / MetaTrader 5 Bridge</h2>
+        <h2 style={{ margin: 0, fontSize: 20 }}>FTMO / MetaTrader 5 EA</h2>
 
         <p style={{ color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
-          Signal Stack sends signed trade requests to a private bridge running beside the FTMO MT5 terminal on a
-          Windows VPS. FTMO credentials never fall back to OANDA, cTrader, or another broker connection.
+          Signal Stack uses the outbound SignalStackBridge Expert Advisor. The EA polls the authenticated command queue,
+          executes only on the selected FTMO MT5 account, and reports results back to Signal Stack. No FTMO master password
+          is stored in Signal Stack and FTMO execution never falls back to OANDA.
         </p>
 
         <p style={{ color: '#e0b341', fontWeight: 700, marginTop: 12 }}>
-          Safe mode: keep live execution disabled until bridge health, account identity, positions, and test orders are verified.
+          Safe activation sequence: connected EA → v1.20 risk heartbeat → one 0.01-lot order test → verify broker result → enable autonomous FTMO execution.
         </p>
 
         {hasLegacyProviderSetting && (
           <p style={{ color: '#e0b341', marginTop: 10, fontSize: 12 }}>
-            A legacy FTMO_PROVIDER value is still configured, but it is ignored. This page and execution path use MetaTrader 5 Bridge only. Set FTMO_PROVIDER=mt5_bridge in Railway and Vercel to remove the stale setting.
+            A legacy FTMO_PROVIDER value is configured. Set FTMO_PROVIDER=mt5_ea in Railway and Vercel so the environment matches the active outbound-EA architecture.
           </p>
         )}
       </section>
 
       <section style={panel}>
-        <h3 style={{ margin: 0, fontSize: 16 }}>Connector Status</h3>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Connector / Activation Status</h3>
 
         <div style={grid}>
           <div style={card}>
             <strong>Provider</strong>
-            <span>MetaTrader 5 Bridge</span>
+            <span>MetaTrader 5 EA</span>
           </div>
 
           <Row label="FTMO connector" active={ftmoEnabled} />
-          <Row label="Auto trade" active={autoTrade} />
-          <Row label="Live execution" active={liveExecution} />
+          <Row label="EA heartbeat" active={readiness?.terminalConnected === true && readiness?.heartbeatFresh === true} />
+          <Row label="Order test verified" active={readiness?.orderTestVerified === true} />
+          <Row label="Live execution gate" active={liveExecution} />
+          <Row label="Auto trade gate" active={autoTrade} />
           <Row label="V3 engine" active={useV3} />
           <Row label="ICT engine" active={useICT} />
-          <Row label="Saved MT5 bridge" active={Boolean(active)} />
+          <Row label="Saved FTMO connection" active={Boolean(active)} />
 
           <div style={card}>
             <strong>Environment</strong>
@@ -103,7 +129,21 @@ export default async function FtmoPage() {
             <span>{active?.accountId ?? '—'}</span>
           </div>
         </div>
+
+        {readiness && (
+          <div style={{ marginTop: 14, padding: 12, border: '1px dashed var(--border)', borderRadius: 8, fontSize: 12, lineHeight: 1.55, color: readiness.ready ? 'var(--good)' : 'var(--muted)' }}>
+            <strong>{readiness.ready ? 'FTMO autonomous execution is armed.' : 'FTMO autonomous execution remains fail-closed.'}</strong>{' '}
+            {readiness.reason}. Risk policy: 1% initial risk, 0.5% after an SL for the rest of the NY trading day, 2% daily equity-loss lock, 15-pip SL, +10-pip breakeven, 80% at +15 pips, final 20% at +18 pips.
+          </div>
+        )}
       </section>
+
+      <FtmoOrderTestControl
+        connected={readiness?.terminalConnected === true && readiness?.heartbeatFresh === true}
+        liveExecutionEnabled={liveExecution}
+        orderTestVerified={readiness?.orderTestVerified === true}
+        marketClosedMessage={marketClosedMessage()}
+      />
 
       <ConnectFtmoForm />
     </div>
