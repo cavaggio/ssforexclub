@@ -65,6 +65,7 @@ export type Mt5EaRiskTelemetry = {
   tradingLocked?: unknown;
   reducedRisk?: unknown;
   riskPolicyVersion?: unknown;
+  bridgeVersion?: unknown;
 };
 
 export async function markMt5EaHeartbeat(
@@ -94,6 +95,7 @@ export async function markMt5EaHeartbeat(
   if (typeof telemetry.tradingLocked === 'boolean') update.trading_locked = telemetry.tradingLocked;
   if (typeof telemetry.reducedRisk === 'boolean') update.reduced_risk = telemetry.reducedRisk;
   if (telemetry.riskPolicyVersion != null) update.risk_policy_version = clean(telemetry.riskPolicyVersion).slice(0, 64) || null;
+  if (telemetry.bridgeVersion != null) update.bridge_version = clean(telemetry.bridgeVersion).slice(0, 64) || null;
 
   const { error } = await supabase
     .from('mt5_ea_terminals')
