@@ -17,19 +17,19 @@ const base = {
   direction: 'long',
   entryPrice: 1.1,
   currentPrice: 1.10035,
-  currentStopLoss: 1.0985,
+  currentStopLoss: 1.099,
   unrealizedPips: 3.5,
 };
 
-test('the hard-coded profit protection geometry is 15p SL / BE10 / 80%@15 / 20%@18', () => {
-  assert.equal(FIXED_STOP_LOSS_PIPS, 15);
+test('the hard-coded profit protection geometry is 10p SL / BE10 / 80%@15 / 20%@18', () => {
+  assert.equal(FIXED_STOP_LOSS_PIPS, 10);
   assert.equal(BREAK_EVEN_TRIGGER_PIPS, 10);
   assert.equal(FIRST_TAKE_PROFIT_PIPS, 15);
   assert.equal(FIRST_PARTIAL_PERCENT, 80);
   assert.equal(FINAL_TAKE_PROFIT_PIPS, 18);
   assert.equal(FINAL_PARTIAL_PERCENT, 20);
-  assert.equal(FIXED_RR, 1.04);
-  assert.equal(FINAL_TARGET_RR, 1.2);
+  assert.equal(FIXED_RR, 1.56);
+  assert.equal(FINAL_TARGET_RR, 1.8);
 });
 
 test('before +10 pips the trade is held and no automatic full close is allowed', () => {
@@ -75,7 +75,7 @@ test('exactly +18 pips closes the remaining 20%', () => {
 });
 
 test('negative price movement never triggers discretionary automatic liquidation', () => {
-  const decision = evaluateActiveExit({ ...base, currentPrice: 1.0985, unrealizedPips: -15 });
+  const decision = evaluateActiveExit({ ...base, currentPrice: 1.099, unrealizedPips: -10 });
   assert.equal(decision.action, 'HOLD_TO_TP');
   assert.equal(decision.automaticFullCloseAllowed, false);
   assert.equal(closeUnitsForDecision(100000, decision), null);
