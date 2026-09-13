@@ -19,7 +19,7 @@ export function FtmoOrderTestControl({ connected, liveExecutionEnabled, orderTes
   const [message, setMessage] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
 
-  const enabled = connected && liveExecutionEnabled && !orderTestVerified && confirmation === CONFIRMATION && !pending;
+  const enabled = connected && liveExecutionEnabled && !orderTestVerified && !marketClosedMessage && confirmation === CONFIRMATION && !pending;
 
   async function submit() {
     if (!enabled) return;
