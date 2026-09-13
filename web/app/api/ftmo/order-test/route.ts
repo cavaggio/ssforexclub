@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { auth } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 import { getUserTradingSettings } from '@/lib/userTradingSettings';
