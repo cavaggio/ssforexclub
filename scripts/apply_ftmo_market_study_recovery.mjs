@@ -27,9 +27,7 @@ if (!source.includes(endOfDayFtmoCall)) {
   source = source.replace(endOfDayAnchor, `${endOfDayAnchor}\n${endOfDayFtmoCall}`);
 }
 
-const oldLog = '`[AUTO_AI] morningStudy=02:00_ET endOfDayReview=17:30_ET scans=02:30–10:30_ET entries=02:30–10:30_ET weekdays_only ` +';
-const newLog = '`[AUTO_AI] morningStudy=02:00_ET catchup=until_10:30_ET endOfDayReview=17:30_ET scans=02:30–10:30_ET entries=02:30–10:30_ET weekdays_only ` +';
-if (source.includes(oldLog)) source = source.replace(oldLog, newLog);
-
+// Keep the existing AUTO_AI timing diagnostic byte-for-byte because the runtime
+// policy verifier intentionally uses it as a compatibility marker.
 fs.writeFileSync(schedulerPath, source);
 console.log('[FTMO_MARKET_STUDY_RECOVERY] scheduler patch applied');
