@@ -15,6 +15,14 @@ import { executeIctTrade } from './ictExecution.js';
 import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictWatchlist.js';
 import { runDailyMarketStudy } from './dailyMarketStudy.js';
 import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
+import { routeIctExecutionClient } from './ftmoIctExecutionRouter.js';
+
+// GBP/JPY normally carries a wider spread than the major USD pairs. Keep the
+// global ICT ceiling unchanged at 3.5p, but allow GJ up to 5.0p unless Railway
+// explicitly supplies a stricter pair-specific override.
+if (!String(process.env.ICT_MAX_SPREAD_PIPS_GBP_JPY || '').trim()) {
+  process.env.ICT_MAX_SPREAD_PIPS_GBP_JPY = '5.0';
+}
 
 function finiteNumber(value) {
   const parsed = Number(value);
@@ -234,17 +242,27 @@ export async function runAutoAiForUser({
   for (const a of qualified) {
     log(`qualified ICT signal pair=${a.pair} dir=${a.signal} conf=${a.confidence}`);
     const direction = a.signal === 'buy' ? 'long' : 'short';
+    const executionClient = await routeIctExecutionClient(client, {
+      pair: a.pair,
+      direction,
+      signalId: a.signalId,
+      fallbackPrice: a.entry,
+    });
     const res = await executeIctTrade(
       { pair: a.pair, direction, units: 0, entry: a.entry, stopLoss: a.stopLoss, targetProfit: a.target1, ictSignalId: a.signalId },
-      { client, now, autoAi: true, authoritativeAnalysis: a },
+      { client: executionClient, now, autoAi: true, authoritativeAnalysis: a },
     );
     if (res.success) {
+      const mt5Execution = executionClient.executionProvider === 'ftmo_mt5_ea';
       executed.push({
         pair: a.pair,
         direction,
         tradeId: res.tradeId,
         fillPrice: res.fillPrice ?? a.entry,
-        units: res.units,
+        units: mt5Execution ? null : res.units,
+        sizeUnit: mt5Execution ? 'lots_managed_by_mt5' : 'units',
+        executionProvider: executionClient.executionProvider ?? 'oanda',
+        executionAccountId: executionClient.executionAccountId ?? client?.accountId ?? null,
         stopLoss: res.stopLoss ?? a.stopLoss,
         takeProfit: res.takeProfit ?? a.target1,
         confidence: a.confidence,
@@ -256,7 +274,7 @@ export async function runAutoAiForUser({
         entryContext: res.entryContext ?? null,
         signal: a,
       });
-      log(`trade executed pair=${a.pair} dir=${direction} id=${res.tradeId}`);
+      log(`trade executed pair=${a.pair} dir=${direction} id=${res.tradeId} provider=${executionClient.executionProvider ?? 'oanda'}`);
     } else {
       skipped.push({ pair: a.pair, reason: res.reason });
       log(`execution skipped pair=${a.pair} reason="${res.reason}"`);
