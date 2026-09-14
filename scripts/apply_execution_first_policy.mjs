@@ -48,12 +48,17 @@ patchFile(
 
 patchFile(
   'server/ictAutoTrade.js',
-  (source) => replaceOnce(
-    source,
-    '{ client, now, autoAi: true },',
-    '{ client, now, autoAi: true, authoritativeAnalysis: a },',
-    'ICT auto execution snapshot handoff',
-  ),
+  (source) => {
+    const routedSnapshot = '{ client: executionClient, now, autoAi: true, authoritativeAnalysis: a },';
+    const directSnapshot = '{ client, now, autoAi: true, authoritativeAnalysis: a },';
+    if (source.includes(routedSnapshot) || source.includes(directSnapshot)) return source;
+    return replaceOnce(
+      source,
+      '{ client, now, autoAi: true },',
+      directSnapshot,
+      'ICT auto execution snapshot handoff',
+    );
+  },
   ['authoritativeAnalysis: a'],
 );
 
