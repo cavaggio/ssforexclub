@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "node scripts/runtime_execution_start.mjs"
+    "startCommand": "node scripts/runtime_execution_start_with_study_recovery.mjs"
   }
 }
