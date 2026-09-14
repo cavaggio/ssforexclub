@@ -21,6 +21,7 @@ import { AutoAiTradingToggle } from '@/components/auto-ai-trading-toggle';
 import { AutoCloseToggle } from '@/components/auto-close-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
+import { DashboardRecoveryMarker } from '@/components/dashboard-recovery-marker';
 
 type FtmoTerminalStatus = {
   account_login: string;
@@ -153,6 +154,7 @@ export default async function DashboardPage() {
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <DashboardRecoveryMarker />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 26, letterSpacing: '-0.3px' }}>Trading dashboard</h1>

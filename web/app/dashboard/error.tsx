@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect } from 'react';
-
-const RECOVERY_KEY = 'signal-stack-dashboard-chunk-recovery';
-const STALE_ASSET_ERROR = /ChunkLoadError|Loading chunk|Failed to fetch dynamically imported module|CSS_CHUNK_LOAD_FAILED/i;
+import {
+  DASHBOARD_RECOVERY_COOLDOWN_MS,
+  DASHBOARD_RECOVERY_KEY,
+  isStaleDashboardAssetError,
+} from '@/lib/dashboardRecovery';
 
 export default function DashboardError({
   error,
@@ -12,34 +14,45 @@ export default function DashboardError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const staleAssetFailure = isStaleDashboardAssetError(error);
+
   useEffect(() => {
     console.error('[dashboard] route render failed:', error);
 
     // A deployment can leave an already-open browser tab holding an old Next.js
     // asset manifest. Recover once with a full navigation, but never enter a
     // reload loop when the failure is a real server or application error.
-    if (!STALE_ASSET_ERROR.test(error.message || '')) return;
+    if (!staleAssetFailure) return;
 
     try {
-      if (sessionStorage.getItem(RECOVERY_KEY) === '1') return;
-      sessionStorage.setItem(RECOVERY_KEY, '1');
+      const lastAttempt = Number(sessionStorage.getItem(DASHBOARD_RECOVERY_KEY) || 0);
+      if (Number.isFinite(lastAttempt) && Date.now() - lastAttempt < DASHBOARD_RECOVERY_COOLDOWN_MS) return;
+      sessionStorage.setItem(DASHBOARD_RECOVERY_KEY, String(Date.now()));
       window.location.reload();
     } catch {
       // Storage can be unavailable in strict privacy modes. The manual controls
       // below remain usable.
     }
-  }, [error]);
+  }, [error, staleAssetFailure]);
 
   const retry = () => {
     try {
-      sessionStorage.removeItem(RECOVERY_KEY);
+      sessionStorage.removeItem(DASHBOARD_RECOVERY_KEY);
     } catch {}
+
+    // React's reset() cannot replace an out-of-date Next.js asset manifest.
+    // Stale asset failures need a document navigation; application/data errors
+    // can use the cheaper route-boundary retry.
+    if (staleAssetFailure) {
+      window.location.reload();
+      return;
+    }
     reset();
   };
 
   const hardReload = () => {
     try {
-      sessionStorage.removeItem(RECOVERY_KEY);
+      sessionStorage.removeItem(DASHBOARD_RECOVERY_KEY);
     } catch {}
     window.location.reload();
   };
