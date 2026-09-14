@@ -10,6 +10,11 @@
 import { NextResponse } from 'next/server';
 import { getServerSupabase } from '@/lib/db';
 import { resolveActiveBrokerForUser } from '@/lib/brokerResolver';
+import {
+  getDecryptedBrokerCredentials,
+  listBrokerConnectionsForUser,
+  resolveBrokerBaseUrl,
+} from '@/lib/brokerConnections';
 import { listTradeLogsForUser, logTradeEvent } from '@/lib/tradeLogs';
 import { callInternalEndpoint } from '@/lib/scannerProxy';
 import { edgeSnapshotFromSignal } from '@/lib/edgeSnapshot';
@@ -39,6 +44,13 @@ type AutoData = {
   nearQualifiedPairs?: string[];
   hotPairs?: string[];
   lateEntryPairs?: string[];
+};
+
+type OandaMarketDataFeed = {
+  token: string;
+  accountId: string;
+  baseUrl: string;
+  environment: 'practice' | 'live';
 };
 
 function normalizeScanMode(value: unknown): ScanMode {
@@ -94,6 +106,41 @@ function uniqueExecuted(payloads: AutoData[]): Array<Record<string, unknown>> {
   }
 
   return output;
+}
+
+/**
+ * FTMO uses MT5 EA exclusively for order placement. The ICT engine still needs
+ * institutional FX candles/pricing, so use a separately validated OANDA
+ * connection strictly as market-data transport. Practice is preferred; this
+ * never changes the selected execution broker and is never an order fallback.
+ */
+async function resolveFtmoMarketDataFeed(userId: string): Promise<OandaMarketDataFeed | null> {
+  const connections = await listBrokerConnectionsForUser(userId);
+  const candidates = connections
+    .filter((connection) =>
+      connection.broker === 'oanda' &&
+      connection.isActive &&
+      connection.validationStatus === 'validated' &&
+      (connection.environment === 'practice' || connection.environment === 'live'),
+    )
+    .sort((a, b) => {
+      if (a.environment === b.environment) return 0;
+      return a.environment === 'practice' ? -1 : 1;
+    });
+
+  for (const connection of candidates) {
+    const credentials = await getDecryptedBrokerCredentials(userId, connection.id);
+    if (!credentials || credentials.broker !== 'oanda') continue;
+    if (credentials.environment !== 'practice' && credentials.environment !== 'live') continue;
+    return {
+      token: credentials.token,
+      accountId: credentials.accountId,
+      environment: credentials.environment,
+      baseUrl: resolveBrokerBaseUrl('oanda', credentials.environment),
+    };
+  }
+
+  return null;
 }
 
 // Retains the currently deployed 02:15–11:00 ET entry window. The separate
@@ -208,42 +255,74 @@ export async function POST(req: Request) {
     try {
       const resolved = await resolveActiveBrokerForUser(userId);
 
-      if (
-        resolved.brokerCredentialStatus !== 'ready' ||
-        !resolved.getCredentials ||
-        !resolved.baseUrl
-      ) {
+      if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials) {
         console.log(`${tag} user=${mask(userId)} skipped=${resolved.brokerCredentialStatus}`);
         results.push({ user: mask(userId), skipped: resolved.brokerCredentialStatus });
         continue;
       }
 
-      const credentials = await resolved.getCredentials();
-      if (!credentials) {
+      const executionCredentials = await resolved.getCredentials();
+      if (!executionCredentials) {
         console.log(`${tag} user=${mask(userId)} skipped=decrypt_failed`);
         results.push({ user: mask(userId), skipped: 'decrypt_failed' });
         continue;
       }
 
-      const accountMask = credentials.accountId
-        ? `${credentials.accountId.slice(0, 3)}…${credentials.accountId.slice(-3)}`
+      const ftmoMt5Execution =
+        resolved.activeBroker === 'ftmo' && resolved.executionTransport === 'mt5_ea';
+
+      let scannerApiKey = executionCredentials.token;
+      let scannerAccountId = executionCredentials.accountId;
+      let scannerBaseUrl = resolved.baseUrl;
+      let scannerEnvironment = resolved.activeEnvironment;
+
+      if (ftmoMt5Execution) {
+        const marketData = await resolveFtmoMarketDataFeed(userId);
+        if (!marketData) {
+          console.log(`${tag} user=${mask(userId)} skipped=ftmo_market_data_unavailable`);
+          results.push({ user: mask(userId), skipped: 'ftmo_market_data_unavailable' });
+          continue;
+        }
+        scannerApiKey = marketData.token;
+        scannerAccountId = marketData.accountId;
+        scannerBaseUrl = marketData.baseUrl;
+        scannerEnvironment = marketData.environment;
+        console.log(
+          `${tag} user=${mask(userId)} executionBroker=ftmo executionTransport=mt5_ea ` +
+          `marketDataBroker=oanda marketDataEnv=${marketData.environment} ` +
+          `oandaExecutionFallback=false`,
+        );
+      }
+
+      if (!scannerBaseUrl) {
+        console.log(`${tag} user=${mask(userId)} skipped=market_data_base_url_missing`);
+        results.push({ user: mask(userId), skipped: 'market_data_base_url_missing' });
+        continue;
+      }
+
+      const accountMask = executionCredentials.accountId
+        ? `${executionCredentials.accountId.slice(0, 3)}…${executionCredentials.accountId.slice(-3)}`
         : '***';
 
       const credentialBody = {
-        apiKey: credentials.token,
-        accountId: credentials.accountId,
-        baseUrl: resolved.baseUrl,
-        environment: resolved.activeEnvironment,
+        apiKey: scannerApiKey,
+        accountId: scannerAccountId,
+        baseUrl: scannerBaseUrl,
+        environment: scannerEnvironment,
         userId,
         runId,
         scanMode,
         pairs,
+        executionBroker: resolved.activeBroker,
+        executionAccountId: executionCredentials.accountId,
+        executionEnvironment: resolved.activeEnvironment,
+        executionTransport: resolved.executionTransport ?? 'http',
       };
 
       const edgeProfile: any = engine === 'v3'
         ? await loadAccountEdgeExecutionProfile({
             userId,
-            brokerAccountId: credentials.accountId,
+            brokerAccountId: executionCredentials.accountId,
           })
         : {
             enabled: false,
@@ -338,7 +417,7 @@ export async function POST(req: Request) {
         await logTradeEvent({
           userId,
           broker: (resolved.activeBroker ?? 'oanda') as 'oanda',
-          brokerAccountId: credentials.accountId,
+          brokerAccountId: executionCredentials.accountId,
           environment: resolved.activeEnvironment as 'practice' | 'live' | 'paper',
           eventType: 'opened',
           instrument: typeof executed.pair === 'string' ? executed.pair : null,
@@ -362,7 +441,12 @@ export async function POST(req: Request) {
             runId,
             scanMode,
             engine,
-            brokerAccountId: credentials.accountId,
+            brokerAccountId: executionCredentials.accountId,
+            executionProvider: executed.executionProvider ?? resolved.executionTransport ?? 'http',
+            executionBroker: resolved.activeBroker,
+            marketDataBroker: ftmoMt5Execution ? 'oanda' : resolved.activeBroker,
+            marketDataAccountId: ftmoMt5Execution ? scannerAccountId : executionCredentials.accountId,
+            oandaExecutionFallback: false,
             edgeProfile: {
               version: edgeProfile.version ?? null,
               enabled: edgeProfile.enabled === true,
@@ -387,6 +471,7 @@ export async function POST(req: Request) {
 
       console.log(
         `${tag} user=${mask(userId)} account=${accountMask} engine=${engine} ` +
+        `executionBroker=${resolved.activeBroker ?? 'unknown'} executionTransport=${resolved.executionTransport ?? 'http'} ` +
         `scanMode=${scanMode} qualified=${qualified} executed=${executedList.length} ` +
         `skipped=${skipped} recommendations=${recommendations} ` +
         `edgePriority=${edgeProfile.enabled === true} ` +
@@ -397,6 +482,9 @@ export async function POST(req: Request) {
         user: mask(userId),
         account: accountMask,
         engine,
+        executionBroker: resolved.activeBroker,
+        executionTransport: resolved.executionTransport ?? 'http',
+        marketDataBroker: ftmoMt5Execution ? 'oanda' : resolved.activeBroker,
         edgeProfile,
         priorityScan: displayInternalResult(priorityResult, 'priority scan not used'),
         auto: displayInternalResult(scheduledResult, 'scheduled scan missing'),
