@@ -46,6 +46,17 @@ export type ResolvedBroker = {
   reason: string;
 };
 
+export type BrokerResolutionOptions = {
+  /**
+   * Keep this true for execution/status callers so FTMO fails closed when the
+   * MT5 EA is stale or disconnected. Scanner callers may explicitly disable
+   * this check so market qualification can continue independently of terminal
+   * availability; the dedicated MT5 execution router re-checks readiness when
+   * a qualified signal reaches order placement.
+   */
+  requireExecutionReady?: boolean;
+};
+
 function platformLiveEnabled(): boolean {
   if (process.env.PLATFORM_LIVE_TRADING_ENABLED != null) {
     return String(process.env.PLATFORM_LIVE_TRADING_ENABLED).toLowerCase() === 'true';
@@ -88,7 +99,12 @@ function isExecutionRiskMode(broker: ActiveBroker, environment: ActiveEnvironmen
   return environment === 'live' || broker === 'ftmo';
 }
 
-export async function resolveActiveBrokerForUser(clerkUserId: string): Promise<ResolvedBroker> {
+export async function resolveActiveBrokerForUser(
+  clerkUserId: string,
+  options: BrokerResolutionOptions = {},
+): Promise<ResolvedBroker> {
+  const requireExecutionReady = options.requireExecutionReady !== false;
+
   if (!clerkUserId) {
     return {
       activeBroker: null,
@@ -154,7 +170,11 @@ export async function resolveActiveBrokerForUser(clerkUserId: string): Promise<R
       `${env} mode selected but no active ${broker.toUpperCase()} connection is saved`);
   }
 
-  if (broker === 'ftmo' && !(await connectedFtmoTerminal(clerkUserId, conn.accountId))) {
+  if (
+    broker === 'ftmo' &&
+    requireExecutionReady &&
+    !(await connectedFtmoTerminal(clerkUserId, conn.accountId))
+  ) {
     return baseResolution(settings, broker, conn.id, 'terminal_not_connected',
       'FTMO connection is saved, but the MT5 EA heartbeat is stale or disconnected');
   }
@@ -178,7 +198,9 @@ export async function resolveActiveBrokerForUser(clerkUserId: string): Promise<R
     baseUrl: broker === 'ftmo' ? null : resolveBrokerBaseUrl(broker, env),
     executionTransport: broker === 'ftmo' ? 'mt5_ea' : 'http',
     reason: broker === 'ftmo'
-      ? `Active mode: FTMO ${env} via connected MT5 EA`
+      ? requireExecutionReady
+        ? `Active mode: FTMO ${env} via connected MT5 EA`
+        : `Active mode: FTMO ${env}; qualification is independent of MT5 execution readiness`
       : `Active mode: ${broker.toUpperCase()} ${env}`,
     getCredentials: async () => {
       const creds = await getDecryptedBrokerCredentials(clerkUserId, conn.id);
