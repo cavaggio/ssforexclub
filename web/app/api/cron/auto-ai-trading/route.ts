@@ -253,7 +253,12 @@ export async function POST(req: Request) {
     const engine = row.auto_ai_engine === 'v3' ? 'v3' : 'ict';
 
     try {
-      const resolved = await resolveActiveBrokerForUser(userId);
+      // Qualification must not disappear just because the MT5 terminal is
+      // temporarily stale/disconnected. FTMO execution readiness is checked
+      // again by the dedicated MT5 order router only after a signal qualifies.
+      const resolved = await resolveActiveBrokerForUser(userId, {
+        requireExecutionReady: false,
+      });
 
       if (resolved.brokerCredentialStatus !== 'ready' || !resolved.getCredentials) {
         console.log(`${tag} user=${mask(userId)} skipped=${resolved.brokerCredentialStatus}`);
@@ -290,7 +295,7 @@ export async function POST(req: Request) {
         console.log(
           `${tag} user=${mask(userId)} executionBroker=ftmo executionTransport=mt5_ea ` +
           `marketDataBroker=oanda marketDataEnv=${marketData.environment} ` +
-          `oandaExecutionFallback=false`,
+          `qualificationIndependentOfMt5Readiness=true oandaExecutionFallback=false`,
         );
       }
 
