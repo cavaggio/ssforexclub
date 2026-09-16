@@ -16,6 +16,12 @@ import { configuredIctWatchlist, isIctExecutionEligibleInstrument } from './ictW
 import { runDailyMarketStudy } from './dailyMarketStudy.js';
 import { applyCombinedLearningCalibration } from './engineTradeLearning.js';
 import { routeIctExecutionClient } from './ftmoIctExecutionRouter.js';
+import {
+  evaluateIctAGradeSetup,
+  ictAGradeConfig,
+  recordIctAGradeDecision,
+  withIctAGradeEvaluation,
+} from './ictAGradePrecision.js';
 
 // GBP/JPY normally carries a wider spread than the major USD pairs. Keep the
 // global ICT ceiling unchanged at 3.5p, but allow GJ up to 5.0p unless Railway
@@ -149,7 +155,7 @@ export function buildIctWatchState(analyses = [], minConfidence = 75, minRR = 1.
   };
 }
 
-export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
+export function isIctBaseQualified(analysis, cfg = ictExecConfig()) {
   const confidence = Number(analysis?.confidence);
   const rr = Number(analysis?.rr);
   const entryAuthorization = analysis?.entryAuthorization || {};
@@ -172,6 +178,14 @@ export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
     Number.isFinite(rr) && rr >= cfg.minRR;
 }
 
+export function isIctAutoQualified(analysis, cfg = ictExecConfig()) {
+  if (!isIctBaseQualified(analysis, cfg)) return false;
+  const gradeCfg = ictAGradeConfig();
+  if (!gradeCfg.required) return true;
+  const evaluation = analysis?.aGrade || evaluateIctAGradeSetup(analysis, { stage: 'scanner', config: gradeCfg });
+  return evaluation?.passed === true;
+}
+
 export async function runAutoAiForUser({
   client,
   now = new Date(),
@@ -182,8 +196,9 @@ export async function runAutoAiForUser({
   executionBlockedReason = null,
 } = {}) {
   const cfg = ictExecConfig();
+  const gradeCfg = ictAGradeConfig();
   const tag = `[AUTO_AI][ICT][runId=${runId ?? '-'}]`;
-  const account = maskAccount(client?.accountId);
+  const account = maskAccount(client?.executionAccountId || client?.accountId);
   const log = (m) => console.log(`${tag} account=${account} independentFromV3=true ${m}`);
   const hardWatchlist = configuredIctWatchlist();
   const allowedPairs = new Set(hardWatchlist);
@@ -193,7 +208,7 @@ export async function runAutoAiForUser({
   const scanPairs = requestedPairs.filter((pair) => allowedPairs.has(pair));
   const blockedPairs = requestedPairs.filter((pair) => !allowedPairs.has(pair));
   if (blockedPairs.length) log(`hard-watchlist blocked pairs=${blockedPairs.join(',')}`);
-  log(`scan started scanMode=${scanMode} pairs=${scanPairs.join(',')} hardWatchlist=${hardWatchlist.join(',')}`);
+  log(`scan started scanMode=${scanMode} pairs=${scanPairs.join(',')} hardWatchlist=${hardWatchlist.join(',')} aGradeMin=${gradeCfg.minimumScore}`);
   if (!scanPairs.length) {
     return {
       scanned: 0, qualified: 0, executed: [],
@@ -208,15 +223,53 @@ export async function runAutoAiForUser({
   }
 
   const { analyses: rawAnalyses } = await analyzeICTPairs(scanPairs, { client, now, scanMode });
-  const analyses = await Promise.all(rawAnalyses.map((item) =>
+  const calibrated = await Promise.all(rawAnalyses.map((item) =>
     applyCombinedLearningCalibration(item, { client, engine: 'ict' })
   ));
-  const qualified = analyses.filter((analysis) => isIctAutoQualified(analysis, cfg));
+  const analyses = calibrated.map((item) => withIctAGradeEvaluation(item, {
+    stage: 'scanner',
+    config: gradeCfg,
+  }));
+  const baseQualified = analyses.filter((analysis) => isIctBaseQualified(analysis, cfg));
+  await Promise.all(baseQualified.map((analysis) => recordIctAGradeDecision({
+    client,
+    analysis,
+    evaluation: analysis.aGrade,
+    stage: 'scanner',
+    now,
+  })));
+  const qualified = baseQualified.filter((analysis) => !gradeCfg.required || analysis?.aGrade?.passed === true);
+  const aGradeRejected = baseQualified
+    .filter((analysis) => gradeCfg.required && analysis?.aGrade?.passed !== true)
+    .map((analysis) => ({
+      pair: analysis.pair,
+      direction: analysis.signal === 'buy' ? 'long' : 'short',
+      score: analysis?.aGrade?.score ?? null,
+      exhaustionRiskScore: analysis?.aGrade?.exhaustionRiskScore ?? null,
+      blockers: analysis?.aGrade?.blockers ?? [],
+    }));
   const watchState = buildIctWatchState(analyses, cfg.minConfidence, cfg.minRR);
 
+  for (const rejection of aGradeRejected) {
+    log(
+      `A-grade rejected pair=${rejection.pair} dir=${rejection.direction} ` +
+      `score=${rejection.score ?? 'n/a'} exhaustion=${rejection.exhaustionRiskScore ?? 'n/a'} ` +
+      `blockers="${rejection.blockers.join('; ')}"`,
+    );
+  }
+
   if (!qualified.length) {
-    log(`scan complete pairs=${analyses.length} qualified=0 executed=0 skipped=0`);
-    return { scanned: analyses.length, qualified: 0, executed: [], skipped: [], results: analyses, ...watchState };
+    log(`scan complete pairs=${analyses.length} baseQualified=${baseQualified.length} aGradeQualified=0 executed=0 skipped=0`);
+    return {
+      scanned: analyses.length,
+      qualified: 0,
+      baseQualified: baseQualified.length,
+      aGradeRejected,
+      executed: [],
+      skipped: [],
+      results: analyses,
+      ...watchState,
+    };
   }
 
   if (executionAllowed === false) {
@@ -224,12 +277,15 @@ export async function runAutoAiForUser({
     const skipped = qualified.map((analysis) => ({
       pair: analysis.pair,
       direction: analysis.signal === 'buy' ? 'long' : 'short',
+      aGradeScore: analysis?.aGrade?.score ?? null,
       reason,
     }));
     log(`scan-only gate active qualified=${qualified.length} executed=0 reason="${reason}"`);
     return {
       scanned: analyses.length,
       qualified: qualified.length,
+      baseQualified: baseQualified.length,
+      aGradeRejected,
       executed: [],
       skipped,
       executionAllowed: false,
@@ -240,13 +296,17 @@ export async function runAutoAiForUser({
   const executed = [];
   const skipped = [];
   for (const a of qualified) {
-    log(`qualified ICT signal pair=${a.pair} dir=${a.signal} conf=${a.confidence}`);
+    log(
+      `qualified A-grade ICT signal pair=${a.pair} dir=${a.signal} conf=${a.confidence} ` +
+      `rr=${a.rr} gradeScore=${a?.aGrade?.score ?? 'n/a'} exhaustion=${a?.aGrade?.exhaustionRiskScore ?? 'n/a'}`,
+    );
     const direction = a.signal === 'buy' ? 'long' : 'short';
     const executionClient = await routeIctExecutionClient(client, {
       pair: a.pair,
       direction,
       signalId: a.signalId,
       fallbackPrice: a.entry,
+      aGrade: a.aGrade,
     });
     const res = await executeIctTrade(
       { pair: a.pair, direction, units: 0, entry: a.entry, stopLoss: a.stopLoss, targetProfit: a.target1, ictSignalId: a.signalId },
@@ -265,8 +325,9 @@ export async function runAutoAiForUser({
         executionAccountId: executionClient.executionAccountId ?? client?.accountId ?? null,
         stopLoss: res.stopLoss ?? a.stopLoss,
         takeProfit: res.takeProfit ?? a.target1,
-        confidence: a.confidence,
-        expectedRR: a.rr,
+        confidence: res.entryConfidence ?? a.confidence,
+        expectedRR: res.targetConfidence?.actualRR ?? a.rr,
+        aGrade: res.aGrade ?? a.aGrade,
         holdMinutes: res.holdMinutes,
         strategy: 'ICT',
         candidateSignalId: res.candidateSignalId ?? a.signalId,
@@ -274,14 +335,23 @@ export async function runAutoAiForUser({
         entryContext: res.entryContext ?? null,
         signal: a,
       });
-      log(`trade executed pair=${a.pair} dir=${direction} id=${res.tradeId} provider=${executionClient.executionProvider ?? 'oanda'}`);
+      log(`trade executed pair=${a.pair} dir=${direction} id=${res.tradeId} provider=${executionClient.executionProvider ?? 'oanda'} aGrade=${res?.aGrade?.score ?? a?.aGrade?.score ?? 'n/a'}`);
     } else {
-      skipped.push({ pair: a.pair, reason: res.reason });
+      skipped.push({ pair: a.pair, reason: res.reason, aGrade: res.aGrade ?? a.aGrade ?? null });
       log(`execution skipped pair=${a.pair} reason="${res.reason}"`);
     }
   }
-  log(`scan complete pairs=${analyses.length} qualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
-  return { scanned: analyses.length, qualified: qualified.length, executed, skipped, results: analyses, ...watchState };
+  log(`scan complete pairs=${analyses.length} baseQualified=${baseQualified.length} aGradeQualified=${qualified.length} executed=${executed.length} skipped=${skipped.length}`);
+  return {
+    scanned: analyses.length,
+    qualified: qualified.length,
+    baseQualified: baseQualified.length,
+    aGradeRejected,
+    executed,
+    skipped,
+    results: analyses,
+    ...watchState,
+  };
 }
 
 
