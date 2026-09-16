@@ -15,14 +15,40 @@ const structuralDetection = `const aGradeAutoContract =
   auto.includes('ictAGradePrecision') &&
   (auto.includes('isIctBaseQualified') ||
     auto.includes('withIctAGradeEvaluation') ||
-    auto.includes('aGradeRejected'));`;
+    auto.includes('aGradeRejected'));
+if (aGradeAutoContract) {
+  const baseStart = auto.indexOf('export function isIctBaseQualified');
+  const baseEnd = baseStart >= 0
+    ? auto.indexOf('\\n}\\n\\nexport function isIctAutoQualified', baseStart)
+    : -1;
+  if (baseStart < 0 || baseEnd < 0) {
+    throw new Error('[ICT_MULTI_STRATEGY] A-grade base qualification block is missing');
+  }
+  const baseBlock = auto.slice(baseStart, baseEnd + 2);
+  const studyMarker = "    analysis?.marketMakerModel?.studyReady === true &&\\n";
+  const confidenceMarker = '    Number.isFinite(confidence)';
+  const gateStart = baseBlock.indexOf(studyMarker);
+  const confidenceAt = gateStart >= 0 ? baseBlock.indexOf(confidenceMarker, gateStart) : -1;
+  if (gateStart < 0 || confidenceAt < 0) {
+    throw new Error('[ICT_MULTI_STRATEGY] A-grade market-maker qualification anchors are missing');
+  }
+  const strictGate =
+    studyMarker +
+    "    analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\\n" +
+    confidenceMarker;
+  const normalizedBase =
+    baseBlock.slice(0, gateStart) +
+    strictGate +
+    baseBlock.slice(confidenceAt + confidenceMarker.length);
+  auto = auto.slice(0, baseStart) + normalizedBase + auto.slice(baseEnd + 2);
+}`;
 
 if (source.includes(literalDetection)) {
   source = source.replace(literalDetection, structuralDetection);
   writeFileSync(target, source, 'utf8');
-  console.log('[ICT_A_GRADE_COMPAT] multi-strategy router now detects A-grade qualification structurally');
-} else if (source.includes(structuralDetection)) {
-  console.log('[ICT_A_GRADE_COMPAT] multi-strategy router already uses structural A-grade detection');
+  console.log('[ICT_A_GRADE_COMPAT] multi-strategy router will restore the strict A-grade PO3 qualification gate');
+} else if (source.includes("throw new Error('[ICT_MULTI_STRATEGY] A-grade base qualification block is missing')")) {
+  console.log('[ICT_A_GRADE_COMPAT] multi-strategy router already restores the strict A-grade PO3 qualification gate');
 } else {
   throw new Error('[ICT_A_GRADE_COMPAT] multi-strategy A-grade detection marker not found');
 }
