@@ -7,6 +7,27 @@ const target = resolve(ROOT, 'scripts/apply_ict_qualification_contract.mjs');
 let source = readFileSync(target, 'utf8');
 let changed = false;
 
+const legacyReplaceHelper = `function replaceOnce(source, before, after, label) {
+  if (source.includes(after)) return source;
+  if (!source.includes(before)) throw new Error(\`[ICT_QUALIFICATION_CONTRACT] missing \${label}\`);
+  return source.replace(before, () => after);
+}`;
+const compatibleReplaceHelper = `function replaceOnce(source, before, after, label) {
+  if (source.includes(after)) return source;
+  if (!source.includes(before)) {
+    const finalReversalDirection = source.includes("const reversalDirection = dailyTfBias !== 'neutral'") && source.includes('const reversalContext = !htfAligned && Boolean(want);');
+    if (label === 'study-directed reversal bias' && finalReversalDirection) return source;
+    if (label === 'strategy-family hard gates' && finalReversalDirection && source.includes("if (want && !kz.inKillzone) hardFails.push('Hard gate: no active ICT killzone/session.');")) return source;
+    if (label === 'market-maker reversal direction gate' && source.includes("reason: 'No valid ICT trade direction is available.'")) return source;
+    throw new Error(\`[ICT_QUALIFICATION_CONTRACT] missing \${label}\`);
+  }
+  return source.replace(before, () => after);
+}`;
+if (source.includes(legacyReplaceHelper)) {
+  source = source.replace(legacyReplaceHelper, compatibleReplaceHelper);
+  changed = true;
+}
+
 const requiredMarker = "  'requiresMarketMakerActive !== true',\n";
 if (source.includes(requiredMarker)) {
   source = source.replace(requiredMarker, '');
@@ -60,4 +81,7 @@ if (!source.includes('aGradeQualificationContract')) {
 if (!source.includes('finalMarketMakerDirectionGate')) {
   throw new Error('[ICT_A_GRADE_COMPAT] idempotent market-maker direction compatibility marker missing');
 }
-console.log('[ICT_A_GRADE_COMPAT] legacy qualification verifier now defers autonomous gate authority to the A-grade finalizer and is idempotent');
+if (!source.includes('finalReversalDirection')) {
+  throw new Error('[ICT_A_GRADE_COMPAT] idempotent reversal-direction compatibility marker missing');
+}
+console.log('[ICT_A_GRADE_COMPAT] legacy qualification verifier is idempotent and defers autonomous gate authority to the A-grade finalizer');
