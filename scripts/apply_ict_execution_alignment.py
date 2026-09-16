@@ -64,18 +64,10 @@ engine = replace_once(
     "ICT batch response execution thresholds",
 )
 
-# The R:R runtime hardening now exposes configuredIctMinRR() instead of leaving
-# a raw parseFloat expression in ictEngine.js. Accept either representation so
-# this older alignment pass remains idempotent and cannot fail the build after
-# the stricter R:R patch has already run.
 rr_marker_present = (
     "parseFloat(process.env.ICT_MIN_RR || '1.5')" in engine
     or "configuredIctMinRR()" in engine
 )
-
-# The authoritative operational floor is 75%. Accept legacy source forms so this
-# compatibility pass can normalize an older tree, but require the final runtime
-# form to use the execution-specific environment variable.
 confidence_marker_present = (
     "Math.max(75, parseFloat(process.env.ICT_EXECUTION_MIN_CONFIDENCE || '75'))" in engine
     or "Math.max(80, parseFloat(process.env.ICT_MIN_CONFIDENCE || '80'))" in engine
@@ -122,21 +114,33 @@ if "export function isIctAutoQualified" not in auto:
         )
     auto = auto[: match.start()] + qualification_helper + auto[match.start() :]
 
-auto = replace_once(
-    auto,
-    "  const qualified = analyses.filter((a) => a.signal !== 'none' && a.confidence >= cfg.minConfidence);",
-    "  const qualified = analyses.filter((analysis) => isIctAutoQualified(analysis, cfg));",
-    "ICT autonomous qualification filter",
+# A-grade execution splits base qualification from the final A-grade filter.
+# Preserve that stricter implementation instead of trying to rewrite it back to
+# the older one-stage `qualified = analyses.filter(...)` form.
+a_grade_filter_present = (
+    "const baseQualified = analyses.filter((analysis) => isIctBaseQualified(analysis, cfg));" in auto
+    and "baseQualified.filter((analysis) => !gradeCfg.required || analysis?.aGrade?.passed === true)" in auto
 )
+if not a_grade_filter_present:
+    auto = replace_once(
+        auto,
+        "  const qualified = analyses.filter((a) => a.signal !== 'none' && a.confidence >= cfg.minConfidence);",
+        "  const qualified = analyses.filter((analysis) => isIctAutoQualified(analysis, cfg));",
+        "ICT autonomous qualification filter",
+    )
 
 for marker in [
     "export function isIctAutoQualified",
     "confidence >= cfg.minConfidence",
     "rr >= cfg.minRR",
-    "analyses.filter((analysis) => isIctAutoQualified(analysis, cfg))",
 ]:
     if marker not in auto:
         raise RuntimeError(f"ICT Auto AI alignment incomplete: missing {marker}")
+if not (
+    "analyses.filter((analysis) => isIctAutoQualified(analysis, cfg))" in auto
+    or a_grade_filter_present
+):
+    raise RuntimeError("ICT Auto AI alignment incomplete: missing autonomous qualification filter")
 
 AUTO.write_text(auto, encoding="utf-8")
 
@@ -164,4 +168,4 @@ for marker in [
         raise RuntimeError(f"ICT executor active-mode alignment incomplete: missing {marker}")
 
 EXECUTION.write_text(execution, encoding="utf-8")
-print("ICT execution aligned: active mode executes qualified practice/paper trades; live safeguards remain live-only")
+print("ICT execution aligned: active mode executes qualified practice/paper trades; A-grade filter preserved when present")
