@@ -28,9 +28,33 @@ if (source.includes(legacyReplaceHelper)) {
   changed = true;
 }
 
-const requiredMarker = "  'requiresMarketMakerActive !== true',\n";
-if (source.includes(requiredMarker)) {
-  source = source.replace(requiredMarker, '');
+const requiredMarketMakerMarker = "  'requiresMarketMakerActive !== true',\n";
+if (source.includes(requiredMarketMakerMarker)) {
+  source = source.replace(requiredMarketMakerMarker, '');
+  changed = true;
+}
+
+// The first generator pass may still contain the temporary studied-direction
+// marker; after reversal hardening, the durable source contains reversalContext
+// instead. Treat either as valid so the generator is truly idempotent without
+// reintroducing the retired studiedReversalDirection shortcut.
+const staleReversalRequired = "  'studiedReversalDirection: reversalStudyDirection',\n";
+if (source.includes(staleReversalRequired)) {
+  source = source.replace(staleReversalRequired, '');
+  changed = true;
+}
+const requiredLoopAnchor = `];
+for (const marker of required) {`;
+const compatibleRequiredLoop = `];
+const reversalDirectionContractPresent =
+  combined.includes('studiedReversalDirection: reversalStudyDirection') ||
+  combined.includes('const reversalContext = !htfAligned && Boolean(want);');
+if (!reversalDirectionContractPresent) {
+  throw new Error('[ICT_QUALIFICATION_CONTRACT] verification missing reversal-direction contract');
+}
+for (const marker of required) {`;
+if (source.includes(requiredLoopAnchor) && !source.includes('reversalDirectionContractPresent')) {
+  source = source.replace(requiredLoopAnchor, compatibleRequiredLoop);
   changed = true;
 }
 
@@ -83,5 +107,8 @@ if (!source.includes('finalMarketMakerDirectionGate')) {
 }
 if (!source.includes('finalReversalDirection')) {
   throw new Error('[ICT_A_GRADE_COMPAT] idempotent reversal-direction compatibility marker missing');
+}
+if (!source.includes('reversalDirectionContractPresent')) {
+  throw new Error('[ICT_A_GRADE_COMPAT] reversal-direction verification compatibility marker missing');
 }
 console.log('[ICT_A_GRADE_COMPAT] legacy qualification verifier is idempotent and defers autonomous gate authority to the A-grade finalizer');
