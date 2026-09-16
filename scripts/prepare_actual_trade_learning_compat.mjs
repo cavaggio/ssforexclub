@@ -1,3 +1,4 @@
+import './prepare_account_engine_isolation_agrade_compat.mjs';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
