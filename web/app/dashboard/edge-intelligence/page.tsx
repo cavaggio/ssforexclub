@@ -5,12 +5,13 @@
  *
  * Auth-guarded (middleware + dashboard/layout also enforce it). The page renders
  * the original trade-attribution panel plus the account-scoped signal-learning
- * charts and versioned pair playbooks.
+ * charts, A-grade precision tracking, and versioned pair playbooks.
  */
 
 import { auth } from '@clerk/nextjs/server';
 import { EdgeIntelligencePanel } from '@/components/edge-intelligence-panel';
 import { SignalLearningPanel } from '@/components/signal-learning-panel';
+import { IctAGradePrecisionPanel } from '@/components/ict-a-grade-precision-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,7 @@ export default async function EdgeIntelligencePage() {
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column', gap: 28 }}>
       <EdgeIntelligencePanel />
+      <IctAGradePrecisionPanel userId={userId} />
       <SignalLearningPanel />
     </div>
   );

@@ -28,6 +28,11 @@ function positiveNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function finite(value, fallback = null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 let supabaseClient = null;
 function db(env = process.env) {
   if (supabaseClient) return supabaseClient;
@@ -47,7 +52,7 @@ function maskAccount(accountLogin) {
   return `${'*'.repeat(Math.min(6, value.length - 4))}${value.slice(-4)}`;
 }
 
-export function buildFtmoIctOrderPayload({ pair, direction, signalId } = {}) {
+export function buildFtmoIctOrderPayload({ pair, direction, signalId, aGrade = null } = {}) {
   const symbol = clean(pair).toUpperCase();
   const normalizedDirection = clean(direction).toLowerCase();
   if (!symbol) throw new Error('FTMO ICT route requires a symbol');
@@ -66,6 +71,10 @@ export function buildFtmoIctOrderPayload({ pair, direction, signalId } = {}) {
     finalPartialPercent: FTMO_ICT_EXECUTION_POLICY.finalPartialPercent,
     strategy: 'ICT',
     signalId: signalId ? String(signalId) : null,
+    aGradeScore: finite(aGrade?.score),
+    aGradeThreshold: finite(aGrade?.threshold),
+    exhaustionRiskScore: finite(aGrade?.exhaustionRiskScore),
+    freshThesisRevalidated: aGrade?.stage === 'final_price' && aGrade?.passed === true,
     source: 'signal-stack-auto-ai',
     testMode: false,
   };
@@ -119,6 +128,51 @@ export function mt5ResultToOandaFill(result = {}, { fallbackPrice = null, fallba
       riskPercent: Number.isFinite(Number(result?.riskPercent)) ? Number(result.riskPercent) : null,
       executionResolved: true,
     },
+  };
+}
+
+export function normalizeFtmoExecutionRiskState(summary = {}, positionsResult = {}) {
+  const balance = finite(summary?.balance);
+  const equity = finite(summary?.equity);
+  const marginFree = finite(summary?.marginFree);
+  const dailyStartingBalance = finite(summary?.dailyStartingBalance);
+  const dailyLossPercent = finite(summary?.dailyLossPercent);
+  const effectiveRiskPercent = finite(summary?.effectiveRiskPercent);
+  const positions = Array.isArray(positionsResult?.positions)
+    ? positionsResult.positions
+      .filter((position) => position && position.managedBySignalStack === true)
+      .map((position) => ({
+        ticket: clean(position.ticket) || null,
+        positionIdentifier: clean(position.positionIdentifier) || null,
+        symbol: clean(position.symbol).toUpperCase(),
+        side: clean(position.side).toLowerCase(),
+        volume: finite(position.volume),
+        notionalUnits: finite(position.notionalUnits),
+        entryPrice: finite(position.entryPrice),
+        currentPrice: finite(position.currentPrice),
+        stopLoss: finite(position.stopLoss),
+        takeProfit: finite(position.takeProfit),
+        profit: finite(position.profit),
+      }))
+    : [];
+  const freeMarginPercent = Number.isFinite(marginFree) && Number.isFinite(equity) && equity > 0
+    ? (marginFree / equity) * 100
+    : null;
+
+  return {
+    source: 'ftmo_mt5_ea',
+    balance,
+    equity,
+    marginFree,
+    freeMarginPercent: Number.isFinite(freeMarginPercent) ? +freeMarginPercent.toFixed(2) : null,
+    dailyStartingBalance,
+    dailyLossPercent,
+    effectiveRiskPercent,
+    tradingLocked: summary?.tradingLocked === true,
+    bridgeVersion: clean(summary?.bridgeVersion) || null,
+    riskPolicyVersion: clean(summary?.riskPolicyVersion) || null,
+    positions,
+    positionCount: positions.length,
   };
 }
 
@@ -210,16 +264,19 @@ async function existingCommandByKey(database, idempotencyKey) {
   return data?.id ? String(data.id) : null;
 }
 
-async function enqueueMt5Order(context, payload, idempotencyKey, env = process.env) {
+async function enqueueMt5Command(context, commandType, payload, idempotencyKey, {
+  expiresMs = 120_000,
+  env = process.env,
+} = {}) {
   const database = db(env);
-  const expiresAt = new Date(Date.now() + 120_000).toISOString();
+  const expiresAt = new Date(Date.now() + expiresMs).toISOString();
   const { data, error } = await database
     .from('mt5_ea_commands')
     .insert({
       account_login: context.accountLogin,
       terminal_id: context.terminalId,
-      command_type: 'order_place',
-      payload,
+      command_type: commandType,
+      payload: payload || {},
       idempotency_key: idempotencyKey,
       status: 'pending',
       expires_at: expiresAt,
@@ -232,7 +289,7 @@ async function enqueueMt5Order(context, payload, idempotencyKey, env = process.e
     const existingId = await existingCommandByKey(database, idempotencyKey);
     if (existingId) return existingId;
   }
-  throw new Error(`MT5 EA queue insert failed: ${error?.message || 'no command id returned'}`);
+  throw new Error(`MT5 EA ${commandType} queue insert failed: ${error?.message || 'no command id returned'}`);
 }
 
 async function waitForMt5Result(commandId, env = process.env) {
@@ -258,10 +315,38 @@ async function waitForMt5Result(commandId, env = process.env) {
   throw new Error(`MT5 EA response timed out after ${timeoutMs}ms; command remains idempotently reserved`);
 }
 
+async function requestMt5Command(context, commandType, payload = {}, env = process.env) {
+  const key = `ftmo-telemetry:${context.userId}:${context.accountLogin}:${commandType}:${crypto.randomUUID()}`;
+  const commandId = await enqueueMt5Command(context, commandType, payload, key, { expiresMs: 30_000, env });
+  return waitForMt5Result(commandId, env);
+}
+
+async function loadFtmoExecutionRiskState(context, env = process.env) {
+  const summary = await requestMt5Command(context, 'account_summary', {}, env);
+  const positions = await requestMt5Command(context, 'positions_list', {}, env);
+  const state = normalizeFtmoExecutionRiskState(summary, positions);
+  if (!(state.balance > 0) || !(state.equity > 0)) {
+    throw new Error('MT5 account summary returned invalid balance/equity');
+  }
+  if (state.bridgeVersion !== REQUIRED_BRIDGE_VERSION) {
+    throw new Error(`SignalStackBridge ${REQUIRED_BRIDGE_VERSION} is required for authoritative FTMO telemetry`);
+  }
+  if (state.riskPolicyVersion !== REQUIRED_RISK_POLICY_VERSION) {
+    throw new Error(`Risk policy ${REQUIRED_RISK_POLICY_VERSION} is required for authoritative FTMO telemetry`);
+  }
+  return state;
+}
+
 function failClosedClient(oandaClient, reason) {
   return {
     ...oandaClient,
     executionProvider: 'ftmo_mt5_ea',
+    executionBroker: 'ftmo',
+    executionRiskSource: 'ftmo_mt5_ea',
+    executionReady: false,
+    getExecutionRiskState: async () => {
+      throw new Error(`FTMO MT5 execution blocked: ${reason}`);
+    },
     post: async (path, body) => {
       if (/\/v3\/accounts\/[^/]+\/orders(?:\?|$)/i.test(String(path || ''))) {
         throw new Error(`FTMO MT5 execution blocked: ${reason}. No OANDA execution fallback is permitted.`);
@@ -272,16 +357,17 @@ function failClosedClient(oandaClient, reason) {
 }
 
 /**
- * Preserve OANDA strictly as the ICT market-data/risk-analysis transport while
- * routing the final order to the user's selected FTMO MT5 EA account. If FTMO
- * is selected but unavailable, order submission fails closed and NEVER falls
- * through to OANDA.
+ * Preserve OANDA strictly as the ICT market-data transport while routing the
+ * final order and all account/risk-state authority to the user's selected FTMO
+ * MT5 EA account. If FTMO is selected but unavailable, order submission fails
+ * closed and NEVER falls through to OANDA.
  */
 export async function routeIctExecutionClient(oandaClient, {
   pair,
   direction,
   signalId = null,
   fallbackPrice = null,
+  aGrade = null,
 } = {}) {
   const userId = clean(oandaClient?.userId);
   if (!userId) return oandaClient;
@@ -296,24 +382,32 @@ export async function routeIctExecutionClient(oandaClient, {
   if (!context.active) return oandaClient;
   if (!context.ready) return failClosedClient(oandaClient, context.reason);
 
-  const payload = buildFtmoIctOrderPayload({ pair, direction, signalId });
+  let finalAGrade = aGrade;
+  const basePayload = () => buildFtmoIctOrderPayload({ pair, direction, signalId, aGrade: finalAGrade });
   const idempotencyKey = `ftmo-ict:${userId}:${context.accountLogin}:${signalId || `${pair}:${direction}:${crypto.randomUUID()}`}`;
 
   console.log(
     `[ICT_MT5_ROUTE] user=${userId.slice(0, 4)}… executionBroker=ftmo ` +
-    `account=${maskAccount(context.accountLogin)} terminal=${context.terminalId} pair=${pair} direction=${direction}`,
+    `account=${maskAccount(context.accountLogin)} terminal=${context.terminalId} pair=${pair} direction=${direction} ` +
+    `riskSource=ftmo_mt5_ea`,
   );
 
   return {
     ...oandaClient,
     executionProvider: 'ftmo_mt5_ea',
+    executionBroker: 'ftmo',
     executionAccountId: context.accountLogin,
+    executionEnvironment: context.environment,
+    executionRiskSource: 'ftmo_mt5_ea',
+    executionReady: true,
+    setFinalAGrade: (evaluation) => { finalAGrade = evaluation; },
+    getExecutionRiskState: async () => loadFtmoExecutionRiskState(context),
     post: async (path, body) => {
       if (!/\/v3\/accounts\/[^/]+\/orders(?:\?|$)/i.test(String(path || ''))) {
         return oandaClient.post(path, body);
       }
 
-      const commandId = await enqueueMt5Order(context, payload, idempotencyKey);
+      const commandId = await enqueueMt5Command(context, 'order_place', basePayload(), idempotencyKey);
       const result = await waitForMt5Result(commandId);
       const fallbackUnits = Number(body?.order?.units);
       const synthetic = mt5ResultToOandaFill(result, {
@@ -323,7 +417,7 @@ export async function routeIctExecutionClient(oandaClient, {
       console.log(
         `[ICT_MT5_ROUTE] filled account=${maskAccount(context.accountLogin)} pair=${pair} ` +
         `mt5Position=${synthetic.mt5Execution.positionTicket} price=${synthetic.mt5Execution.price ?? 'unknown'} ` +
-        `command=${commandId}`,
+        `volume=${synthetic.mt5Execution.volume ?? 'unknown'} command=${commandId}`,
       );
       return synthetic;
     },

@@ -5,13 +5,21 @@ import {
   FTMO_ICT_EXECUTION_POLICY,
   buildFtmoIctOrderPayload,
   mt5ResultToOandaFill,
+  normalizeFtmoExecutionRiskState,
 } from './ftmoIctExecutionRouter.js';
 
-test('FTMO ICT order payload keeps the production MT5 risk policy', () => {
+test('FTMO ICT order payload keeps the production MT5 risk policy and A-grade audit fields', () => {
   const payload = buildFtmoIctOrderPayload({
     pair: 'GBP_JPY',
     direction: 'short',
     signalId: 'ict-gj-1',
+    aGrade: {
+      stage: 'final_price',
+      passed: true,
+      score: 86,
+      threshold: 80,
+      exhaustionRiskScore: 14,
+    },
   });
 
   assert.equal(payload.symbol, 'GBP_JPY');
@@ -23,6 +31,10 @@ test('FTMO ICT order payload keeps the production MT5 risk policy', () => {
   assert.equal(payload.firstPartialPercent, 80);
   assert.equal(payload.finalTakeProfitPips, 18);
   assert.equal(payload.finalPartialPercent, 20);
+  assert.equal(payload.aGradeScore, 86);
+  assert.equal(payload.aGradeThreshold, 80);
+  assert.equal(payload.exhaustionRiskScore, 14);
+  assert.equal(payload.freshThesisRevalidated, true);
   assert.equal(payload.source, 'signal-stack-auto-ai');
   assert.equal(payload.testMode, false);
   assert.deepEqual(FTMO_ICT_EXECUTION_POLICY, {
@@ -34,6 +46,54 @@ test('FTMO ICT order payload keeps the production MT5 risk policy', () => {
     finalTakeProfitPips: 18,
     finalPartialPercent: 20,
   });
+});
+
+test('MT5 account summary and position list normalize into authoritative FTMO risk state', () => {
+  const state = normalizeFtmoExecutionRiskState({
+    balance: 200000,
+    equity: 199400,
+    marginFree: 170000,
+    dailyStartingBalance: 200000,
+    dailyLossPercent: 0.3,
+    effectiveRiskPercent: 1,
+    tradingLocked: false,
+    bridgeVersion: '1.23',
+    riskPolicyVersion: '1.21',
+  }, {
+    positions: [
+      {
+        ticket: '9001',
+        positionIdentifier: '8001',
+        symbol: 'EURUSD.sim',
+        side: 'long',
+        volume: 1.1,
+        notionalUnits: 110000,
+        entryPrice: 1.10,
+        currentPrice: 1.101,
+        stopLoss: 1.099,
+        takeProfit: 1.102,
+        profit: 110,
+        managedBySignalStack: true,
+      },
+      {
+        ticket: 'manual',
+        symbol: 'GBPUSD.sim',
+        side: 'long',
+        managedBySignalStack: false,
+      },
+    ],
+  });
+
+  assert.equal(state.source, 'ftmo_mt5_ea');
+  assert.equal(state.balance, 200000);
+  assert.equal(state.equity, 199400);
+  assert.equal(state.freeMarginPercent, 85.26);
+  assert.equal(state.dailyLossPercent, 0.3);
+  assert.equal(state.effectiveRiskPercent, 1);
+  assert.equal(state.tradingLocked, false);
+  assert.equal(state.positionCount, 1);
+  assert.equal(state.positions[0].symbol, 'EURUSD.SIM');
+  assert.equal(state.positions[0].volume, 1.1);
 });
 
 test('resolved MT5 fill is translated to the existing ICT fill contract', () => {
