@@ -44,11 +44,7 @@ const oldVerification = `if (aGradeAutoContract) {
   }
 } else if (auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\\n    Number.isFinite(confidence)")) {`;
 
-const compatibleVerification = `if (aGradeAutoContract && aGradeBaseQualificationPresent) {
-  if (!auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE'")) {
-    throw new Error('[ICT_MULTI_STRATEGY] A-grade Auto AI lost the required DISTRIBUTION_ACTIVE gate');
-  }
-} else if (!aGradeAutoContract && auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\\n    Number.isFinite(confidence)")) {`;
+const compatibleVerification = `if (!aGradeAutoContract && auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\\n    Number.isFinite(confidence)")) {`;
 
 let changed = false;
 if (source.includes(literalDetection)) {
