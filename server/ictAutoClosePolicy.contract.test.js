@@ -50,16 +50,17 @@ test('authenticated route only performs numeric partials or protection updates',
   assert.doesNotMatch(routeSource, /action: 'FULL_CLOSE'/);
 });
 
-test('policy exposes only breakeven, one 15-pip partial, runner arming, trailing, or hold', () => {
-  assert.match(policySource, /FIRST_PARTIAL_PROFIT_PIPS = 15/);
-  assert.match(policySource, /currentProfitPips >= FIRST_PARTIAL_PROFIT_PIPS/);
-  assert.match(policySource, /const percent = 50/);
+test('policy exposes fixed 10p SL, +10p breakeven, 80%@15p and final 20%@18p', () => {
+  assert.match(policySource, /FIXED_STOP_LOSS_PIPS = 10/);
+  assert.match(policySource, /BREAK_EVEN_TRIGGER_PIPS = 10/);
+  assert.match(policySource, /FIRST_TAKE_PROFIT_PIPS = 15/);
+  assert.match(policySource, /FIRST_PARTIAL_PERCENT = 80/);
+  assert.match(policySource, /FINAL_TAKE_PROFIT_PIPS = 18/);
+  assert.match(policySource, /FINAL_PARTIAL_PERCENT = 20/);
+  assert.match(policySource, /FIXED_RR = 1\.56/);
   assert.match(policySource, /action: 'HOLD_TO_TP'/);
   assert.match(policySource, /action: 'MOVE_STOP_TO_BREAKEVEN'/);
   assert.match(policySource, /action: 'PARTIAL_CLOSE'/);
-  assert.match(policySource, /action: 'ARM_RUNNER'/);
-  assert.match(policySource, /action: 'TRAIL_PROFIT'/);
-  assert.match(policySource, /priorPartialCount < 1/);
   assert.match(policySource, /automaticFullCloseAllowed: false/);
   assert.doesNotMatch(policySource, /action: 'FULL_CLOSE'/);
   assert.doesNotMatch(policySource, /return 'ALL'/);
@@ -68,34 +69,49 @@ test('policy exposes only breakeven, one 15-pip partial, runner arming, trailing
 test('hard invalidation and losing reversal defer to the broker SL', () => {
   const invalidated = evaluateActiveExit({
     direction: 'long', entryPrice: 1.1, currentPrice: 1.099,
-    initialRiskPips: 10, profitRMultiple: -0.1, invalidationDetected: true,
+    unrealizedPips: -10, initialRiskPips: 10, profitRMultiple: -0.1, invalidationDetected: true,
   });
   assert.equal(invalidated.action, 'HOLD_TO_TP');
 
   const reversal = evaluateActiveExit({
     direction: 'long', entryPrice: 1.1, currentPrice: 1.0985,
-    initialRiskPips: 10, profitRMultiple: -0.15, reversalRisk: 'high',
+    unrealizedPips: -15, initialRiskPips: 10, profitRMultiple: -0.15, reversalRisk: 'high',
     trendWeakeningDetected: true, momentumDecayScore: 75,
   });
   assert.equal(reversal.action, 'HOLD_TO_TP');
   assert.equal(closeUnitsForDecision(100000, reversal), null);
 });
 
-test('the +15 pip milestone banks 50% once and the post-TP remainder trails', () => {
+test('+10 pips moves protection to breakeven without closing units', () => {
+  const decision = evaluateActiveExit({
+    direction: 'long', entryPrice: 1.1, unrealizedPips: 10,
+  });
+  assert.equal(decision.action, 'MOVE_STOP_TO_BREAKEVEN');
+  assert.equal(decision.stopLoss, 1.1);
+  assert.equal(closeUnitsForDecision(100000, decision), null);
+});
+
+test('+15 pips banks 80% once', () => {
   const partial = evaluateActiveExit({
-    direction: 'long', entryPrice: 1.1, currentPrice: 1.1015,
-    initialRiskPips: 20, profitRMultiple: 0.75, tpProgress: 0.4,
-    marketState: 'BREAKOUT', momentumDecayScore: 20, momentumStatus: 'accelerating',
+    direction: 'long', entryPrice: 1.1, unrealizedPips: 15,
   });
   assert.equal(partial.metrics.currentProfitPips, 15);
   assert.equal(partial.action, 'PARTIAL_CLOSE');
-  assert.equal(partial.closePercent, 50);
-  assert.equal(closeUnitsForDecision(100000, partial), 50000);
+  assert.equal(partial.closePercent, 80);
+  assert.equal(closeUnitsForDecision(100000, partial), 80000);
+});
 
-  const trail = evaluateActiveExit({
-    direction: 'long', entryPrice: 1.1, currentPrice: 1.13,
-    initialRiskPips: 10, profitRMultiple: 3, tpProgress: 1.05,
-  }, { priorPartialCount: 1, runnerArmed: true, breakEvenSet: true });
-  assert.equal(trail.action, 'TRAIL_PROFIT');
-  assert.equal(closeUnitsForDecision(50000, trail), null);
+test('after the 80% partial, the remaining 20% holds protected until +18 pips', () => {
+  const hold = evaluateActiveExit({
+    direction: 'long', entryPrice: 1.1, unrealizedPips: 16,
+  }, { firstPartialTaken: true, priorPartialCount: 1, breakEvenSet: true });
+  assert.equal(hold.action, 'HOLD_TO_TP');
+  assert.equal(closeUnitsForDecision(20000, hold), null);
+
+  const final = evaluateActiveExit({
+    direction: 'long', entryPrice: 1.1, unrealizedPips: 18,
+  }, { firstPartialTaken: true, priorPartialCount: 1, breakEvenSet: true });
+  assert.equal(final.action, 'PARTIAL_CLOSE');
+  assert.equal(final.closePercent, 20);
+  assert.equal(closeUnitsForDecision(20000, final), 4000);
 });
