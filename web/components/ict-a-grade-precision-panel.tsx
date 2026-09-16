@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { getServerSupabase } from '@/lib/db';
 
 type DecisionRow = {
@@ -42,7 +43,7 @@ function shortAccount(accountId: string) {
   return `${accountId.slice(0, 4)}…${accountId.slice(-4)}`;
 }
 
-const card: React.CSSProperties = {
+const card: CSSProperties = {
   background: 'var(--panel)',
   border: '1px solid var(--border)',
   borderRadius: 10,
