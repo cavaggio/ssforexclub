@@ -6,4 +6,5 @@ await import('./apply_ftmo_market_study_recovery.mjs');
 await import('./apply_ict_a_grade_precision.mjs');
 await import('./apply_ict_a_grade_auto_contract.mjs');
 await import('./apply_execution_metadata_context.mjs');
+await import('./prepare_runtime_gate_agrade_compat.mjs');
 await import('./runtime_execution_start.mjs');
