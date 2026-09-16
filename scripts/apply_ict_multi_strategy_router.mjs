@@ -108,16 +108,23 @@ engine = replaceOnce(
   'strategy scan logging',
 );
 
-// The market-maker cycle is one model. A complete direct continuation does not
-// require DISTRIBUTION_ACTIVE, but every strategy still requires the current-day
-// 02:00 ET study and all common execution/risk gates.
+// Legacy direct-continuation logic allowed a continuation before the persistent
+// PO3 cycle reached DISTRIBUTION_ACTIVE. The A-grade precision contract is
+// intentionally stricter: when its two-stage qualification helper is present,
+// preserve the universal current-day study + DISTRIBUTION_ACTIVE requirement.
 let auto = fs.readFileSync(AUTO, 'utf8');
-auto = replaceOnce(
-  auto,
-  `    analysis?.marketMakerModel?.studyReady === true &&\n    analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\n    Number.isFinite(confidence)`,
-  `    analysis?.marketMakerModel?.studyReady === true &&\n    (analysis?.entryAuthorization?.requiresMarketMakerActive !== true ||\n      analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE') &&\n    Number.isFinite(confidence)`,
-  'Auto AI strategy-specific market-maker gate',
-);
+const aGradeAutoContract =
+  auto.includes("from './ictAGradePrecision.js'") &&
+  auto.includes('export function isIctBaseQualified') &&
+  auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE'");
+if (!aGradeAutoContract) {
+  auto = replaceOnce(
+    auto,
+    `    analysis?.marketMakerModel?.studyReady === true &&\n    analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\n    Number.isFinite(confidence)`,
+    `    analysis?.marketMakerModel?.studyReady === true &&\n    (analysis?.entryAuthorization?.requiresMarketMakerActive !== true ||\n      analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE') &&\n    Number.isFinite(confidence)`,
+    'Auto AI strategy-specific market-maker gate',
+  );
+}
 fs.writeFileSync(AUTO, auto);
 
 let execution = fs.readFileSync(EXECUTION, 'utf8');
@@ -127,19 +134,23 @@ execution = replaceOnce(
   "    return blocked(`ICT strategy authorization failed: ${entryAuthorization.reason || 'no complete continuation or reversal strategy is ready'}.`);",
   'execution strategy authorization wording',
 );
-execution = replaceOnce(
-  execution,
-  `  if (\n    analysis?.marketMakerModel?.studyReady !== true ||\n    analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE'\n  ) {\n    return blocked('ICT execution requires a current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle.');\n  }`,
-  `  if (analysis?.marketMakerModel?.studyReady !== true) {\n    return blocked('ICT execution requires the current-day 02:00 ET market study.');\n  }\n  const requiresMarketMakerActive = analysis?.entryAuthorization?.requiresMarketMakerActive === true;\n  if (requiresMarketMakerActive && analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE') {\n    return blocked(\n      \`ICT \${analysis?.entryAuthorization?.strategy || analysis?.entryAuthorization?.family || 'market-maker'} strategy requires an activated persistent Power-of-Three distribution cycle.\`,\n    );\n  }`,
-  'execution strategy-specific market-maker gate',
-);
+const aGradeExecutionContract =
+  execution.includes("from './ictAGradePrecision.js'") ||
+  execution.includes('ICT_A_GRADE_FRESH_THESIS_V1');
+if (!aGradeExecutionContract) {
+  execution = replaceOnce(
+    execution,
+    `  if (\n    analysis?.marketMakerModel?.studyReady !== true ||\n    analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE'\n  ) {\n    return blocked('ICT execution requires a current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle.');\n  }`,
+    `  if (analysis?.marketMakerModel?.studyReady !== true) {\n    return blocked('ICT execution requires the current-day 02:00 ET market study.');\n  }\n  const requiresMarketMakerActive = analysis?.entryAuthorization?.requiresMarketMakerActive === true;\n  if (requiresMarketMakerActive && analysis?.marketMakerModel?.stage !== 'DISTRIBUTION_ACTIVE') {\n    return blocked(\n      \`ICT \${analysis?.entryAuthorization?.strategy || analysis?.entryAuthorization?.family || 'market-maker'} strategy requires an activated persistent Power-of-Three distribution cycle.\`,\n    );\n  }`,
+    'execution strategy-specific market-maker gate',
+  );
+}
 fs.writeFileSync(EXECUTION, execution);
 
 // Older generator passes append execution-smoke cases that assert the retired
-// universal PO3 error text. Align only those generated expectations with the new
-// strategy-specific contract. This does not alter production code or relax a
-// gate; it keeps CI checking the correct reason for a PO3-dependent setup.
-if (fs.existsSync(EXECUTION_TEST)) {
+// universal PO3 error text. Only rewrite those expectations for the legacy
+// direct-continuation contract; A-grade keeps the stricter universal PO3 gate.
+if (!aGradeExecutionContract && fs.existsSync(EXECUTION_TEST)) {
   let executionTest = fs.readFileSync(EXECUTION_TEST, 'utf8');
   executionTest = replaceOptional(
     executionTest,
@@ -163,20 +174,28 @@ for (const required of [
   'strategyRouter.entryAuthorization',
   'Hard gate: no ICT strategy is authorized',
   'ICT strategy authorization failed',
-  'requiresMarketMakerActive !== true',
 ]) {
   const combined = `${engine}\n${auto}\n${execution}`;
   if (!combined.includes(required)) throw new Error(`[ICT_MULTI_STRATEGY] verification missing ${required}`);
 }
 
-if (auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\n    Number.isFinite(confidence)")) {
+if (aGradeAutoContract) {
+  if (!auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE'")) {
+    throw new Error('[ICT_MULTI_STRATEGY] A-grade Auto AI lost the required DISTRIBUTION_ACTIVE gate');
+  }
+} else if (auto.includes("analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&\n    Number.isFinite(confidence)")) {
   throw new Error('[ICT_MULTI_STRATEGY] Auto AI still universally requires DISTRIBUTION_ACTIVE');
 }
-if (execution.includes('current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle')) {
+
+if (!aGradeExecutionContract && execution.includes('current-day 02:00 ET study and an activated persistent Power-of-Three distribution cycle')) {
   throw new Error('[ICT_MULTI_STRATEGY] executor still universally requires DISTRIBUTION_ACTIVE');
 }
 if (execution.includes('central market-maker authorization failed')) {
   throw new Error('[ICT_MULTI_STRATEGY] executor still describes strategy authorization as market-maker-only');
 }
 
-console.log('ICT multi-strategy router applied: direct continuation OR reversal/PO3, with 01:00-03:00 ET H1 session context.');
+console.log(
+  aGradeAutoContract
+    ? 'ICT multi-strategy router applied with A-grade precision override: strategy diagnostics retained; DISTRIBUTION_ACTIVE remains mandatory.'
+    : 'ICT multi-strategy router applied: direct continuation OR reversal/PO3, with 01:00-03:00 ET H1 session context.',
+);

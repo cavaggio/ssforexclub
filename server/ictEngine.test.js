@@ -6,22 +6,21 @@ import { analyzeICTPair, computeIctConfidence } from './ictEngine.js';
 // June 2026 is EDT (UTC-4): UTC hour − 4 = ET hour.
 
 test('killzones: ET windows are detected DST-aware', () => {
-  assert.equal(currentKillzone('2026-06-04T07:00:00Z').currentKillzone, 'London');        // 03:00 ET
-  assert.equal(currentKillzone('2026-06-04T12:00:00Z').currentKillzone, 'New York AM');    // 08:00 ET
-  assert.equal(currentKillzone('2026-06-04T14:30:00Z').currentKillzone, 'New York AM (Silver Bullet)'); // 10:30 ET
-  assert.equal(currentKillzone('2026-06-04T01:00:00Z').currentKillzone, 'Asian');          // 21:00 ET prev day
-  assert.equal(currentKillzone('2026-06-04T15:30:00Z').inKillzone, false);                 // 11:30 ET — between Silver Bullet and NY PM
+  assert.equal(currentKillzone('2026-06-04T07:00:00Z').currentKillzone, 'London');
+  assert.equal(currentKillzone('2026-06-04T12:00:00Z').currentKillzone, 'New York AM');
+  assert.equal(currentKillzone('2026-06-04T14:30:00Z').currentKillzone, 'New York AM (Silver Bullet)');
+  assert.equal(currentKillzone('2026-06-04T01:00:00Z').currentKillzone, 'Asian');
+  assert.equal(currentKillzone('2026-06-04T15:30:00Z').inKillzone, false);
 });
 
 test('silver bullet + macro windows', () => {
-  assert.equal(inSilverBulletWindow('2026-06-04T14:30:00Z'), true);   // 10:30 ET
-  assert.equal(inSilverBulletWindow('2026-06-04T12:00:00Z'), false);  // 08:00 ET
-  assert.equal(activeMacro('2026-06-04T13:55:00Z').activeMacro, 'New York AM macro'); // 09:55 ET
-  assert.equal(activeMacro('2026-06-04T17:25:00Z').activeMacro, 'New York PM macro'); // 13:25 ET
-  assert.equal(activeMacro('2026-06-04T12:00:00Z').activeMacro, null);                // 08:00 ET
+  assert.equal(inSilverBulletWindow('2026-06-04T14:30:00Z'), true);
+  assert.equal(inSilverBulletWindow('2026-06-04T12:00:00Z'), false);
+  assert.equal(activeMacro('2026-06-04T13:55:00Z').activeMacro, 'New York AM macro');
+  assert.equal(activeMacro('2026-06-04T17:25:00Z').activeMacro, 'New York PM macro');
+  assert.equal(activeMacro('2026-06-04T12:00:00Z').activeMacro, null);
 });
 
-// Synthetic candle generator — a gentle one-directional drift (no sweep, no MSS).
 function gen(n, base, step, vol, startMs) {
   const out = []; let t = startMs; let p = base;
   for (let i = 0; i < n; i++) {
@@ -63,7 +62,7 @@ test('engine: returns the exact response object shape', () => {
 test('timeframe display: D1/H4 own direction while H1 active momentum is an execution gate', () => {
   const c = buildCandles();
   const start = Date.UTC(2026, 5, 1, 0, 0, 0);
-  c.h1 = gen(120, 1.13, -0.0002, 0.0004, start); // bearish H1 against bullish D1/H4
+  c.h1 = gen(120, 1.13, -0.0002, 0.0004, start);
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
 
   assert.equal(r.timeframeBias.d1, 'bullish');
@@ -138,9 +137,7 @@ test('scalp entry: a ready H1 transition still requires a complete strategy-spec
 test('refactor: only hard gates reject — soft concepts never appear as hard rejections', () => {
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: buildCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
   for (const rr of r.rejectionReasons) {
-    // FVG/OB/displacement/MSS/CHoCH are confluence now — never a hard "No X" rejection.
     assert.ok(!/No .*(displacement|FVG|OB|MSS|CHoCH|order block)/i.test(rr), `soft concept leaked into rejection: "${rr}"`);
-    // Every rejection is clearly labeled: hard gate or the authoritative target-hit floor.
     assert.ok(
       /^Hard gate:/.test(rr) ||
       /^Confluence below display threshold/.test(rr) ||
@@ -151,22 +148,17 @@ test('refactor: only hard gates reject — soft concepts never appear as hard re
 });
 
 test('refactor: confidence scoring — hard-gate base clears 70, full confluence clears 80', () => {
-  // Aligned + active killzone + sweep + 5M trigger alone clears the display threshold.
   const base = computeIctConfidence({ htfAligned: true, killzoneQuality: 95, sweepAligned: true, drawPresent: true, entryTrigger: true });
   assert.ok(base >= 70, `base confidence ${base} should be >= 70`);
-  // Full confluence clears the auto-execute threshold.
   const full = computeIctConfidence({ htfAligned: true, killzoneQuality: 90, sweepAligned: true, drawPresent: true, entryTrigger: true, displacementAligned: true, mssOrChoch: true, fvgInDir: true, obInDir: true, inOteZone: true, smt: true, inducementSwept: true, labels: 2, rr: 3 });
   assert.ok(full >= 80, `full confidence ${full} should be >= 80`);
-  // Daily/4H not aligned → zero (alignment is the hard-gated base).
   assert.equal(computeIctConfidence({ htfAligned: false, killzoneQuality: 95, sweepAligned: true, entryTrigger: true }), 0);
-  // Draw-only (no sweep, no extra confluence) sits below the threshold.
   assert.ok(computeIctConfidence({ htfAligned: true, killzoneQuality: 90, drawPresent: true, entryTrigger: true }) < 70);
 });
 
 test('engine: silver-bullet window flag is reflected in concepts', () => {
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: buildCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
   assert.equal(r.concepts.silverBullet.activeWindow, true);
-  // Outside the window it is inactive.
   const r2 = analyzeICTPair({ pair: 'EUR_USD', candles: buildCandles(), peers: {}, now: new Date('2026-06-04T12:00:00Z') });
   assert.equal(r2.concepts.silverBullet.activeWindow, false);
 });
@@ -178,27 +170,28 @@ test('engine: degrades safely on insufficient data', () => {
   assert.ok(r.rejectionReasons.length > 0);
 });
 
-// Daily up, 4H down → directional disagreement.
 function mismatchedCandles() {
   const start = Date.UTC(2026, 5, 1, 0, 0, 0);
   const c = buildCandles();
-  c.daily = gen(60, 1.09, 0.0006, 0.0008, start);   // uptrend
-  c.h4 = gen(60, 1.13, -0.0004, 0.0006, start);      // downtrend
+  c.daily = gen(60, 1.09, 0.0006, 0.0008, start);
+  c.h4 = gen(60, 1.13, -0.0004, 0.0006, start);
   return c;
 }
 
-test('timeframe: Daily and 4H must agree directionally', () => {
+test('timeframe: Daily and 4H mismatch cannot qualify without the full reversal sequence', () => {
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: mismatchedCandles(), peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+  assert.equal(r.timeframeBias.d1H4Aligned, false);
   assert.equal(r.signal, 'none');
-  assert.ok(r.rejectionReasons.some((x) => /Daily and 4H are not aligned for continuation and no current-day studied reversal direction is available/.test(x)));
+  assert.ok(r.entryAuthorization?.ready !== true || r.correctiveGate?.passed !== true);
 });
 
-test('timeframe: 5M cannot override a Daily/4H mismatch', () => {
+test('timeframe: 5M cannot override an unauthorized Daily/4H mismatch', () => {
   const c = mismatchedCandles();
-  c.m5 = gen(120, 1.10, 0.0008, 0.0006, Date.UTC(2026, 5, 1, 0, 0, 0)); // lively 5M activity
+  c.m5 = gen(120, 1.10, 0.0008, 0.0006, Date.UTC(2026, 5, 1, 0, 0, 0));
   const r = analyzeICTPair({ pair: 'EUR_USD', candles: c, peers: {}, now: new Date('2026-06-04T14:30:00Z') });
+  assert.equal(r.timeframeBias.d1H4Aligned, false);
   assert.equal(r.signal, 'none', 'no qualification despite 5M activity');
-  assert.ok(r.rejectionReasons.some((x) => /not aligned/.test(x)));
+  assert.ok(r.entryAuthorization?.ready !== true || r.correctiveGate?.passed !== true);
 });
 
 test('candle strength is never a hard rejection in ICT', () => {

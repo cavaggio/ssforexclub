@@ -6,7 +6,7 @@
   "scripts": {
     "apply:ppr": "node scripts/prepare-ppr-counts-readiness.mjs && node scripts/apply-ppr-engine.mjs && node scripts/apply-ppr-trade-attribution-fallback.mjs && node scripts/apply-ppr-scanner-ui.mjs && node scripts/apply-ppr-scanner-watch-candidates.mjs && node scripts/apply-ppr-counts-readiness.mjs && node scripts/apply-ppr-pending-confidence.mjs && node scripts/apply-reassess-clear-decision.mjs && node scripts/apply-dashboard-null-guards.mjs && node scripts/verify-ict-close-policy.mjs && node scripts/apply-ict-analysis-instruments.mjs",
     "apply:account-isolation": "node ../scripts/prepare_actual_trade_learning_compat.mjs && node ../scripts/apply_account_engine_isolation.mjs && node ../scripts/restore_v3_watchlist_compat.mjs && node ../scripts/apply_actual_trade_learning_view.mjs",
-    "apply:web-runtime": "npm run apply:ppr && npm run apply:account-isolation",
+    "apply:web-runtime": "npm run apply:ppr && npm run apply:account-isolation && node scripts/apply-ftmo-extended-qualification.mjs",
     "predev": "npm run apply:web-runtime",
     "dev": "next dev",
     "prebuild": "npm run apply:web-runtime",
@@ -15,7 +15,7 @@
     "lint": "next lint",
     "pretypecheck": "npm run apply:web-runtime",
     "typecheck": "tsc --noEmit",
-    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js lib/autoAiAllEngines.contract.test.js lib/pprCountsReadiness.contract.test.js lib/reassessCard.contract.test.js lib/pairPlaybookPriorityCore.test.js lib/accountCalibrationCore.test.js lib/actualTradeReconciliationCore.test.js lib/actualTradeReconciliation.contract.test.js lib/oandaTransactionSyncAccounts.contract.test.js lib/dashboardRecovery.contract.test.js && node scripts/verify-ict-scanner-results.mjs && node scripts/verify-ict-close-policy.mjs"
+    "test:scanner-engine": "node --test lib/scannerEngine.test.js lib/ictDashboardResults.contract.test.js lib/ictDashboardResults.fixture.test.js lib/autoAiAllEngines.contract.test.js lib/pprCountsReadiness.contract.test.js lib/reassessCard.contract.test.js lib/pairPlaybookPriorityCore.test.js lib/accountCalibrationCore.test.js lib/actualTradeReconciliationCore.test.js lib/actualTradeReconciliation.contract.test.js lib/oandaTransactionSyncAccounts.contract.test.js lib/dashboardRecovery.contract.test.js lib/ftmoExtendedQualification.contract.test.js && node scripts/verify-ict-scanner-results.mjs && node scripts/verify-ict-close-policy.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
