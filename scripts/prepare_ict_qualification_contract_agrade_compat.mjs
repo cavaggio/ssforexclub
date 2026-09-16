@@ -25,6 +25,27 @@ if (source.includes(universalAssertion)) {
   changed = true;
 }
 
+const legacyMarketMakerReplace = `marketMaker = replaceOnce(
+  marketMaker,
+  \`  if (!direction || observation?.htfAligned !== true) {\\n    return {\\n      cycle: context?.cycle ?? null,\\n      changed: false,\\n      entryAuthorization: {\\n        ...baseAuthorization,\\n        reason: 'Daily and H4 do not provide an aligned market-maker direction.',\\n      },\\n    };\\n  }\`,
+  \`  const studiedReversalDirection = observation?.studiedReversalDirection === true;\\n  if (!direction || (observation?.htfAligned !== true && !studiedReversalDirection)) {\\n    return {\\n      cycle: context?.cycle ?? null,\\n      changed: false,\\n      entryAuthorization: {\\n        ...baseAuthorization,\\n        reason: 'No valid continuation alignment or current-day studied reversal direction is available.',\\n      },\\n    };\\n  }\`,
+  'market-maker reversal direction gate',
+);`;
+
+const idempotentMarketMakerReplace = `const finalMarketMakerDirectionGate = \`  if (!direction) {\\n    return {\\n      cycle: context?.cycle ?? null,\\n      changed: false,\\n      entryAuthorization: {\\n        ...baseAuthorization,\\n        reason: 'No valid ICT trade direction is available.',\\n      },\\n    };\\n  }\`;
+if (!marketMaker.includes(finalMarketMakerDirectionGate)) {
+  marketMaker = replaceOnce(
+    marketMaker,
+    \`  if (!direction || observation?.htfAligned !== true) {\\n    return {\\n      cycle: context?.cycle ?? null,\\n      changed: false,\\n      entryAuthorization: {\\n        ...baseAuthorization,\\n        reason: 'Daily and H4 do not provide an aligned market-maker direction.',\\n      },\\n    };\\n  }\`,
+    \`  const studiedReversalDirection = observation?.studiedReversalDirection === true;\\n  if (!direction || (observation?.htfAligned !== true && !studiedReversalDirection)) {\\n    return {\\n      cycle: context?.cycle ?? null,\\n      changed: false,\\n      entryAuthorization: {\\n        ...baseAuthorization,\\n        reason: 'No valid continuation alignment or current-day studied reversal direction is available.',\\n      },\\n    };\\n  }\`,
+    'market-maker reversal direction gate',
+  );
+}`;
+if (source.includes(legacyMarketMakerReplace)) {
+  source = source.replace(legacyMarketMakerReplace, idempotentMarketMakerReplace);
+  changed = true;
+}
+
 const logLine = "console.log('[ICT_QUALIFICATION_CONTRACT] restored 02:00 study, preserved 17:30 review, live window 02:30-10:30 ET, and strategy-specific qualification gates.');";
 const compatibleLog = "console.log('[ICT_QUALIFICATION_CONTRACT] restored timing/study safeguards; A-grade finalizer remains authoritative for autonomous qualification.');";
 if (source.includes(logLine)) {
@@ -36,4 +57,7 @@ if (changed) writeFileSync(target, source, 'utf8');
 if (!source.includes('aGradeQualificationContract')) {
   throw new Error('[ICT_A_GRADE_COMPAT] qualification-contract compatibility marker missing');
 }
-console.log('[ICT_A_GRADE_COMPAT] legacy qualification verifier now defers autonomous gate authority to the A-grade finalizer');
+if (!source.includes('finalMarketMakerDirectionGate')) {
+  throw new Error('[ICT_A_GRADE_COMPAT] idempotent market-maker direction compatibility marker missing');
+}
+console.log('[ICT_A_GRADE_COMPAT] legacy qualification verifier now defers autonomous gate authority to the A-grade finalizer and is idempotent');
