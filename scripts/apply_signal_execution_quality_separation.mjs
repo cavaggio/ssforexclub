@@ -67,16 +67,17 @@ import {
 } from './signalExecutionQuality.js';`,
     'quality separation import',
   );
-  out = replaceRequired(
-    out,
-    `    h4Direction: candidate.h4Direction || null,
+  if (!out.includes('executionQuality: assessCandidateExecutionQuality(candidate),')) {
+    out = replaceRequired(
+      out,
+      `    h4Direction: candidate.h4Direction || null,
   };`,
-    `    h4Direction: candidate.h4Direction || null,
+      `    h4Direction: candidate.h4Direction || null,
     executionQuality: assessCandidateExecutionQuality(candidate),
   };`,
-    'execution quality audit snapshot',
-  );
-  out = replaceRequired(
+      'execution quality audit snapshot',
+    );
+  }  out = replaceRequired(
     out,
     `async function persistAudit({ client, engine, pair, candidate, confidence, engineResult }) {`,
     `async function persistAudit({ client, engine, pair, candidate, confidence, engineResult, qualitySeparation }) {`,
