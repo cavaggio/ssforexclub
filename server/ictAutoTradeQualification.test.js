@@ -115,3 +115,16 @@ test('XAU/USD, US30 and US500 remain signal-only even with otherwise A-grade ICT
     assert.equal(isIctAutoQualified(qualified({ pair, executionEligible: false, confidence: 99, rr: 3 }), cfg), false);
   }
 });
+
+
+test('mature negative-expectancy Edge context is authoritative for Auto AI', () => {
+  assert.equal(isIctAutoQualified(continuation({
+    learningExecutionGate: {
+      passed: false,
+      decision: 'reject',
+      authoritative: true,
+      failureCodes: ['EDGE_NEGATIVE_EXPECTANCY_CONTEXT'],
+      reason: '470 matching outcomes have negative expectancy',
+    },
+  }), cfg), false);
+});
