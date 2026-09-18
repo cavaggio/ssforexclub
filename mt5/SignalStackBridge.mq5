@@ -1,5 +1,5 @@
 #property strict
-#property version   "1.23"
+#property version   "1.24"
 #property description "Signal Stack outbound bridge for MetaTrader VPS"
 
 #include <Trade/Trade.mqh>
@@ -11,10 +11,10 @@ input string TerminalToken = "";
 input int PollSeconds = 2;
 input ulong SignalStackMagic = 560091247;
 
-// Risk policy remains 1.21. Bridge v1.23 adds deterministic broker fill
-// reconciliation so every accepted order is linked to its MT5 order, deal,
-// position identifier/ticket, and actual fill price before it is reported.
-const string BRIDGE_VERSION = "1.23";
+// Risk policy remains 1.21. Bridge v1.24 keeps deterministic broker fill
+// reconciliation and adds read-only Signal Stack deal history so exact FTMO
+// outcomes can feed the account/engine/pair learning loop.
+const string BRIDGE_VERSION = "1.24";
 const string RISK_POLICY_VERSION = "1.21";
 const double BASE_RISK_PERCENT = 1.0;
 const double POST_SL_RISK_PERCENT = 0.5;
@@ -567,6 +567,74 @@ string PositionsSnapshotJson() {
           ",\"positions\":" + positions + "}";
 }
 
+string HistorySnapshotJson(int requestedLookbackDays) {
+   int lookbackDays = MathMax(1, MathMin(30, requestedLookbackDays));
+   datetime to = TimeCurrent() + 5;
+   datetime from = to - lookbackDays * 86400;
+   if(!HistorySelect(from, to)) {
+      return "{\"ok\":false,\"bridgeVersion\":\"" + BRIDGE_VERSION +
+             "\",\"error\":\"HistorySelect failed\"}";
+   }
+
+   string deals = "[";
+   int count = 0;
+   int total = HistoryDealsTotal();
+   const int maxDeals = 1000;
+
+   for(int i = total - 1; i >= 0 && count < maxDeals; i--) {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      ulong magic = (ulong)HistoryDealGetInteger(ticket, DEAL_MAGIC);
+      if(magic != SignalStackMagic) continue;
+
+      ulong orderTicket = (ulong)HistoryDealGetInteger(ticket, DEAL_ORDER);
+      ulong positionIdentifier = (ulong)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+      ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+      ENUM_DEAL_REASON dealReason = (ENUM_DEAL_REASON)HistoryDealGetInteger(ticket, DEAL_REASON);
+      string symbol = HistoryDealGetString(ticket, DEAL_SYMBOL);
+      string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
+      double price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+      double volume = HistoryDealGetDouble(ticket, DEAL_VOLUME);
+      double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      double commission = HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+      double swap = HistoryDealGetDouble(ticket, DEAL_SWAP);
+      double fee = HistoryDealGetDouble(ticket, DEAL_FEE);
+      long timeMsc = HistoryDealGetInteger(ticket, DEAL_TIME_MSC);
+      int priceDigits = symbol == "" ? 5 : (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      int volumeDigits = symbol == "" ? 2 : VolumeDigits(symbol);
+
+      string item = "{";
+      item += "\"ticket\":\"" + IntegerToString((long)ticket) + "\",";
+      item += "\"order\":\"" + IntegerToString((long)orderTicket) + "\",";
+      item += "\"positionIdentifier\":\"" + IntegerToString((long)positionIdentifier) + "\",";
+      item += "\"symbol\":\"" + JsonEscape(symbol) + "\",";
+      item += "\"entry\":\"" + JsonEscape(EnumToString(dealEntry)) + "\",";
+      item += "\"type\":\"" + JsonEscape(EnumToString(dealType)) + "\",";
+      item += "\"reason\":\"" + JsonEscape(EnumToString(dealReason)) + "\",";
+      item += "\"price\":" + DoubleToString(price, priceDigits) + ",";
+      item += "\"volume\":" + DoubleToString(volume, volumeDigits) + ",";
+      item += "\"profit\":" + DoubleToString(profit, 2) + ",";
+      item += "\"commission\":" + DoubleToString(commission, 2) + ",";
+      item += "\"swap\":" + DoubleToString(swap, 2) + ",";
+      item += "\"fee\":" + DoubleToString(fee, 2) + ",";
+      item += "\"timeEpochMs\":" + IntegerToString(timeMsc) + ",";
+      item += "\"magic\":\"" + IntegerToString((long)magic) + "\",";
+      item += "\"comment\":\"" + JsonEscape(comment) + "\"";
+      item += "}";
+
+      if(count > 0) deals += ",";
+      deals += item;
+      count++;
+   }
+
+   deals += "]";
+   return "{\"ok\":true,\"bridgeVersion\":\"" + BRIDGE_VERSION +
+          "\",\"lookbackDays\":" + IntegerToString(lookbackDays) +
+          ",\"dealCount\":" + IntegerToString(count) +
+          ",\"deals\":" + deals + "}";
+}
+
 void Report(string commandId, bool success, string resultJson, string errorText = "") {
    string body = "{\"accountLogin\":\"" + JsonEscape(AccountLogin()) +
                  "\",\"terminalId\":\"" + JsonEscape(TerminalId) +
@@ -609,6 +677,12 @@ void HandleCommand(string json) {
 
    if(commandType == "positions_list") {
       Report(commandId, true, PositionsSnapshotJson());
+      return;
+   }
+
+   if(commandType == "history_list") {
+      int lookbackDays = (int)ExtractNumber(json, "lookbackDays", 7.0);
+      Report(commandId, true, HistorySnapshotJson(lookbackDays));
       return;
    }
 
@@ -807,7 +881,7 @@ int OnInit() {
          " TerminalId=", TerminalId,
          " TokenLength=", StringLen(TerminalToken),
          " Size=MT5 volume(lots)",
-         " FillTracking=order+deal+position",
+         " FillTracking=order+deal+position+history",
          " Policy=1% risk / 0.5% after SL / 2% equity daily lock / SL10 BE10 80%@15 20%@18 / blended RR 1.56");
 
    LogSymbolResolution("EUR_USD");
