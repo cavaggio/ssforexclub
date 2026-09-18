@@ -33,7 +33,7 @@ export type TradeEventType =
 export type TradeLogInput = {
   userId: string;
   organizationId?: string | null;
-  broker: 'oanda' | 'alpaca';
+  broker: 'oanda' | 'ftmo' | 'alpaca';
   brokerAccountId?: string | null;
   environment: 'practice' | 'live' | 'paper';
   eventType: TradeEventType;
@@ -118,7 +118,7 @@ function deepValue(root: unknown, keys: string[]): unknown {
 }
 
 async function persistLifecycleEvent(input: TradeLogInput, tradeLogId: string) {
-  if (input.broker !== 'oanda' || !input.brokerAccountId || !input.tradeId) return;
+  if (!['oanda', 'ftmo'].includes(input.broker) || !input.brokerAccountId || !input.tradeId) return;
   const raw = input.rawPayload && typeof input.rawPayload === 'object' ? input.rawPayload : {};
   const engine = String(deepValue(raw, ['engine', 'strategy', 'entryStrategy']) || '').toLowerCase();
   if (!['ict', 'ppr', 'v3'].includes(engine)) return;
@@ -136,7 +136,7 @@ async function persistLifecycleEvent(input: TradeLogInput, tradeLogId: string) {
         user_id: input.userId,
         broker_account_id: input.brokerAccountId,
         environment: input.environment,
-        broker: 'oanda',
+        broker: input.broker,
         engine,
         broker_trade_id: input.tradeId,
         learning_audit_id: /^[0-9a-f-]{36}$/i.test(auditId) ? auditId : null,
@@ -162,7 +162,7 @@ async function persistLifecycleEvent(input: TradeLogInput, tradeLogId: string) {
         po3_stage: context.powerOfThree?.stage || null,
         htf_liquidity_condition: context.htfLiquidityCondition || {},
         opening_snapshot: sanitizePayload(raw),
-        actual_outcome_source: 'awaiting_oanda_trade_detail',
+        actual_outcome_source: input.broker === 'ftmo' ? 'awaiting_ftmo_mt5_history' : 'awaiting_oanda_trade_detail',
         reconciled_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }, { onConflict: 'user_id,broker_account_id,broker_trade_id' });
@@ -174,7 +174,9 @@ async function persistLifecycleEvent(input: TradeLogInput, tradeLogId: string) {
         exit_price: numeric(input.exitPrice),
         realized_pl: numeric(input.realizedPL),
         exit_reason: input.reason || 'broker_trade_closed',
-        actual_outcome_source: 'trade_log_close_pending_oanda_reconciliation',
+        actual_outcome_source: input.broker === 'ftmo'
+          ? 'trade_log_close_pending_ftmo_reconciliation'
+          : 'trade_log_close_pending_oanda_reconciliation',
         updated_at: new Date().toISOString(),
       })
         .eq('user_id', input.userId)
