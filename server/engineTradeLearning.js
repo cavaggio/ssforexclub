@@ -9,8 +9,10 @@ import {
   assessCandidateExecutionQuality,
   separateSignalAndExecutionLearning,
 } from './signalExecutionQuality.js';
+import { evaluatePairPlaybookExecutionGate } from './pairPlaybookExecutionGate.js';
 
 const profileCache = new Map();
+const playbookCache = new Map();
 let supabaseClient;
 let warnedMissingSchema = false;
 
@@ -51,6 +53,40 @@ function userIdOf(client) {
 function cacheTtlMs() {
   const configured = finiteNumber(process.env.ENGINE_TRADE_LEARNING_CACHE_MS, 300_000);
   return Math.max(30_000, Math.min(3_600_000, configured));
+}
+
+async function loadCurrentPairPlaybook({ client, engine, pair, force = false } = {}) {
+  const normalizedEngine = normalizeEngine(engine);
+  const normalizedPair = normalizePair(pair);
+  const accountId = accountIdOf(client);
+  const userId = userIdOf(client);
+  if (!normalizedEngine || !normalizedPair || !db()) return null;
+  const key = `${userId || 'legacy'}:${accountId}:${normalizedEngine}:${normalizedPair}`;
+  const cached = playbookCache.get(key);
+  if (!force && cached && Date.now() - cached.loadedAt < cacheTtlMs()) return cached.playbook;
+
+  try {
+    let query = db()
+      .from('pair_ai_playbooks')
+      .select('id,pair,version,is_current,status,recommendation_stage,sample_size,win_rate,expectancy_r,avoid_conditions,validator,generated_at')
+      .eq('broker_account_id', accountId)
+      .eq('engine', normalizedEngine)
+      .eq('pair', normalizedPair)
+      .eq('is_current', true)
+      .order('generated_at', { ascending: false })
+      .limit(1);
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query.maybeSingle();
+    if (error) throw error;
+    const playbook = data || null;
+    playbookCache.set(key, { loadedAt: Date.now(), playbook });
+    return playbook;
+  } catch (error) {
+    if (!schemaMissing(error)) {
+      console.warn(`[ENGINE_LEARNING] pair playbook read failed ${normalizedEngine}/${normalizedPair}: ${error?.message || String(error)}`);
+    }
+    return null;
+  }
 }
 
 function learningMode() {
@@ -176,6 +212,7 @@ function compactCandidate(candidate = {}) {
     dailyDirection: candidate.dailyDirection || candidate.dailyStudyContext?.dayDirection || null,
     h4Direction: candidate.h4Direction || null,
     executionQuality: assessCandidateExecutionQuality(candidate),
+    learningExecutionGate: candidate.learningExecutionGate || null,
   };
 }
 
@@ -250,7 +287,14 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
   const originalConfidence = finiteNumber(candidate.confidence ?? candidate.score, null);
   const studiedCandidate = await applyStoredStudyCalibration(candidate, { client, engine: normalizedEngine });
   const marketStudyAdjustment = finiteNumber(studiedCandidate?.dailyStudyContext?.adjustment, 0);
-  const profile = await loadEngineTradeProfile({ client, engine: normalizedEngine, pair });
+  const [profile, pairPlaybook] = await Promise.all([
+    loadEngineTradeProfile({ client, engine: normalizedEngine, pair }),
+    loadCurrentPairPlaybook({ client, engine: normalizedEngine, pair }),
+  ]);
+  const learningExecutionGate = evaluatePairPlaybookExecutionGate(
+    { ...studiedCandidate, engine: normalizedEngine, pair },
+    pairPlaybook,
+  );
   const learningOptions = optionsFromEnv();
   const engineResult = computeEngineTradeAdjustment(
     { ...studiedCandidate, engine: normalizedEngine, pair },
@@ -279,7 +323,7 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     client,
     engine: normalizedEngine,
     pair,
-    candidate: studiedCandidate,
+    candidate: { ...studiedCandidate, learningExecutionGate },
     confidence,
     engineResult,
     qualitySeparation,
@@ -307,6 +351,7 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     reasons: engineResult.reasons,
     hardGatesPreserved: ENGINE_TRADE_LEARNING_HARD_GATES,
     scope: 'broker_account_engine_pair',
+    learningExecutionGate,
   };
 
   const calibrated = {
@@ -318,6 +363,13 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
     entryQualityAdjustment: qualitySeparation.executionQuality.appliedAdjustment,
     executionQuality: qualitySeparation.executionQuality.currentCandidate,
     combinedLearningContext: learningContext,
+    learningExecutionGate,
+    rejectionReasons: learningExecutionGate.passed === false
+      ? [
+          ...(Array.isArray(studiedCandidate.rejectionReasons) ? studiedCandidate.rejectionReasons : []),
+          `Hard gate: ${learningExecutionGate.reason}`,
+        ]
+      : studiedCandidate.rejectionReasons,
   };
   if (confidence.finalConfidence != null) {
     calibrated.confidence = confidence.finalConfidence;
@@ -332,6 +384,7 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
 
 export function __resetEngineTradeLearningForTests() {
   profileCache.clear();
+  playbookCache.clear();
   supabaseClient = undefined;
   warnedMissingSchema = false;
 }
