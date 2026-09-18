@@ -103,6 +103,10 @@ for (const forbidden of [
   '<SizingCell label="TP prob" value={`${(trade.tpProbability * 100).toFixed(0)}%`} />',
   '<SizingCell label="SL prob" value={`${(trade.slProbability * 100).toFixed(0)}%`} />',
   'sig.spreadPips !== undefined && <span',
+  'signal.lotSize.toFixed(4)',
+  'signal.riskPercent !== undefined ?',
+  'Object.entries(signal.scoreBreakdown).map',
+  'trade.updatedHoldWindow.minMinutes',
 ]) {
   if (source.includes(forbidden)) {
     throw new Error(`Dashboard null-guard verification failed: ${forbidden}`);
@@ -116,6 +120,11 @@ for (const required of [
   "trade.unrealizedPL == null ? '—'",
   "trade.tpProbability == null ? '—'",
   "trade.slProbability == null ? '—'",
+  "if (value == null || value === '') return null",
+  'formatFixed(signal.lotSize, 4)',
+  'signal.riskPercent != null',
+  'Object.entries(signal.scoreBreakdown ?? {}).map',
+  'trade.updatedHoldWindow ?',
 ]) {
   if (!source.includes(required)) {
     throw new Error(`Dashboard null-guard verification incomplete: ${required}`);
