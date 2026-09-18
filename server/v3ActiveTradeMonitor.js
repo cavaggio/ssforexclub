@@ -149,8 +149,14 @@ export async function analyzeV3OpenTrade(oandaTrade, { client, historyRecord = n
     tradeState: live.state,
     exitRecommendation: live.exitRecommendation,
     exitReason: `V3-native live TP-hit confidence ${live.tpHitConfidence}% (${live.state})`,
+    timeDecayRisk: 'low',
+    updatedHoldWindow: { minMinutes: 0, maxMinutes: 0, holdConfidence: 0 },
     tpProbability: live.tpProbability,
     slProbability: live.slProbability,
+    macroOpposes: directionalConflict,
+    conflictingTfCount: alignmentConflict ? 1 : 0,
+    alignmentDropped: false,
+    waterfall: null,
     confidenceModel: 'v3_native_live_tp_hit',
     entryTpHitConfidence: historyRecord?.entryTpHitConfidence ?? null,
     entryQualityConfidence: historyRecord?.entryQualityConfidence ?? null,
@@ -190,8 +196,25 @@ export async function reassessV3OpenTrade(oandaTrade, options = {}) {
     volatilityCollapsed: analysis.volatilityCollapsed,
     lastReassessedAt: new Date().toISOString(),
     lifecycleRecommendation: {
-      action: recommendedAction,
+      action: recommendedAction === 'EXIT_INVALIDATED' || recommendedAction === 'EXIT_REVIEW'
+        ? 'close'
+        : recommendedAction === 'TRAIL_SL' || recommendedAction === 'MOVE_SL_TO_BREAKEVEN'
+          ? 'tighten_sl'
+          : 'hold',
+      reason: managementReasons.join(' '),
       reasons: managementReasons,
+      urgency: recommendedAction === 'EXIT_INVALIDATED'
+        ? 'high'
+        : recommendedAction === 'EXIT_REVIEW'
+          ? 'medium'
+          : 'low',
+      confidence: analysis.currentConfidence ?? 0,
+      suggestedNewSL: null,
+      suggestedNewTP: analysis.takeProfit ?? 0,
+      shouldAutoClose: false,
+      autoCloseReason: null,
+      source: 'v3_native_live_tp_hit',
+      unifiedSummary: managementReasons.join(' '),
       engine: 'v3',
     },
     detail: {
