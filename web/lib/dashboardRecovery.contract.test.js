@@ -42,6 +42,6 @@ test('V3 active-trade payload preserves the shared dashboard contract', () => {
 
 
 test('active-trade cards tolerate a nullable engine-native waterfall', () => {
-  assert.match(scannerCard, /trade\.waterfall \? \(/);
-  assert.doesNotMatch(scannerCard, /<details>[\s\S]{0,500}macro=\{trade\.waterfall\.macro\}/);
+  assert.match(scannerCard, /\{trade\.waterfall \? \(/);
+  assert.match(scannerCard, /Engine-native trade analysis is active for this position/);
 });
