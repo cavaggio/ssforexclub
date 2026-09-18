@@ -39,3 +39,9 @@ test('V3 active-trade payload preserves the shared dashboard contract', () => {
   assert.match(v3ActiveMonitor, /waterfall: null/);
   assert.match(v3ActiveMonitor, /source: 'v3_native_live_tp_hit'/);
 });
+
+
+test('active-trade cards tolerate a nullable engine-native waterfall', () => {
+  assert.match(scannerCard, /trade\.waterfall \? \(/);
+  assert.doesNotMatch(scannerCard, /<details>[\s\S]{0,500}macro=\{trade\.waterfall\.macro\}/);
+});
