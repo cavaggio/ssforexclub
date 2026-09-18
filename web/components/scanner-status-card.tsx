@@ -188,6 +188,7 @@ function displayPair(pair: string): string {
 }
 
 function safeNum(value: unknown): number | null {
+  if (value == null || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -225,6 +226,132 @@ function compactSignalPayload<T extends Record<string, any>>(sig: T): T {
         }
       : sig.institutionalFlow,
   };
+}
+
+function normalizeActiveTradeForDisplay(value: unknown): ActiveTradeAnalysis {
+  const trade = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const entryPrice = safeNum(trade.entryPrice) ?? 0;
+  const currentPrice = safeNum(trade.currentPrice) ?? entryPrice;
+  const hold = trade.updatedHoldWindow && typeof trade.updatedHoldWindow === 'object'
+    ? trade.updatedHoldWindow
+    : {};
+  const risk = String(trade.timeDecayRisk || '').toLowerCase();
+
+  return {
+    ...trade,
+    tradeId: String(trade.tradeId ?? trade.id ?? ''),
+    instrument: String(trade.instrument ?? trade.pair ?? 'UNKNOWN'),
+    side: trade.side === 'short' ? 'short' : 'long',
+    units: Math.abs(safeNum(trade.units ?? trade.notionalUnits) ?? 0),
+    entryPrice,
+    currentPrice,
+    openTime: String(trade.openTime ?? ''),
+    minutesElapsed: Math.max(0, safeNum(trade.minutesElapsed) ?? 0),
+    unrealizedPL: safeNum(trade.unrealizedPL) ?? 0,
+    unrealizedPips: safeNum(trade.unrealizedPips) ?? 0,
+    stopLoss: safeNum(trade.stopLoss),
+    takeProfit: safeNum(trade.takeProfit),
+    distanceToTPPips: Math.max(0, safeNum(trade.distanceToTPPips) ?? 0),
+    distanceToSLPips: Math.max(0, safeNum(trade.distanceToSLPips) ?? 0),
+    tpProgress: Math.max(0, safeNum(trade.tpProgress) ?? 0),
+    currentAlignmentScore: safeNum(trade.currentAlignmentScore) ?? 0,
+    currentConfidence: safeNum(trade.currentConfidence) ?? 0,
+    tradeState: (trade.tradeState || 'OPEN_HEALTHY') as ActiveTradeAnalysis['tradeState'],
+    exitRecommendation: (trade.exitRecommendation || 'HOLD') as ActiveTradeAnalysis['exitRecommendation'],
+    exitReason: trimText(trade.exitReason || 'No exit recommendation was returned.', 1000),
+    timeDecayRisk: (risk === 'medium' || risk === 'high' ? risk : 'low') as ActiveTradeAnalysis['timeDecayRisk'],
+    updatedHoldWindow: {
+      minMinutes: Math.max(0, safeNum(hold.minMinutes) ?? 0),
+      maxMinutes: Math.max(0, safeNum(hold.maxMinutes) ?? 0),
+      holdConfidence: safeNum(hold.holdConfidence) ?? 0,
+    },
+    tpProbability: Math.max(0, safeNum(trade.tpProbability) ?? 0),
+    slProbability: Math.max(0, safeNum(trade.slProbability) ?? 0),
+    macroOpposes: trade.macroOpposes === true,
+    conflictingTfCount: Math.max(0, safeNum(trade.conflictingTfCount) ?? 0),
+    alignmentDropped: trade.alignmentDropped === true,
+    waterfall: trade.waterfall ?? null,
+    error: trade.error ? trimText(trade.error, 1000) : undefined,
+  } as ActiveTradeAnalysis;
+}
+
+function normalizeActiveTradesResponse(value: unknown): ActiveTradesResponse {
+  const payload = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const trades = Array.isArray(payload.trades)
+    ? payload.trades.map(normalizeActiveTradeForDisplay)
+    : [];
+  const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : {};
+
+  return {
+    ...payload,
+    trades,
+    meta: {
+      ...meta,
+      scannedAt: String(meta.scannedAt ?? new Date().toISOString()),
+      session: String(meta.session ?? 'unknown'),
+      totalActive: safeNum(meta.totalActive) ?? trades.length,
+    },
+  } as ActiveTradesResponse;
+}
+
+function normalizeReassessTradeForDisplay(value: unknown): ReassessTrade {
+  const trade = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const rawDecision = trade.lifecycleRecommendation && typeof trade.lifecycleRecommendation === 'object'
+    ? trade.lifecycleRecommendation
+    : {};
+  const confidence = safeNum(rawDecision.confidence ?? trade.currentConfidence) ?? 0;
+  const rawUrgency = String(rawDecision.urgency || '').toLowerCase();
+  const rawAction = String(rawDecision.action || trade.recommendedAction || 'hold').toLowerCase();
+
+  return {
+    ...trade,
+    tradeId: String(trade.tradeId ?? trade.id ?? ''),
+    instrument: String(trade.instrument ?? trade.pair ?? 'UNKNOWN'),
+    direction: trade.direction === 'short' ? 'short' : trade.direction === 'long' ? 'long' : undefined,
+    units: safeNum(trade.units) ?? undefined,
+    currentPnL: safeNum(trade.currentPnL) ?? 0,
+    profitRMultiple: safeNum(trade.profitRMultiple) ?? undefined,
+    distanceToTP: safeNum(trade.distanceToTP) ?? undefined,
+    distanceToSL: safeNum(trade.distanceToSL) ?? undefined,
+    currentAlignmentScore: safeNum(trade.currentAlignmentScore) ?? undefined,
+    currentConfidence: safeNum(trade.currentConfidence) ?? confidence,
+    recommendedStopLoss: safeNum(trade.recommendedStopLoss),
+    recommendedTakeProfit: safeNum(trade.recommendedTakeProfit),
+    lifecycleRecommendation: {
+      ...rawDecision,
+      action: ['hold', 'tighten_sl', 'reduce_tp', 'expand_tp', 'partial_close', 'close'].includes(rawAction)
+        ? rawAction
+        : 'hold',
+      reason: trimText(rawDecision.reason ?? trade.managementReasons?.[0] ?? 'No current market-management recommendation was returned.', 1200),
+      urgency: rawUrgency === 'high' || rawUrgency === 'medium' ? rawUrgency : 'low',
+      confidence,
+      suggestedNewSL: safeNum(rawDecision.suggestedNewSL),
+      suggestedNewTP: safeNum(rawDecision.suggestedNewTP ?? trade.recommendedTakeProfit) ?? 0,
+      shouldAutoClose: rawDecision.shouldAutoClose === true,
+      autoCloseReason: rawDecision.autoCloseReason == null ? null : trimText(rawDecision.autoCloseReason, 1000),
+    },
+    managementReasons: Array.isArray(trade.managementReasons)
+      ? trade.managementReasons.map((reason: unknown) => trimText(reason, 600))
+      : [],
+    error: trade.error ? trimText(trade.error, 1000) : undefined,
+  } as ReassessTrade;
+}
+
+function normalizeReassessResponse(value: unknown): ReassessResponse {
+  const payload = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const trades = Array.isArray(payload.trades)
+    ? payload.trades.map(normalizeReassessTradeForDisplay)
+    : [];
+  const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : {};
+
+  return {
+    ...payload,
+    trades,
+    meta: {
+      ...meta,
+      totalActive: safeNum(meta.totalActive) ?? trades.length,
+    },
+  } as ReassessResponse;
 }
 
 function formatPrice(price: number, pair: string): string {
@@ -2770,7 +2897,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      setActiveTrades(json.analysis as ActiveTradesResponse);
+      setActiveTrades(normalizeActiveTradesResponse(json.analysis));
     } catch (err) {
       setActiveError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2789,7 +2916,7 @@ export function ScannerStatusCard({ hasBroker }: { hasBroker: boolean }) {
       });
       const json = await res.json();
       if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      setReassess(json.reassessment as ReassessResponse);
+      setReassess(normalizeReassessResponse(json.reassessment));
     } catch (err) {
       setReassessError(err instanceof Error ? err.message : String(err));
     } finally {
