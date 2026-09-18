@@ -309,6 +309,12 @@ export async function executeIctTrade(params = {}, {
   if (!(analysis.confidence >= config.minConfidence)) {
     return blocked(`ICT confidence below auto-trade threshold (${analysis.confidence} < ${config.minConfidence}).`);
   }
+  if (autoAi && analysis?.learningExecutionGate?.passed === false) {
+    return blocked(
+      `Edge Intelligence authoritative execution gate rejected ${pair}: ${analysis.learningExecutionGate.reason || 'matching negative-expectancy context'}.`,
+      { learningExecutionGate: analysis.learningExecutionGate },
+    );
+  }
   const entryAuthorization = analysis?.entryAuthorization || {};
   if (!entryAuthorization.ready || !entryAuthorization.cycleId) {
     return blocked(`ICT central market-maker authorization failed: ${entryAuthorization.reason || 'the persistent reversal/continuation cycle is not ready'}.`);
