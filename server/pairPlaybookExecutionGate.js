@@ -108,7 +108,7 @@ export function evaluatePairPlaybookExecutionGate(candidate = {}, playbook = nul
   const pair = normalizePair(playbook.pair);
   const sampleSize = finite(playbook.sample_size ?? playbook.sampleSize, 0);
   const status = String(playbook.status || '').trim().toLowerCase();
-  const stage = String(playbook.recommendation_stage ?? playbook.recommendationStage || '').trim().toLowerCase();
+  const stage = String(playbook.recommendation_stage ?? playbook.recommendationStage ?? '').trim().toLowerCase();
   const validator = playbook.validator && typeof playbook.validator === 'object' ? playbook.validator : {};
   const scopeMatches = Boolean(pair && context.pair && pair === context.pair);
   const mature = scopeMatches &&
