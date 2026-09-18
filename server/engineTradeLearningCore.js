@@ -451,4 +451,5 @@ export const ENGINE_TRADE_LEARNING_HARD_GATES = Object.freeze([
   'margin',
   'duplicate',
   'broker_authorization',
+  'pair_playbook_negative_expectancy',
 ]);

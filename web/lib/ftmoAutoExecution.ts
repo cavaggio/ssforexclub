@@ -48,6 +48,21 @@ export type FtmoExecutionReadiness = {
 
 const truthy = (value: unknown) => ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
 
+export function ftmoBridgeVersionAtLeast(actual: unknown, minimum = REQUIRED_FTMO_BRIDGE_VERSION): boolean {
+  const parse = (value: unknown) => String(value ?? '').trim().split('.').map((part) => Number(part));
+  const a = parse(actual);
+  const m = parse(minimum);
+  if (!a.length || !m.length || a.some((part) => !Number.isFinite(part)) || m.some((part) => !Number.isFinite(part))) return false;
+  const width = Math.max(a.length, m.length);
+  for (let i = 0; i < width; i += 1) {
+    const left = a[i] || 0;
+    const right = m[i] || 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return true;
+}
+
 function flags() {
   return {
     autoTradeEnabled: truthy(process.env.FTMO_AUTO_TRADE_ENABLED),
@@ -89,7 +104,7 @@ export async function getFtmoExecutionReadiness(args: {
   const terminalPolicyVersion = terminal?.risk_policy_version ? String(terminal.risk_policy_version) : null;
   const policyVersionCompatible = terminalPolicyVersion === REQUIRED_FTMO_EA_POLICY_VERSION;
   const terminalBridgeVersion = terminal?.bridge_version ? String(terminal.bridge_version) : null;
-  const bridgeVersionCompatible = terminalBridgeVersion === REQUIRED_FTMO_BRIDGE_VERSION;
+  const bridgeVersionCompatible = ftmoBridgeVersionAtLeast(terminalBridgeVersion);
   const orderTestVerified = config.orderTestOverride || Boolean(terminal?.order_test_verified_at);
   const terminalRiskLocked = terminal?.trading_locked === true;
 
@@ -132,7 +147,7 @@ async function enqueueCommand(args: {
   if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
     return { ok: false as const, blocked: true as const, reason: `Risk policy ${REQUIRED_FTMO_EA_POLICY_VERSION} is required` };
   }
-  if (String(terminal.bridge_version || '') !== REQUIRED_FTMO_BRIDGE_VERSION) {
+  if (!ftmoBridgeVersionAtLeast(terminal.bridge_version)) {
     return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_BRIDGE_VERSION} is required` };
   }
   if (terminal.trading_locked === true) {
@@ -246,7 +261,7 @@ export async function enqueueFtmoOrderTest(args: {
   if (String(terminal.risk_policy_version || '') !== REQUIRED_FTMO_EA_POLICY_VERSION) {
     return { ok: false as const, blocked: true as const, reason: `Risk policy ${REQUIRED_FTMO_EA_POLICY_VERSION} is required before the order test` };
   }
-  if (String(terminal.bridge_version || '') !== REQUIRED_FTMO_BRIDGE_VERSION) {
+  if (!ftmoBridgeVersionAtLeast(terminal.bridge_version)) {
     return { ok: false as const, blocked: true as const, reason: `SignalStackBridge ${REQUIRED_FTMO_BRIDGE_VERSION} is required before the order test` };
   }
   if (terminal.trading_locked === true) {

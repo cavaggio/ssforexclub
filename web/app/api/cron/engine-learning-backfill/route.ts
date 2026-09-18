@@ -3,6 +3,7 @@ import { getServerSupabase } from '@/lib/db';
 import { listBrokerConnectionsForUser } from '@/lib/brokerConnections';
 import { backfillEngineLearningWindow } from '@/lib/engineLearningBackfill';
 import { reconcileActualTradesForAccount } from '@/lib/actualTradeReconciliation';
+import { reconcileFtmoTradesForAccount } from '@/lib/ftmoTradeReconciliation';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -67,16 +68,16 @@ export async function POST(req: Request) {
       const connections = await listBrokerConnectionsForUser(row.user_id);
       const activeAccounts = [...new Map(
         connections
-          .filter((connection) => connection.isActive && connection.broker === 'oanda' && connection.accountId)
-          .map((connection) => [connection.accountId, connection]),
+          .filter((connection) => connection.isActive && ['oanda', 'ftmo'].includes(connection.broker) && connection.accountId)
+          .map((connection) => [`${connection.broker}:${connection.accountId}`, connection]),
       ).values()];
 
       if (!activeAccounts.length) {
         results.push({
           userId: row.user_id,
           configuredEngine: row.auto_ai_engine || null,
-          skipped: 'no_active_oanda_accounts',
-          reason: 'No active OANDA broker connections were available for historical learning.',
+          skipped: 'no_active_learning_accounts',
+          reason: 'No active OANDA or FTMO broker connections were available for historical learning.',
         });
         continue;
       }
@@ -84,20 +85,28 @@ export async function POST(req: Request) {
       for (const account of activeAccounts) {
         accountsProcessed += 1;
 
-        // Actual OANDA lifecycle reconciliation owns win/loss/P&L attribution.
-        // It uses the requested New York trading-day window (normally seven),
-        // while always retaining genuinely open and close-pending broker trades.
-        const actual = await reconcileActualTradesForAccount({
-          userId: row.user_id,
-          connectionId: account.id,
-          brokerAccountId: account.accountId,
-          tradingDays,
-          now: startedAt,
-        });
-        actualOpeningsConsidered += actual.openingsConsidered;
-        actualTradesFetched += actual.tradesFetched;
-        actualTradesUpserted += actual.tradesUpserted;
-        actualClosedTrades += actual.closedTrades;
+        // Exact broker lifecycle reconciliation owns win/loss/P&L attribution.
+        // OANDA uses broker trade detail; FTMO uses MT5 deal history when bridge
+        // v1.24+ is connected. Both feed the same account/engine/pair learning views.
+        const actual: any = account.broker === 'ftmo'
+          ? await reconcileFtmoTradesForAccount({
+              userId: row.user_id,
+              brokerAccountId: account.accountId,
+              environment: account.environment,
+              lookbackDays: calendarLookbackDays,
+              now: startedAt,
+            })
+          : await reconcileActualTradesForAccount({
+              userId: row.user_id,
+              connectionId: account.id,
+              brokerAccountId: account.accountId,
+              tradingDays,
+              now: startedAt,
+            });
+        actualOpeningsConsidered += Number(actual.openingsConsidered || 0);
+        actualTradesFetched += Number(actual.tradesFetched ?? actual.historyDeals ?? 0);
+        actualTradesUpserted += Number(actual.tradesUpserted || 0);
+        actualClosedTrades += Number(actual.closedTrades || 0);
         results.push({
           kind: 'actual_trade_lifecycle',
           accountId: account.accountId,

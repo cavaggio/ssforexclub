@@ -172,6 +172,7 @@ export function isIctBaseQualified(analysis, cfg = ictExecConfig()) {
     Boolean(entryAuthorization.cycleId) &&
     analysis?.correctiveGate?.passed === true &&
     analysis?.correctiveGate?.decision === 'authorize' &&
+    analysis?.learningExecutionGate?.passed !== false &&
     analysis?.marketMakerModel?.studyReady === true &&
     analysis?.marketMakerModel?.stage === 'DISTRIBUTION_ACTIVE' &&
     Number.isFinite(confidence) && confidence >= cfg.minConfidence &&
