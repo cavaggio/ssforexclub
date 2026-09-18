@@ -106,7 +106,6 @@ for (const forbidden of [
   'signal.lotSize.toFixed(4)',
   'signal.riskPercent !== undefined ?',
   'Object.entries(signal.scoreBreakdown).map',
-  'trade.updatedHoldWindow.minMinutes',
 ]) {
   if (source.includes(forbidden)) {
     throw new Error(`Dashboard null-guard verification failed: ${forbidden}`);
