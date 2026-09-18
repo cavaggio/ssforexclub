@@ -42,6 +42,14 @@ function normalizePair(value) {
 }
 
 function accountIdOf(client) {
+  return String(
+    client?.executionAccountId ||
+    client?.accountId || client?.accountID || client?.account_id ||
+    'default'
+  );
+}
+
+function marketDataAccountIdOf(client) {
   return String(client?.accountId || client?.accountID || client?.account_id || 'default');
 }
 
@@ -55,10 +63,10 @@ function cacheTtlMs() {
   return Math.max(30_000, Math.min(3_600_000, configured));
 }
 
-async function loadCurrentPairPlaybook({ client, engine, pair, force = false } = {}) {
+async function loadCurrentPairPlaybook({ client, engine, pair, force = false, accountIdOverride = null } = {}) {
   const normalizedEngine = normalizeEngine(engine);
   const normalizedPair = normalizePair(pair);
-  const accountId = accountIdOf(client);
+  const accountId = String(accountIdOverride || accountIdOf(client));
   const userId = userIdOf(client);
   if (!normalizedEngine || !normalizedPair || !db()) return null;
   const key = `${userId || 'legacy'}:${accountId}:${normalizedEngine}:${normalizedPair}`;
@@ -287,14 +295,38 @@ export async function applyCombinedLearningCalibration(candidate = {}, { client,
   const originalConfidence = finiteNumber(candidate.confidence ?? candidate.score, null);
   const studiedCandidate = await applyStoredStudyCalibration(candidate, { client, engine: normalizedEngine });
   const marketStudyAdjustment = finiteNumber(studiedCandidate?.dailyStudyContext?.adjustment, 0);
-  const [profile, pairPlaybook] = await Promise.all([
+  const executionAccountId = accountIdOf(client);
+  const marketDataAccountId = marketDataAccountIdOf(client);
+  const [profile, pairPlaybook, marketDataPairPlaybook] = await Promise.all([
     loadEngineTradeProfile({ client, engine: normalizedEngine, pair }),
     loadCurrentPairPlaybook({ client, engine: normalizedEngine, pair }),
+    marketDataAccountId !== executionAccountId
+      ? loadCurrentPairPlaybook({
+          client,
+          engine: normalizedEngine,
+          pair,
+          accountIdOverride: marketDataAccountId,
+        })
+      : Promise.resolve(null),
   ]);
-  const learningExecutionGate = evaluatePairPlaybookExecutionGate(
+  let learningExecutionGate = evaluatePairPlaybookExecutionGate(
     { ...studiedCandidate, engine: normalizedEngine, pair },
     pairPlaybook,
   );
+  if (learningExecutionGate.authoritative !== true && marketDataPairPlaybook) {
+    const marketDataGate = evaluatePairPlaybookExecutionGate(
+      { ...studiedCandidate, engine: normalizedEngine, pair },
+      marketDataPairPlaybook,
+    );
+    if (marketDataGate.authoritative === true) {
+      learningExecutionGate = {
+        ...marketDataGate,
+        evidenceScope: 'market_data_account_fallback',
+        executionAccountId,
+        evidenceAccountId: marketDataAccountId,
+      };
+    }
+  }
   const learningOptions = optionsFromEnv();
   const engineResult = computeEngineTradeAdjustment(
     { ...studiedCandidate, engine: normalizedEngine, pair },
