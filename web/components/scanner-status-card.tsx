@@ -188,6 +188,7 @@ function displayPair(pair: string): string {
 }
 
 function safeNum(value: unknown): number | null {
+  if (value == null || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -227,20 +228,30 @@ function compactSignalPayload<T extends Record<string, any>>(sig: T): T {
   };
 }
 
-function formatPrice(price: number, pair: string): string {
-  if (pair === 'XAU_USD' || pair === 'XAG_USD') return price.toFixed(2);
-  if (pair.includes('JPY')) return price.toFixed(3);
-  return price.toFixed(5);
+function formatPrice(price: unknown, pair: string): string {
+  const value = safeNum(price);
+  if (value == null) return '—';
+  if (pair === 'XAU_USD' || pair === 'XAG_USD') return value.toFixed(2);
+  if (pair.includes('JPY')) return value.toFixed(3);
+  return value.toFixed(5);
 }
 
-function formatUnits(units: number): string {
-  return units.toLocaleString();
+function formatUnits(units: unknown): string {
+  const value = safeNum(units);
+  return value == null ? '—' : value.toLocaleString();
 }
 
-function formatAmount(amount: number): string {
-  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
-  if (amount >= 1_000) return `$${(amount / 1_000).toFixed(1)}K`;
-  return `$${amount.toFixed(0)}`;
+function formatAmount(amount: unknown): string {
+  const value = safeNum(amount);
+  if (value == null) return '—';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return `${value.toFixed(0)}`;
+}
+
+function formatFixed(value: unknown, digits: number, suffix = ''): string {
+  const parsed = safeNum(value);
+  return parsed == null ? '—' : `${parsed.toFixed(digits)}${suffix}`;
 }
 
 function rrGuardNum(value: unknown): number | null {
@@ -1354,37 +1365,37 @@ function SignalCard({
         signal.estimatedMarginRequired !== undefined ||
         signal.effectiveLeverage !== undefined) && (
         <div style={s.riskGrid}>
-          <SizingCell label="Risk %" value={signal.riskPercent !== undefined ? `${signal.riskPercent.toFixed(2)}%` : '—'} />
+          <SizingCell label="Risk %" value={signal.riskPercent != null ? `${signal.riskPercent.toFixed(2)}%` : '—'} />
           <SizingCell
             label="Target Risk"
-            value={signal.targetRiskUSD !== undefined ? `$${signal.targetRiskUSD.toFixed(2)}` : '—'}
+            value={signal.targetRiskUSD != null ? `${signal.targetRiskUSD.toFixed(2)}` : '—'}
           />
           <SizingCell
             label="Actual Risk"
-            value={signal.actualRiskUSD !== undefined ? `$${signal.actualRiskUSD.toFixed(2)}` : '—'}
+            value={signal.actualRiskUSD != null ? `${signal.actualRiskUSD.toFixed(2)}` : '—'}
           />
           <SizingCell
             label="Est. Reward"
-            value={signal.estimatedRewardUSD !== undefined ? `$${signal.estimatedRewardUSD.toFixed(2)}` : '—'}
+            value={signal.estimatedRewardUSD != null ? `${signal.estimatedRewardUSD.toFixed(2)}` : '—'}
           />
           <SizingCell
             label="Est. Margin"
-            value={signal.estimatedMarginRequired !== undefined ? `$${signal.estimatedMarginRequired.toFixed(2)}` : '—'}
+            value={signal.estimatedMarginRequired != null ? `${signal.estimatedMarginRequired.toFixed(2)}` : '—'}
           />
           <SizingCell
             label="Leverage"
-            value={signal.effectiveLeverage !== undefined ? `${signal.effectiveLeverage.toFixed(0)}:1` : '—'}
+            value={signal.effectiveLeverage != null ? `${signal.effectiveLeverage.toFixed(0)}:1` : '—'}
           />
         </div>
       )}
 
       {/* Sizing */}
       <div style={s.sizingGrid}>
-        <SizingCell label="Lot Size" value={signal.lotSize.toFixed(4)} />
+        <SizingCell label="Lot Size" value={formatFixed(signal.lotSize, 4)} />
         <SizingCell label="Units" value={formatUnits(signal.tradeUnits)} />
         <SizingCell label="Notional" value={formatAmount(signal.amountTraded)} />
-        <SizingCell label="R:R" value={`1 : ${signal.riskReward.toFixed(2)}`} />
-        <SizingCell label="Spread" value={`${signal.spreadPips.toFixed(1)} pip`} />
+        <SizingCell label="R:R" value={safeNum(signal.riskReward) == null ? '—' : `1 : ${formatFixed(signal.riskReward, 2)}`} />
+        <SizingCell label="Spread" value={formatFixed(signal.spreadPips, 1, ' pip')} />
       </div>
 
       {/* Lifecycle reasoning */}
@@ -1501,7 +1512,7 @@ function SignalCard({
       <details style={{ marginTop: 12 }}>
         <summary style={{ cursor: 'pointer', color: '#888', fontSize: 13, fontWeight: 600 }}>Score breakdown</summary>
         <div style={s.breakdownGrid}>
-          {Object.entries(signal.scoreBreakdown).map(([key, val]) => (
+          {Object.entries(signal.scoreBreakdown ?? {}).map(([key, val]) => (
             <div
               key={key}
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}
@@ -2016,7 +2027,7 @@ function RejectedRow({ sig }: { sig: ForexRejected }) {
 
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}>
         {sig.confidence !== undefined && <span style={{ color: '#ff8888' }}>Conf: {sig.confidence}%</span>}
-        {sig.spreadPips !== undefined && <span style={{ color: '#ff8c00' }}>Spread: {sig.spreadPips.toFixed(1)}p</span>}
+        {sig.spreadPips != null && <span style={{ color: '#ff8c00' }}>Spread: {sig.spreadPips.toFixed(1)}p</span>}
         {sig.session && <span style={{ color: '#888' }}>{sig.session}</span>}
         {sig.macro && (
           <span style={{ color: '#aaa' }}>
@@ -2105,43 +2116,42 @@ function ActiveTradeCard({
             <Badge value={`→ ${trade.exitRecommendation}`} type={recType} />
           </div>
           <div style={{ fontSize: 12, color: '#888', fontFamily: "'JetBrains Mono', monospace" }}>
-            id {trade.tradeId} · open {trade.minutesElapsed} min ago · {trade.units.toLocaleString()} units
+            id {trade.tradeId} · open {trade.minutesElapsed} min ago · {trade.units == null ? '—' : Number(trade.units).toLocaleString()} units
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, color: plColor, fontWeight: 800, lineHeight: 1.1 }}>
-            ${trade.unrealizedPL.toFixed(2)}
+            {trade.unrealizedPL == null ? '—' : `${trade.unrealizedPL.toFixed(2)}`}
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
-            unrealized · {trade.unrealizedPips >= 0 ? '+' : ''}
-            {trade.unrealizedPips.toFixed(1)} pips
+            unrealized · {trade.unrealizedPips == null ? '—' : `${trade.unrealizedPips >= 0 ? '+' : ''}${trade.unrealizedPips.toFixed(1)} pips`}
           </div>
         </div>
       </div>
 
       <div style={s.priceGrid}>
-        <PriceCell label="Entry" value={trade.entryPrice.toFixed(5)} color="#e0e0ff" />
-        <PriceCell label="Current" value={trade.currentPrice.toFixed(5)} color={plColor} />
+        <PriceCell label="Entry" value={trade.entryPrice == null ? '—' : trade.entryPrice.toFixed(5)} color="#e0e0ff" />
+        <PriceCell label="Current" value={trade.currentPrice == null ? '—' : trade.currentPrice.toFixed(5)} color={plColor} />
         <PriceCell
           label="Stop Loss"
           value={trade.stopLoss != null ? trade.stopLoss.toFixed(5) : '—'}
           color="#ff4d4d"
-          sub={`${trade.distanceToSLPips.toFixed(1)}p away`}
+          sub={trade.distanceToSLPips == null ? '—' : `${trade.distanceToSLPips.toFixed(1)}p away`}
         />
         <PriceCell
           label="Take Profit"
           value={trade.takeProfit != null ? trade.takeProfit.toFixed(5) : '—'}
           color="#2dff7a"
-          sub={`${trade.distanceToTPPips.toFixed(1)}p to go (${(trade.tpProgress * 100).toFixed(0)}%)`}
+          sub={trade.distanceToTPPips == null || trade.tpProgress == null ? '—' : `${trade.distanceToTPPips.toFixed(1)}p to go (${(trade.tpProgress * 100).toFixed(0)}%)`}
         />
       </div>
 
       <div style={s.sizingGrid}>
         <SizingCell label="Alignment" value={`${trade.currentAlignmentScore}/100`} />
         <SizingCell label="Confidence" value={`${trade.currentConfidence}%`} />
-        <SizingCell label="TP prob" value={`${(trade.tpProbability * 100).toFixed(0)}%`} />
-        <SizingCell label="SL prob" value={`${(trade.slProbability * 100).toFixed(0)}%`} />
-        <SizingCell label="Hold left" value={`${trade.updatedHoldWindow.minMinutes}–${trade.updatedHoldWindow.maxMinutes}m`} />
+        <SizingCell label="TP prob" value={trade.tpProbability == null ? '—' : `${(trade.tpProbability * 100).toFixed(0)}%`} />
+        <SizingCell label="SL prob" value={trade.slProbability == null ? '—' : `${(trade.slProbability * 100).toFixed(0)}%`} />
+        <SizingCell label="Hold left" value={trade.updatedHoldWindow ? `${trade.updatedHoldWindow.minMinutes}–${trade.updatedHoldWindow.maxMinutes}m` : '—'} />
       </div>
 
       <div
@@ -2334,7 +2344,7 @@ function ReassessRow({
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, color: plColor, fontWeight: 800 }}>
             ${pl.toFixed(2)}
           </div>
-          {trade.profitRMultiple !== undefined && (
+          {trade.profitRMultiple != null && (
             <div style={{ fontSize: 12, color: '#888' }}>{trade.profitRMultiple.toFixed(2)}R</div>
           )}
         </div>
@@ -2354,10 +2364,10 @@ function ReassessRow({
         {trade.multiTimeframeAlignmentScore !== undefined && (
           <SizingCell label="MTF Align" value={`${trade.multiTimeframeAlignmentScore}/100`} />
         )}
-        {trade.distanceToTP !== undefined && (
+        {trade.distanceToTP != null && (
           <SizingCell label="To TP" value={`${trade.distanceToTP.toFixed(1)}p`} />
         )}
-        {trade.distanceToSL !== undefined && (
+        {trade.distanceToSL != null && (
           <SizingCell label="To SL" value={`${trade.distanceToSL.toFixed(1)}p`} />
         )}
         {trade.minutesElapsed !== undefined && (
