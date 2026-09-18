@@ -19,6 +19,21 @@ function clean(value) {
   return String(value ?? '').trim();
 }
 
+export function bridgeVersionAtLeast(actual, minimum = REQUIRED_BRIDGE_VERSION) {
+  const parse = (value) => clean(value).split('.').map((part) => Number(part));
+  const a = parse(actual);
+  const m = parse(minimum);
+  if (!a.length || !m.length || a.some((part) => !Number.isFinite(part)) || m.some((part) => !Number.isFinite(part))) return false;
+  const width = Math.max(a.length, m.length);
+  for (let i = 0; i < width; i += 1) {
+    const left = a[i] || 0;
+    const right = m[i] || 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return true;
+}
+
 function truthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(clean(value).toLowerCase());
 }
@@ -238,7 +253,7 @@ async function resolveFtmoExecutionContext(userId, env = process.env) {
   else if (!heartbeatFresh) reason = 'MT5 EA heartbeat is stale';
   else if (clean(terminal.risk_policy_version) !== REQUIRED_RISK_POLICY_VERSION) {
     reason = `Risk policy ${REQUIRED_RISK_POLICY_VERSION} is required before FTMO execution`;
-  } else if (clean(terminal.bridge_version) !== REQUIRED_BRIDGE_VERSION) {
+  } else if (!bridgeVersionAtLeast(terminal.bridge_version)) {
     reason = `SignalStackBridge ${REQUIRED_BRIDGE_VERSION} is required before FTMO execution`;
   } else if (terminal.trading_locked === true) reason = 'MT5 EA daily risk lock is active';
   else if (!terminal.order_test_verified_at) reason = 'Minimum-volume MT5 order test has not been verified';
@@ -328,7 +343,7 @@ async function loadFtmoExecutionRiskState(context, env = process.env) {
   if (!(state.balance > 0) || !(state.equity > 0)) {
     throw new Error('MT5 account summary returned invalid balance/equity');
   }
-  if (state.bridgeVersion !== REQUIRED_BRIDGE_VERSION) {
+  if (!bridgeVersionAtLeast(state.bridgeVersion)) {
     throw new Error(`SignalStackBridge ${REQUIRED_BRIDGE_VERSION} is required for authoritative FTMO telemetry`);
   }
   if (state.riskPolicyVersion !== REQUIRED_RISK_POLICY_VERSION) {
