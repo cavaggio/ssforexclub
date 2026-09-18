@@ -1328,20 +1328,26 @@ function ActiveTradeCard({ trade }: { trade: import('../types/forex.ts').ActiveT
       </div>
 
       {/* Mini waterfall */}
-      <details>
-        <summary style={{ cursor: 'pointer', color: '#888', fontSize: 14, userSelect: 'none', padding: '4px 0', fontWeight: 600 }}>
-          Mini waterfall (current state)
-        </summary>
-        <div style={{ marginTop: 10 }}>
-          <WaterfallPanel
-            macro={trade.waterfall.macro}
-            structure={trade.waterfall.structure}
-            momentum={trade.waterfall.momentum}
-            alignment={trade.waterfall.alignment}
-            direction={trade.side}
-          />
+      {trade.waterfall ? (
+        <details>
+          <summary style={{ cursor: 'pointer', color: '#888', fontSize: 14, userSelect: 'none', padding: '4px 0', fontWeight: 600 }}>
+            Mini waterfall (current state)
+          </summary>
+          <div style={{ marginTop: 10 }}>
+            <WaterfallPanel
+              macro={trade.waterfall.macro}
+              structure={trade.waterfall.structure}
+              momentum={trade.waterfall.momentum}
+              alignment={trade.waterfall.alignment}
+              direction={trade.side}
+            />
+          </div>
+        </details>
+      ) : (
+        <div style={{ marginTop: 12, color: '#888', fontSize: 13, lineHeight: 1.5 }}>
+          Engine-native trade analysis is active for this position; the legacy mini-waterfall is not applicable.
         </div>
-      </details>
+      )}
     </div>
   );
 }
