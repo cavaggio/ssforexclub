@@ -8,9 +8,9 @@ alter table public.engine_learning_adjustment_audit
     references public.signal_observations(id) on delete set null,
   add column if not exists failure_reasons text[] not null default '{}'::text[];
 
-create unique index if not exists engine_learning_post_trade_unique_idx
-  on public.engine_learning_adjustment_audit (source_trade_lifecycle_id, adjustment_type)
-  where source_trade_lifecycle_id is not null;
+drop index if exists public.engine_learning_post_trade_unique_idx;
+create unique index engine_learning_post_trade_unique_idx
+  on public.engine_learning_adjustment_audit (source_trade_lifecycle_id, adjustment_type);
 
 create or replace view public.ict_trade_failure_stats as
 select
