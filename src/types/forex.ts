@@ -246,7 +246,7 @@ export interface ActiveTradeAnalysis {
     structure: StructureAnalysis;
     momentum: MomentumAnalysis;
     alignment: AlignmentResult;
-  };
+  } | null;
   error?: string;
 }
 
