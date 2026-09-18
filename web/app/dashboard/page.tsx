@@ -22,6 +22,7 @@ import { AutoCloseToggle } from '@/components/auto-close-toggle';
 import { RiskManagementPanel } from '@/components/risk-management-panel';
 import { TradeActivityLog } from '@/components/trade-activity-log';
 import { DashboardRecoveryMarker } from '@/components/dashboard-recovery-marker';
+import { DashboardSectionErrorBoundary } from '@/components/dashboard-section-error-boundary';
 
 type FtmoTerminalStatus = {
   account_login: string;
@@ -270,13 +271,31 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {hasAnyConnection && !isFtmoActive && <RiskManagementPanel />}
-      {hasAnyConnection && <AutoAiTradingToggle />}
-      {hasAnyConnection && <AutoCloseToggle />}
+      {hasAnyConnection && !isFtmoActive && (
+        <DashboardSectionErrorBoundary label="Risk management">
+          <RiskManagementPanel />
+        </DashboardSectionErrorBoundary>
+      )}
+      {hasAnyConnection && (
+        <DashboardSectionErrorBoundary label="Auto AI controls">
+          <AutoAiTradingToggle />
+        </DashboardSectionErrorBoundary>
+      )}
+      {hasAnyConnection && (
+        <DashboardSectionErrorBoundary label="Automatic trade management">
+          <AutoCloseToggle />
+        </DashboardSectionErrorBoundary>
+      )}
 
-      <TradeActivityLog hasBroker={hasAnyConnection} />
-      <ScannerWatchStatus hasBroker={hasAnyConnection} />
-      <ScannerStatusCard hasBroker={hasAnyConnection} />
+      <DashboardSectionErrorBoundary label="Trade activity">
+        <TradeActivityLog hasBroker={hasAnyConnection} />
+      </DashboardSectionErrorBoundary>
+      <DashboardSectionErrorBoundary label="Scanner watch status">
+        <ScannerWatchStatus hasBroker={hasAnyConnection} />
+      </DashboardSectionErrorBoundary>
+      <DashboardSectionErrorBoundary label="Signal scanner">
+        <ScannerStatusCard hasBroker={hasAnyConnection} />
+      </DashboardSectionErrorBoundary>
     </div>
   );
 }
